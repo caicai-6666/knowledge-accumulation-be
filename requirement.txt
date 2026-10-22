@@ -1,0 +1,32 @@
+# HTTP API 框架
+fastapi==0.150.0
+# 官方 SDK，使用 AsyncOpenAI 调用异步 API
+openai==3.35.1
+# 智能体工作流
+langgraph==1.2.16
+# MySQL/MariaDB 异步驱动
+asyncmy==0.2.16
+# MySQL 8 默认 caching_sha2_password / sha256_password 的 RSA 认证路径
+cryptography==50.0.2
+# 中间件 HTTP 客户端与契约校验（作为直接依赖声明）
+httpx==0.28.1
+pydantic==2.14.1
+# Core 工作区和任务元数据的可读 YAML 渲染
+PyYAML==6.0.3
+# 本地环境配置与 ASGI 服务启动
+python-dotenv==1.2.4
+uvicorn==0.54.0
+# 头像无损 WebP 编码
+Pillow==13.0.0
+# 用户附件逐页查看，沿用参考项目已安装验证的版本。
+PyMuPDF==1.28.2
+# 沿用 registry 验证的 LlamaIndex 向量库协议及 vLLM Embedding 适配。
+llama-index-core==0.14.25
+llama-index-embeddings-openai-like==0.4.0
+
+# FastAPI multipart/form-data 用户 PDF 上传
+python-multipart==0.0.32
+
+# 网页正文提取及访问限制线索解析，沿用参考项目 Trafilatura 2.x 路径。
+trafilatura==2.3.1
+lxml==6.1.3

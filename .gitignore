@@ -1,0 +1,54 @@
+# 默认不追踪；仅放行部署文件、描述文档和必要目录占位。
+*
+
+# 根目录配置与开发规范；真实 .env 始终留在本机。
+!/.gitignore
+!/.env.example
+!/requirement.txt
+!/AGENTS.md
+!/Dockerfile
+!/.dockerignore
+
+# 应用源码、数据库迁移、模型工具调用模板。
+!/app/
+!/app/**/
+!/app/**/*.py
+!/schema/
+!/schema/*.sql
+!/assets/
+!/assets/tool-tag/
+!/assets/tool-tag/*.txt
+
+# 正式描述文档。
+!/description/
+!/description/**/
+!/description/**/*.md
+
+# 仅保留目录层级，不追踪真实数据、测试代码/样本或实验产物。
+!/data/
+!/data/user/
+!/data/user/avatar/
+!/data/user/avatar/.gitkeep
+!/data/user/upload-file/
+!/data/user/upload-file/.gitkeep
+!/tests/
+!/tests/fixtures/
+!/tests/fixtures/.gitkeep
+!/tests/tmp/
+!/tests/tmp/.gitkeep
+!/experiment/
+!/experiment/.gitkeep
+
+# 即使位于放行目录，也忽略本机配置、缓存和临时文件。
+.env
+.env.*
+!/.env.example
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.DS_Store
+*.log
+*.tmp
+*.swp
+*~
