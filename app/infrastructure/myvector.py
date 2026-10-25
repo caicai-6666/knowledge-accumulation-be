@@ -140,6 +140,43 @@ class MyVectorStore(BasePydanticVectorStore):
                     [text,*[scope[key] for key in sorted(scope)],text,top_k])
                 return [KeywordIndexHit.model_validate(row) for row in await cursor.fetchall()]
 
+    async def rank_memory_snapshot(self, nodes, *, owner_userid, tree_id, node_ids, queries, top_k=20):
+        """整树缓存刷新与各路祖先范围排名共用锁；先按任务聚合，再截断排名。"""
+        MemoryIndexMetadata(owner_userid=owner_userid, tree_id=tree_id, node_id='0'*32, kind='question')
+        if type(top_k) is not int or not 1 <= top_k <= 20 or not 1 <= len(queries) <= 3:
+            raise ValueError('记忆查询数量不合法')
+        identifiers = sorted({_ID.validate_python(i) for i in node_ids})
+        if not identifiers:
+            return []
+        for kind, text, vector in queries:
+            MemoryIndexMetadata(owner_userid=owner_userid, tree_id=tree_id, node_id=identifiers[0], kind=kind)
+            if not isinstance(text, str) or not text.strip() or len(text) > 4096:
+                raise ValueError('查询正文不合法')
+            validate_vector(vector, self.dimensions)
+        values = self._values(nodes)
+        if any(value[1:3] != (owner_userid, tree_id) for value in values):
+            raise ValueError('记忆缓存快照归属不一致')
+        where = 'owner_userid=%s AND tree_id=%s AND kind=%s AND node_id IN ('+','.join(['%s']*len(identifiers))+')'
+        routes = []
+        async with asyncio.timeout(self.operation_timeout_seconds), self._operation_lock:
+            await self._write(values, scope=(owner_userid, tree_id))
+            async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
+                self._autocommit(connection)
+                for kind, text, vector in queries:
+                    # 同任务多条中途消息只贡献一个排名，避免长任务占满候选预算。
+                    await cursor.execute('SELECT node_id,MAX(MATCH(text) AGAINST(%s IN NATURAL LANGUAGE MODE)) AS score '
+                        'FROM question_memory_index WHERE '+where+' GROUP BY node_id HAVING score>0 '
+                        'ORDER BY score DESC,node_id LIMIT %s', [text, owner_userid, tree_id, kind, *identifiers, top_k])
+                    routes.append([(row['node_id'], float(row['score'])) for row in await cursor.fetchall()])
+                    # 与参考实现一样在已限定范围内精确余弦排序，避免全局 ANN 干扰祖先召回。
+                    await cursor.execute("SELECT node_id,MIN(myvector_distance(embedding,myvector_construct(%s),'Cosine')) AS distance "
+                        'FROM question_memory_index WHERE '+where+' GROUP BY node_id ORDER BY distance,node_id LIMIT %s',
+                        [json.dumps(vector, allow_nan=False), owner_userid, tree_id, kind, *identifiers, top_k])
+                    routes.append([(row['node_id'], 1-float(row['distance'])) for row in await cursor.fetchall()])
+        if any(not math.isfinite(score) for route in routes for _, score in route):
+            raise ValueError('检索返回非有限分数')
+        return routes
+
     def _conditions(self, query):
         if (query.mode != VectorStoreQueryMode.DEFAULT or query.query_embedding is None
                 or query.node_ids or query.doc_ids or query.sparse_top_k is not None):

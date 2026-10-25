@@ -15,6 +15,8 @@
 
 Bearer 格式为唯一 `Authorization: Bearer <credential>`，scheme 大小写不敏感，凭据为 1 至 4096 个无空白可打印 ASCII 字符；重复头、错误 scheme 或额外空白返回 401。生产 code 登录不要求用户 Bearer；开发 login 使用固定登录凭据，me 使用换取的随机用户 token。
 
+公共无额外输入校验读取请求体时，如收到客户端断线事件，则以非标准 `499` 终止该请求，不继续进入后续认证逻辑，不记录未处理的 `ClientDisconnect` 服务端异常。连接通常已经关闭，客户端不保证收到此响应；它不表示 token 失效，也不会撤销中央会话。正常空请求、非法 body/query 的校验保持不变；此处理只覆盖公共校验中的请求体读取，不吞掉任务取消或其他程序异常。
+
 `POST /auth/verify` 已移除（404），无替代的跨平台知识后端验证接口。其他平台应使用自身平台 Bearer 调用中间件 `POST /middleware-service/api/user/login-cache`，body 仅含用户 `access_token`，由中央返回 userid/null 并续期。
 
 ---

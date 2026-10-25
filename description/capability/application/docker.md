@@ -10,7 +10,7 @@ docker build -t knowledge-accumulation-be:dev .
 
 服务以 UID/GID `10001:10001` 运行，工作目录 `/workspace`，监听 `0.0.0.0:8000`。启动命令固定 `uvicorn app.main:app --workers 1`；平台会话、任务执行、SSE 和缓存依赖进程内状态，不能直接增加 worker 或同时启动多个使用相同平台凭据的实例。
 
-健康检查访问公开 `/openapi.json`，仅确认 HTTP 入口可用，不代表数据库、中央登录、钉钉或模型已经联通。SQL 不在镜像构建、容器启动或健康检查中执行。
+健康检查访问公开 `/openapi.json`，仅确认 HTTP 入口可用，不代表数据库、中央登录、钉钉或模型已经联通。数据库迁移不在镜像构建、容器启动或健康检查中执行；已启用的后台同步及记忆加工会查询业务 SQL。
 
 ---
 
@@ -23,13 +23,14 @@ docker build -t knowledge-accumulation-be:dev .
 | 配置 | `KNOWLEDGE_BACKEND_ENV_FILE` 指向后端实际 `.env`，只读挂载到 `/workspace/.env`，默认 `../knowledge-accumulation-be/.env`。 |
 | 解析 | 应用以 `python-dotenv` 且 `interpolate=False` 读取文件，支持示例中的带引号 JSON，不把整个文件作为 Compose `env_file.format: raw` 传入。 |
 | 数据库 | Compose 环境覆盖为 `mysql:3306`，数据库、账号和密码与 registry 使用同一部署配置。 |
+| 注册中心文件 | `REGISTRY_BASE_URL` 固定为 `http://backend:8000`；`FILE_SOURCE_MYSQL_HOST/PORT` 为 `mysql:3306`，数据库、账号与密码复用部署的 `MYSQL_*`，覆盖挂载文件中的本机连接项。 |
 | 中间件 | 覆盖为部署配置中的 `MIDDLEWARE_BASE_URL`，平台身份固定 `knowledge-accumulation`；密钥仍取知识后端自己的配置。 |
 | 文件 | 独立命名卷 `knowledge-backend-data` 挂载 `/workspace/data`，头像路径固定 `/workspace/data/user/avatar`，附件位于 `/workspace/data/user/upload-file`。 |
 | 访问 | 宿主机端口由 `KNOWLEDGE_BACKEND_PORT` 控制，默认只绑定回环地址；registry 头像代理默认访问 `http://knowledge-backend:8000`。 |
 
 环境变量优先于文件；Compose 中的企业公开标识统一取部署 `.env` 的 `DINGTALK_CORP_ID`，同时注入知识后端和前端构建参数 `VITE_DINGTALK_CORP_ID`。`APP_ENV`、AppKey、AppSecret、开发登录凭据、模型地址及密钥仍从知识后端配置读取，密钥不进入前端构建。生产应设置 `APP_ENV=production`，并提供共享 CorpId 及后端 AppKey/AppSecret；开发则配置固定登录凭据。共享 CorpId 留空不会回退到后端文件值，修改后需重建前端并重新创建知识后端；独立运行后端时仍从本项目 `.env` 读取 CorpId。
 
-中间件接入后会自动执行用户及管理员全表同步，启动前必须准备完整权威人员源，并停止旧的同身份运行实例。跨后端旧快照覆盖并发权限更新的边界仍需由部署侧保证。
+中间件接入后会自动执行用户及管理员全表同步，启动前必须准备完整权威人员源，并停止旧的同身份运行实例。跨后端旧快照覆盖并发权限更新的边界仍需由部署侧保证。配置 `VLLM_EMBEDDING_BASE_URL` 后另会启动[记忆自动向量化](memory-embedding.md)，须预先准备问答表和向量服务；空地址不装配该任务。
 
 Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取。可准备仅部署用户和 GID `10001` 可读的独立配置副本（如权限 `0640`），将 `KNOWLEDGE_BACKEND_ENV_FILE` 指向该副本；不要公开配置内容或把权限 `0600` 且属于其他用户的文件直接视为容器可读。路径缺失时 Compose 拒绝自动创建同名目录。
 

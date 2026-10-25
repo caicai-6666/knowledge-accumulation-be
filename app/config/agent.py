@@ -1,5 +1,6 @@
 """Agent 运行配置在模式装配时读取；导入模块不读取环境或创建资源。"""
 import os
+import math
 from pathlib import Path
 import re
 from typing import TYPE_CHECKING
@@ -21,6 +22,7 @@ def load_agent_core_settings(env_file: Path | None = None) -> 'CoreSettings':
               'AGENT_PAGE_DISPLAY_ROUNDS': 'page_display_rounds',
               'AGENT_EXPERT_SESSION_CACHE_MAX_SESSIONS': 'expert_session_cache_max_sessions',
               **{'AGENT_' + name.upper(): name for name in (
+                  'memory_cache_max_queries', 'memory_page_size',
                   'web_search_cache_max_queries', 'web_search_page_size', 'web_search_max_concurrent_requests',
                   'web_page_cache_max_entries', 'web_page_chars',
                   'web_image_max_candidates', 'web_image_max_selected', 'web_image_max_bytes')}}
@@ -39,4 +41,14 @@ def load_agent_core_settings(env_file: Path | None = None) -> 'CoreSettings':
         if number < 1:
             raise ValueError(f'{key} 必须是大于 0 的整数')
         options[field] = number
+    # 共享选项只承载配置；仅探索工厂装配沟通策略，Core/助理不会自动启用。
+    key = 'AGENT_PROGRESS_REMINDER_INTERVAL_SECONDS'
+    if key in values:
+        try:
+            interval = float(values[key])
+            if not math.isfinite(interval) or interval < 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f'{key} 必须是大于等于 0 的有限秒数，0 表示关闭') from None
+        options['progress_reminder_interval_seconds'] = interval
     return CoreSettings(**options)

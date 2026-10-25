@@ -8,7 +8,11 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstrai
 
 from app.model.question_file import AttachmentReference
 from app.model.display_history import TaskDisplayHistory
-from app.model.question_tree import NodePathType, NodeStatus, SummaryContent, TreeID, TreeModel
+from app.model.question_tree import NodePathType, NodeStatus, QuestionTreeListItem, SummaryContent, TreeID, TreeModel
+
+
+class ExplorationTreeListItem(QuestionTreeListItem):
+    has_running_task: bool = Field(strict=True, description='当前树是否有正在执行的任务；待激活及已结束任务为 false。')
 
 
 class CreateTreeRequest(BaseModel):

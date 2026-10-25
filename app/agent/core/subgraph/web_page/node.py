@@ -1,4 +1,4 @@
-"""首次打开网页：HTTP、离线正文提取与基于关注重点的模型精炼。"""
+"""首次打开网页的抓取、正文提取、精炼与两条正文路径的统一收束。"""
 import asyncio
 from contextlib import AsyncExitStack
 from copy import deepcopy
@@ -179,7 +179,7 @@ def route_after_stage(state: WebPageState) -> str:
 
 
 async def finalize(state: WebPageState) -> dict:
-    """仅发布最终正文或明确错误，半成品 HTML 和提取文本不向外暴露。"""
+    """仅发布处理成功的正文或明确错误，不泄露失败阶段的半成品。"""
     request = WebPageRequest.model_validate(state['request'])
     code, stage, hint = state.get('error_code'), state.get('failed_stage'), state.get('hint')
     content = (state.get('refined_content') or '').strip()
@@ -189,4 +189,4 @@ async def finalize(state: WebPageState) -> dict:
         status='error' if code else 'success', url=str(request.url),
         final_url=state.get('final_url'), fetched_at=state.get('fetched_at'),
         content=None if code else content, images=() if code else state.get('selected_images', ()),
-        hint=hint if code else (state.get('image_hint') or None), error_code=code, failed_stage=stage)}
+        hint=hint if code else (state.get('content_hint') or state.get('image_hint') or None), error_code=code, failed_stage=stage)}

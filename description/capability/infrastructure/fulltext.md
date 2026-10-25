@@ -4,7 +4,7 @@
 
 在已有 `question_memory_index` 检索缓存中保存原文副本，为用户提问、完整阶段输出和最终答案提供关键词检索。使用 MySQL 8.4 内置 `FULLTEXT`、`ngram` 和 `MATCH ... AGAINST`；无需额外安装全文插件或更换 asyncmy。原生推理不进入全文缓存。
 
-[消息表](../../architecture/data/node-persistence.md)是权威原文，[记忆表](../../architecture/data/question-memory.md)是权威向量；缓存可以删除重建。本文维护全文查询、刷新及部署契约，向量算法见 [MyVector 说明](myvector.md)。尚未接入 HTTP 路由、模型工具、自动加工任务或混合排名融合。
+[消息表](../../architecture/data/node-persistence.md)是权威原文，[记忆表](../../architecture/data/question-memory.md)是权威向量；缓存可以删除重建。本文维护全文查询、刷新及部署契约，向量算法见 [MyVector 说明](myvector.md)。未新增 HTTP 路由或后台缓存刷新任务；[祖先任务记忆工具](../../architecture/workflow/question-answering/memory-retrieval.md)已接入按需缓存刷新、范围内关键词召回及 RRF 混合排名，权威向量由[后台加工](../application/memory-embedding.md)生成。
 
 > **当前范围：** 共用缓存仍要求非空有效向量，因此全文只覆盖已向量化成功的记忆。pending/failed 记忆尚不可全文查询。固定 MyVector 镜像在含 NULL 向量的索引构建验证中进程异常退出，本轮保留既有非空约束，不填充假向量，也不宣称已支持纯文本先行索引。
 

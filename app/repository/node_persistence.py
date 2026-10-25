@@ -12,9 +12,11 @@ class QuestionFileNotFound(LookupError):
 
 
 class MySQLNodeRepository:
-    def __init__(self, trees: MySQLQuestionTreeRepository):
+    def __init__(self, trees: MySQLQuestionTreeRepository, *, commit_hook=None):
         # 聚合内复用同一事务提供者，不创建第二个连接池，也不负责关闭外部仓库。
         self.trees=trees
+        # 可选数据库提交钩子，只允许同事务 SQL；不得在钩子内进行远程交付。
+        self.commit_hook=commit_hook
 
     async def _node(self,cursor,tree_id,node_id):
         await cursor.execute("SELECT * FROM question_nodes WHERE tree_id=%s AND id=%s AND kind='task'",(tree_id,node_id))
@@ -97,6 +99,12 @@ class MySQLNodeRepository:
     async def _start_locked(self,cursor,tree,node_id,content,parent_id,advance_main=None,summary=None,summary_id=None):
         """调用方持树行锁；普通创建与用户替代复用同一份原子登记逻辑。"""
         tree_id=tree.id
+        if tree.kind=='assistant':
+            from app.repository.assistant_context import append_assistant_task
+            updated=await append_assistant_task(cursor,self.trees,tree,node_id,content,parent_id,
+                                                advance_main,summary,summary_id)
+            await self._insert_event(cursor,NodeMessage(id=node_id,node_id=node_id,kind='question',text=content.question,sequence=1))
+            return await self._restore(cursor,updated,node_id)
         snapshot=await self.trees._snapshot(cursor,tree)
         parent=snapshot.nodes_by_id.get(parent_id)
         if parent_id is not None and parent is None:
@@ -178,15 +186,20 @@ class MySQLNodeRepository:
         """一致性读取有效路径及已接受交互；不载入原生推理、未来摘要或其他分支。"""
         async with self.trees._transaction() as cursor:
             tree=await self.trees._owned_tree(cursor,tree_id,owner_userid)
-            snapshot=await self.trees._snapshot(cursor,tree)
-            if tree.kind=='assistant' and selected_node_id is None:
-                # 助理模式复用同一加载器，服务端选择主干末端，不施加底层禁止分支的限制。
-                selected_node_id=tree.main_leaf_id
-            if selected_node_id is None:
-                if snapshot.nodes:
-                    raise ValueError('非空树必须显式选择继续提问的节点')
-                return tree,None,(),None,()
-            path=snapshot.context_path(selected_node_id)
+            if tree.kind=='assistant':
+                if selected_node_id is not None:
+                    raise ValueError('助理不接受节点选择')
+                from app.repository.assistant_context import assistant_path
+                path=await assistant_path(cursor,tree)
+                if path is None:
+                    return tree,None,(),None,()
+            else:
+                snapshot=await self.trees._snapshot(cursor,tree)
+                if selected_node_id is None:
+                    if snapshot.nodes:
+                        raise ValueError('非空树必须显式选择继续提问的节点')
+                    return tree,None,(),None,()
+                path=snapshot.context_path(selected_node_id)
             ids=[node.id for node in path.nodes]
             marks=','.join(['%s']*len(ids))
             await cursor.execute('SELECT node_id,content FROM question_node_contents WHERE node_id IN ('+marks+')',ids)
@@ -194,7 +207,7 @@ class MySQLNodeRepository:
             if set(contents)!=set(ids):
                 raise ValueError('上下文正文缺失')
             writes=tuple(NodeWrite(node=node,content=contents[node.id]) for node in path.nodes)
-            if path.summary is not None:
+            if path.summary is not None and tree.kind!='assistant':
                 source=snapshot.context_path(path.summary.parent_id)
                 if writes[0].content.covered_from_id!=source.nodes[0].id:
                     raise ValueError('摘要覆盖起点与其祖先路径不一致')
@@ -340,6 +353,8 @@ class MySQLNodeRepository:
                 (status,version_id,_date(now) if terminal else None,node_id))
             await cursor.execute('UPDATE question_trees SET revision=revision+1,updated_at=%s WHERE id=%s',(_date(now),tree_id))
             tree=tree.model_copy(update={'revision':tree.revision+1,'updated_at':now})
+            if self.commit_hook is not None:
+                await self.commit_hook(cursor,tree,node_id,content,status)
             return await self._restore(cursor,tree,node_id)
 
     async def load_memory_source(self,tree_id,owner_userid,memory_id) -> NodeMessage:

@@ -125,7 +125,9 @@ class MLLMClient:
     async def create_chat_completion(self, *, messages: list[dict], tools: list[dict] | None = None,
             tool_choice: str | dict = 'auto', generation: MLLMGenerationSettings | None = None,
             stream: bool = False, on_delta: Callable[[dict],Awaitable[None]] | None = None,
+            on_tool_delta: Callable[[dict],Awaitable[None]] | None = None,
             chat_template_kwargs: dict | None = None,
+            json_schema: dict | None = None,
             on_raw_chunk: Callable[[dict],Awaitable[None]] | None = None) -> MLLMCompletion:
         if self._closed:
             raise MLLMRequestError('模型客户端已关闭')
@@ -137,7 +139,7 @@ class MLLMClient:
         current=MLLMGenerationSettings.model_validate(current.model_dump())
         if current.max_completion_tokens>=self.settings.context_window_tokens:
             raise ValueError('最大生成长度必须小于上下文窗口')
-        streaming=stream or on_delta is not None or on_raw_chunk is not None
+        streaming=stream or on_delta is not None or on_tool_delta is not None or on_raw_chunk is not None
         request=dict(model=self.settings.model,messages=deepcopy(messages),
             max_completion_tokens=current.max_completion_tokens,temperature=current.temperature,
             top_p=current.top_p,presence_penalty=current.presence_penalty,seed=current.seed,stream=streaming,
@@ -145,6 +147,13 @@ class MLLMClient:
                 'chat_template_kwargs':self._template(current,chat_template_kwargs)})
         if tools:
             request.update(tools=deepcopy(tools),tool_choice=deepcopy(tool_choice),parallel_tool_calls=False)
+        if current.min_p is not None:
+            request['extra_body']['min_p'] = current.min_p
+        if json_schema is not None:
+            if tools or not isinstance(json_schema, dict) or not json_schema:
+                raise ValueError('JSON约束生成必须提供Schema且不能同时启用工具')
+            request['response_format'] = {'type': 'json_schema', 'json_schema': {
+                'name': 'structured_output', 'strict': True, 'schema': deepcopy(json_schema)}}
         if streaming:
             request['stream_options']={'include_usage':True}
         try:
@@ -152,7 +161,7 @@ class MLLMClient:
             async with asyncio.timeout(self.settings.timeout_seconds), get_model_request_limiter('mllm',self.settings.max_concurrent_requests):
                 response=await self._client.chat.completions.create(**request)
                 if streaming:
-                    return await self._consume(response,on_delta,on_raw_chunk)
+                    return await self._consume(response,on_delta,on_raw_chunk,on_tool_delta)
                 if not callable(getattr(response,'model_dump',None)):
                     raise MLLMRequestError('模型响应不是合法的 JSON 对象')
                 return _completion(response.model_dump(mode='json',exclude_none=False))
@@ -172,7 +181,7 @@ class MLLMClient:
             raise ValueError('工具请求至少需要一个工具')
         return await self.create_chat_completion(tools=tools,**kwargs)
 
-    async def _consume(self, response, on_delta, on_raw_chunk=None):
+    async def _consume(self, response, on_delta, on_raw_chunk=None, on_tool_delta=None):
         chunks=[]
         message={'role':'assistant','content':None}
         calls={}
@@ -240,6 +249,11 @@ class MLLMClient:
                     if finish is not None:
                         raise MLLMRequestError('流式响应重复结束')
                     finish=choice['finish_reason']
+                if on_tool_delta is not None:
+                    # 独立的累计工具快照供正文解析；原有 on_delta 仍保持原始分片契约。
+                    await on_tool_delta(deepcopy({'content': message.get('content'),
+                        'refusal': message.get('refusal'),
+                        'tool_calls': [calls[index] for index in sorted(calls)]}))
                 if on_delta is not None:
                     await on_delta(deepcopy(delta))
         finally:

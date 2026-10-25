@@ -10,4 +10,4 @@ def build_context_registrations():
     from .registry import RegisteredTool
     def prepare(name,raw,workspace,arguments):
         return workspace
-    return [RegisteredTool('compact_context','当你需要收束较长的历史、精简工作区并保留继续任务所需的信息时，使用这个工具。按关注重点整理已接受的历史和当前工作区，保留用户目标、事实依据、来源、冲突和待办；验收成功后继续执行当前任务，不结束本轮。整理不能修改用户约束、条目身份或事实确认状态；需要删除条目时使用工作区删除工具。',CompactArguments,prepare)]
+    return [RegisteredTool('compact_context','当你需要收束较长的历史并保留继续任务所需的信息时，使用这个工具。按关注重点整理指定的完整历史任务前缀并合并既有摘要，保留用户目标、事实依据、来源、冲突和待办；剩余历史和本轮活动轨迹原样保留，不结束本轮。仅有本轮任务而没有完整历史时不能使用。整理不能修改用户约束、条目身份或事实确认状态；需要删除工作区条目时使用工作区删除工具。',CompactArguments,prepare)]

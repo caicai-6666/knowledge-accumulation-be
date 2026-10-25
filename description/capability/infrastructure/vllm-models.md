@@ -2,7 +2,7 @@
 
 ## 用途与当前状态
 
-参考 contract-service-be 的通用模型参数、异步 Chat Completions、工具流式响应和原生分词协议，提供本项目的 MLLM 基础设施；Embedding 继续使用已适配的 LlamaIndex 客户端。两者按需创建，不在 FastAPI 启动时加载或请求，已供内部问答 Core 调用。
+参考 contract-service-be 的通用模型参数、异步 Chat Completions、工具流式响应和原生分词协议，提供本项目的 MLLM 基础设施；Embedding 继续使用已适配的 LlamaIndex 客户端。MLLM 按需创建，已供内部问答 Core 调用；配置 Embedding 地址后，FastAPI 启动时装配[记忆自动向量化](../application/memory-embedding.md)，后台扫描并请求向量模型。
 
 配置分离为 [MLLM](../../../app/config/mllm.py)和 [Embedding](../../../app/config/embedding.py)，工具型 Agent 支持[可选工具格式模板](tool-tag.md)。本项目不沿用合同提取、业务门禁、视觉页面渲染或推理窗口的专属配置。完整原生推理由客户端返回，不按窗口丢弃；[节点落盘层](../../architecture/data/node-persistence.md)已提供显式保存接口，内部问答 Core 已接入，外部探索问答路由已装配。
 
@@ -21,7 +21,7 @@ VLLM_EMBEDDING_BASE_URL=http://你的向量模型服务地址/v1
 
 模型默认分别为 `qwen38-flash-next`、`qwen3-vl-embedding-8b`，沿用参考项目公开示例命名；服务 `served-model-name` 若不同，必须修改对应 `VLLM_*_MODEL`，不能仅凭地址推断模型。服务需要认证时填写对应 `API_KEY`，无认证则留空。Embedding 默认 4096 维，必须与服务真实输出和 MyVector 索引声明一致，更换模型需统一重建历史向量。
 
-加载顺序为本项目 `.env`，再由进程环境覆盖；不展开 `${...}`。地址为空不影响现有应用启动；只有显式调用对应 loader 时才要求配置完整，错误只返回脱敏提示。数值和布尔示例不加引号，API key 以 `SecretStr` 保存。
+加载顺序为本项目 `.env`，再由进程环境覆盖；不展开 `${...}`。地址为空不影响现有应用启动；Embedding 地址已配置时会在启动期间校验其完整配置，MLLM 仍在按需加载时校验，错误只返回脱敏提示。数值和布尔示例不加引号，API key 以 `SecretStr` 保存。
 
 ---
 
@@ -38,10 +38,13 @@ VLLM_EMBEDDING_BASE_URL=http://你的向量模型服务地址/v1
 | `CONTEXT_WINDOW_TOKENS` | 262144，最大生成长度必须小于该值。 |
 | `ENABLE_THINKING` / `REASONING_EFFORT` | true / xhigh，强度可选 low、medium、xhigh。 |
 | `TEMPERATURE` / `TOP_P` / `TOP_K` | 0.7 / 0.8 / 20。 |
+| `MIN_P` | 默认未设置，不发送；可显式设置0至1的有限数值。摘要独立固定为0。 |
 | `PRESENCE_PENALTY` / `REPETITION_PENALTY` | 1.5 / 1.0。 |
 | `SEED` / `MAX_COMPLETION_TOKENS` | 3407 / 8192。 |
 
 生成参数集中于不可变 `MLLMGenerationSettings`。如单次请求需要覆盖参数，应构造经校验的新配置并传入 `generation`，分词时也必须传入相同配置。上述档位沿用参考项目的通用语义；Qwen、GLM 与 DeepSeek 按显式工具模板文件名进行[统一强度映射](tool-tag.md#分词与生成一致性)，不根据任意模型别名猜测协议。
+
+主题发现和总结固定读取配置的 `REASONING_EFFORT`、输出额度及seed，不继承用户本轮档位；其采样参数独立于主任务，详见[摘要独立生成配置](../../architecture/workflow/question-answering/topic-summary.md#摘要独立生成配置)。
 
 Embedding 的全部配置、批量与归一化行为见 [MyVector 配置说明](myvector.md#配置与生命周期)，不在此复制第二份定义。
 
@@ -67,6 +70,7 @@ async with MLLMClient(settings) as client:
 
 | 方法 | 行为 |
 | --- | --- |
+| `create_chat_completion(messages=..., json_schema=...)` | JSON Schema 约束正文输出；不能同时启用工具，业务层仍做完整校验，供主题总结使用。 |
 | `create_chat_completion(messages=..., generation=...)` | 普通非流式请求，返回完整助手消息、用量、结束原因及原始响应。 |
 | `create_tool_chat_completion(messages=..., tools=..., tool_choice=...)` | 保留原生工具调用及参数字符串，不解析或执行业务工具。 |
 | 上述方法的 `stream=True` / `on_delta=callback` | 消费流并合并正文、推理和工具参数，完成后返回统一结果；回调非空时自动启用流式。 |
@@ -96,8 +100,8 @@ async with MLLMClient(settings) as client:
 
 - MLLM 生成不自动重试，避免重放流式生成：404 为 `MLLMProviderNotReadyError`；连接、超时、限流及临时服务错误为 `MLLMUnavailableError`；永久拒绝或协议异常为 `MLLMRequestError`。
 - 分词是只读请求，仅对连接及选定临时状态最多尝试 3 次，失败抛出 `TokenizationError`；不因此重放任何模型生成或工具动作。
-- Embedding 沿用既有 SDK 最多 2 次重试；不在上层重复叠加自动重试。
-- 主模型取消直接传播并关闭流，不能因收到部分正文就提交任务完成。分词和 Embedding 也不吞掉取消；上层任务终态与持久化仍待问答运行时实现。
+- Embedding 保留既有 LlamaIndex/SDK 请求重试配置；自动加工失败记录由后台在后续扫描轮次重试，不重放问答生成。
+- 主模型取消直接传播并关闭流，不能因收到部分正文就提交任务完成。分词和 Embedding 也不吞掉取消；上层问答终态由运行时持久化；后台向量化取消保持记忆可恢复，不把取消记作模型失败。
 
 ---
 

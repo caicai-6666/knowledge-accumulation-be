@@ -1,5 +1,6 @@
-"""助理专用工具组合点；当前不注册尚未实现的个人资料或日程能力。"""
+"""助理专用工具组合点；带身份的通信与提醒工具由消费宿主逐任务注入。"""
 from app.agent.core.tool import build_registry as build_core_registry
+from .finish_task import AssistantFinishTask
 
 
 def build_registrations():
@@ -7,6 +8,7 @@ def build_registrations():
 
 
 def build_registry(*,additional=()):
-    return build_core_registry(additional=(*build_registrations(),*additional))
+    return build_core_registry(finish_task=AssistantFinishTask(),
+                               additional=(*build_registrations(), *additional))
 
 __all__=['build_registrations','build_registry']

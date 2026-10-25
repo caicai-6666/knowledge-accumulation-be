@@ -1,4 +1,5 @@
-"""HTML、提取文本和精提候选只在子图内部流转，不进入外层工具结果。"""
+"""HTML及处理候选只在子图内部流转；确认直出或精炼后才发布正文。"""
+from typing import Literal
 from typing_extensions import TypedDict
 from .schema import WebPageRequest, WebPageResult
 from .image import WebImage
@@ -20,6 +21,8 @@ class WebPageState(WebPageInput, total=False):
     images: tuple[WebImage, ...]
     selected_images: tuple[WebImage, ...]
     image_hint: str
+    processing_mode: Literal["original", "refine"]
+    content_hint: str | None
     has_content: bool
     refined_content: str
     hint: str | None

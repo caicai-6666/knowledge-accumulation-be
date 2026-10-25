@@ -99,3 +99,16 @@ class QuestionTreeSnapshot:
             current = self.nodes_by_id.get(current.parent_id)
         return ContextPath(summary=summary, tasks=tuple(reversed(tasks)),
                            workspace_version_id=selected.workspace_version_id)
+
+    def ancestor_tasks(self, node_id: str) -> tuple[QuestionNode, ...]:
+        """记忆范围走完整父链；越过摘要，但不包含当前任务、兄弟分支或后代。"""
+        selected = self.nodes_by_id.get(node_id)
+        if selected is None or selected.kind != 'task':
+            raise ValueError('记忆检索必须绑定本树任务')
+        current = self.nodes_by_id.get(selected.parent_id)
+        tasks = []
+        while current is not None:
+            if current.kind == 'task':
+                tasks.append(current)
+            current = self.nodes_by_id.get(current.parent_id)
+        return tuple(reversed(tasks))

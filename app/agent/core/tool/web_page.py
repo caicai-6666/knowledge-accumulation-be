@@ -1,4 +1,4 @@
-"""网页首次打开、精炼结果驻留和翻页；每个会话独立实例。"""
+"""网页首次打开、处理结果驻留和翻页；每个会话独立实例。"""
 import asyncio
 from collections import OrderedDict, deque
 from dataclasses import dataclass
@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 class OpenWebPageArguments(BaseModel):
-    """当你需要阅读搜索候选网页并获取与当前问题相关的图文内容时，使用这个工具。首次提供来源标识和关注重点，返回精炼正文第一页及筛选出的相关图片；继续阅读同一重点时省略关注重点和页码即可翻到下一页，重看图片可指定第1页。换关注重点会重新读取并精炼。图片未能读取时会明确说明，不能凭图注声称看过图片。内容可能不完整，应保留条件与限制，不能将搜索摘要当作已核实正文。"""
+    """当你需要阅读搜索候选网页的正文和相关图片时，使用这个工具。首次提供来源标识和阅读需求，默认摘取相关原文，保留原语言及必要条件；可在focus中要求全文保留、不翻译，此时直接返回提取原文；要求局部筛选、摘要或翻译时按需求处理。返回第一页及选中图片；继续阅读同一需求时省略focus和page翻到下一页，重看图片指定page=1。修改focus会重新读取。成功返回不保证全文完整，需留意来源限制和遗漏；未读取的图片不能凭图注推断，搜索摘要不能当作已核实正文。"""
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     source_id: str = Field(min_length=1, description='网页搜索列表返回的完整source_id，原样复制，不能使用行号、结果集ID或自行编写URL代替。')
-    focus: str | None = Field(default=None, min_length=1, max_length=4000, description='希望从本页获取的内容，用自然语言明确目标对象和关注事项，例如“主商品的配置、价格及适用条件，排除推荐商品”。首次打开或原正文已不可读取时必填；后续省略或null沿用该来源最近查看且仍可读取的重点。指定不同重点会重新精炼；不要填写回答格式指令。')
+    focus: str | None = Field(default=None, min_length=1, max_length=4000, description='首次打开或原正文已不可读取时必填，1至4000字符。说明目标对象、阅读范围及必要的处理要求。普通查询默认保留相关原文及条件，不因中文提问自动翻译，例如“查看主商品的规格和退款限制，排除推荐商品”。需要全文时明确“保留全部正文、表格、代码、脚注及参考文献，保持原文，不翻译、不概括”；仅需摘要或翻译时明确范围与语言，例如“用中文概括申请条件，保留所有例外”。不要加入与阅读无关的指令。后续省略或null沿用该来源最近查看且仍可读取的需求；不同focus会重新读取和处理。全文原文直接使用提取正文，完整程度仍受来源可读性和正文提取质量限制，不能仅凭成功回执认定无遗漏。')
     keywords: list[Annotated[str, Field(min_length=1, max_length=24)]] = Field(default_factory=list, max_length=5, description='供用户查看当前动作的1至5个简短关键词，例如["处理器","内存","价格"]，从本次关注重点概括，不写完整句子、网址或来源ID。仅用于状态展示，不参与提取或缓存；省略时使用关注重点。')
     page: int | None = Field(default=None, strict=True, description='从1开始的页码。省略或null时，新结果返回第一页，已读取结果返回下一页；指定页码直接读取该页。末尾或非法页不会移动游标。')
 
@@ -44,7 +44,7 @@ class _Snapshot:
 
 
 def render_web_page(snapshot, page):
-    return '\n'.join(['# 网页精炼内容', '', f'标题：{snapshot.title}',
+    return '\n'.join(['# 网页内容', '', f'标题：{snapshot.title}',
         f'来源标识：{snapshot.source_id}', f'链接：{snapshot.result.final_url or snapshot.result.url}',
         f'抓取时间：{snapshot.result.fetched_at or "未记录"}', f'关注重点：{snapshot.focus}',
         f'第 {page} / {len(snapshot.pages)} 页', '', snapshot.pages[page - 1], '',
@@ -132,7 +132,7 @@ class WebPageViewer:
                     result = WebPageResult.model_validate(output['result'])
                     if result.status == 'error':
                         return _failure(result.error_code, result.hint)
-                    # 只分页最终精炼文本，片段顺序不变，拼接可恢复完整结果。
+                    # 只分页最终文本，片段顺序不变，拼接可恢复完整结果。
                     content = result.content
                     pages = tuple(content[i:i+self.page_chars] for i in range(0, len(content), self.page_chars))
                     snapshot = _Snapshot('web-page:' + str(uuid4()), source_id, source.title, focus, result, pages)
@@ -154,7 +154,7 @@ class WebPageViewer:
                 locator, nonce = f'page:{target}', str(uuid4())
                 reference = ToolPageReference(resource_id=snapshot.resource_id, locator=locator,
                     display_id=nonce + '.' + self._sign(snapshot.resource_id, locator, nonce),
-                    media_type='text', description=f'网页精炼内容，第{target}/{len(snapshot.pages)}页，来源{source_id}')
+                    media_type='text', description=f'网页内容，第{target}/{len(snapshot.pages)}页，来源{source_id}')
                 references = [reference]
                 # 图片集中在第一页，翻页不重复消耗视觉输入；重看第一页会生成新的展示身份。
                 if target == 1:
@@ -167,7 +167,7 @@ class WebPageViewer:
                 result = ToolExecutionResult(status='succeeded', content=FoldableToolContent(pages=references),
                     tool_result={'source_id': source_id, 'focus': snapshot.focus, 'page': target,
                                  'total_pages': len(snapshot.pages), 'image_count': len(references)-1,
-                                 'message': '已读取网页精炼内容。', 'image_notice': snapshot.result.hint})
+                                 'message': '已读取网页内容。', 'image_notice': snapshot.result.hint})
                 if defer_commit:
                     return ToolExecution(result, after_commit=commit)
                 commit()

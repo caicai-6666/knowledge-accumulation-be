@@ -10,7 +10,7 @@ from asyncmy.cursors import DictCursor
 from pydantic import TypeAdapter
 
 from app.config.database import MySQLSettings, load_mysql_settings
-from app.model.question_memory import QuestionNodeMemory, SearchableMemory, decode_embedding, encode_embedding, normalize_embedding
+from app.model.question_memory import MemoryEmbeddingJob, QuestionNodeMemory, SearchableMemory, decode_embedding, encode_embedding, normalize_embedding
 from app.model.node_persistence import NodeMessage
 from app.model.display_history import StoredDisplayHistory
 from app.model.question_tree import (
@@ -20,6 +20,19 @@ from app.model.question_tree import (
 from app.service.question_tree import ContextPath, LoadedQuestionTree, QuestionTreeSnapshot
 
 _CONTENT = TypeAdapter(NodeContent)
+
+# 只处理终态任务的完整公开消息；取消节点排除输出，私有生成与摘要从不进入扫描。
+_EMBEDDING_SOURCE = (
+    'SELECT m.*, n.tree_id, t.owner_userid, s.text AS source_text '
+    'FROM question_node_memories AS m '
+    'JOIN question_nodes AS n ON n.id=m.node_id '
+    'JOIN question_trees AS t ON t.id=n.tree_id '
+    'JOIN question_node_messages AS s ON s.id=m.source_id AND s.node_id=m.node_id AND s.kind=m.kind '
+    "WHERE n.kind='task' AND n.status IN ('complete','cancelled','superseded','failed') "
+    "AND s.status='completed' AND CHAR_LENGTH(TRIM(s.text))>0 "
+    "AND m.embedding_status IN ('pending','failed') "
+    "AND (n.status<>'cancelled' OR m.kind='question')"
+)
 
 
 class QuestionTreeNotFound(LookupError):
@@ -472,6 +485,48 @@ class MySQLQuestionTreeRepository:
         if row is None:
             raise ValueError('节点记忆不存在')
         return self._memory_row(row)
+
+    def _embedding_job(self, row):
+        values = dict(row)
+        tree_id, owner, text = values.pop('tree_id'), values.pop('owner_userid'), values.pop('source_text')
+        return MemoryEmbeddingJob(tree_id=tree_id, owner_userid=owner,
+            memory=self._memory_row(values), text=text)
+
+    async def list_memory_embedding_jobs(self, *, after_id=None, limit=32):
+        """仅供可信后台扫描；使用有界游标分页，不接受模型或 HTTP 指定查询范围。"""
+        if type(limit) is not int or not 1 <= limit <= 256:
+            raise ValueError('记忆扫描批量必须为 1 至 256 的整数')
+        if after_id is not None:
+            TypeAdapter(TreeID).validate_python(after_id)
+        clause = ' AND m.id>%s' if after_id is not None else ''
+        async with self._transaction() as cursor:
+            await cursor.execute(_EMBEDDING_SOURCE + clause + ' ORDER BY m.id LIMIT %s',
+                (after_id, limit) if after_id is not None else (limit,))
+            return [self._embedding_job(row) for row in await cursor.fetchall()]
+
+    async def store_memory_embedding(self, job: MemoryEmbeddingJob, vector):
+        """在同一树锁下复核来源后落盘；删除、失效、成功记录及过期快照不写入。"""
+        job = MemoryEmbeddingJob.model_validate(job)
+        encoded = None if vector is None else encode_embedding(normalize_embedding(vector))
+        async with self._transaction() as cursor:
+            try:
+                await self._owned_tree(cursor, job.tree_id, job.owner_userid, lock=True)
+            except QuestionTreeNotFound:
+                return False
+            await cursor.execute(_EMBEDDING_SOURCE + ' AND m.id=%s AND n.tree_id=%s FOR UPDATE',
+                (job.memory.id, job.tree_id))
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            current = self._embedding_job(row)
+            if (current.text != job.text or current.memory.node_id != job.memory.node_id
+                    or current.memory.source_id != job.memory.source_id or current.memory.kind != job.memory.kind):
+                return False
+            await cursor.execute('UPDATE question_node_memories SET embedding=%s,embedding_status=%s,embedded_at=%s WHERE id=%s',
+                (encoded, 'success' if encoded is not None else 'failed',
+                 _date(utc_now()) if encoded is not None else None, job.memory.id))
+            # 不更新树 revision、工作区或用户消息；成功结果后续扫描自然跳过。
+            return True
 
     async def complete_memory(self, tree_id: str, owner_userid: str, memory_id: str,
                               embedding: list[float] | tuple[float, ...]) -> QuestionNodeMemory:

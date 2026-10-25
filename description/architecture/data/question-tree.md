@@ -10,7 +10,7 @@
 
 ## 树、节点与摘要语义
 
-树按用途分为 `assistant`（个人 AI 助理）和 `exploration`（复杂任务探索）。`assistant` 是探索模式的简化使用方式，两者共用树、节点、摘要、工作区和记忆存储，不在底层增加禁止分支的拓扑约束。内部 `QuestionAgentService.generate` 已适配：助理模式不接受节点选择，自动从主干末端继续；探索模式允许选择历史节点继续。当前 HTTP 仅开放 exploration。
+树按用途分为 `assistant`（个人 AI 助理）和 `exploration`（复杂任务探索）。`assistant` 是探索模式的简化使用方式，两者共用树、节点、摘要、工作区和记忆存储，SQL 不另加禁止分支的拓扑约束。助理生成及节点仓库的助理入口只允许从最新主干末端继续，采用[最近摘要边界的局部加载与追加](../workflow/question-answering/assistant-memory.md)，拒绝节点选择或分支；通用树仓库不承担助理宿主规则。探索模式允许选择历史节点继续。当前 HTTP 仅开放 exploration。
 
 每棵树属于一个用户；每个任务节点表示一轮用户问题及执行记录。摘要是独立的内部节点，不是覆盖前一个任务的标签。所有节点只有一个父节点，父链决定上下文，不按创建时间、主干或分支标识推测继承关系。
 
@@ -55,7 +55,7 @@ S1 → C → D
 | --- | --- | --- |
 | `kind` | `ENUM('assistant','exploration') NOT NULL DEFAULT 'exploration'` | `assistant` 为个人助理，`exploration` 为复杂任务探索；已有树默认归为探索类型。 |
 
-新增索引 `(owner_userid, kind, updated_at, id)`，仓库已支持按用户、用途列树；原有按用户列树的索引保留。类型字段只表达用途，不改变最近摘要回溯、快照继承或分支存储规则，也不限制每个用户只能拥有一棵助理树。
+新增索引 `(owner_userid, kind, updated_at, id)`，仓库已支持按用户、用途列树；原有按用户列树的索引保留。类型字段只表达用途，不改变最近摘要回溯、快照继承或分支存储规则。后续 [011 助理存储迁移](../../../schema/011-assistant-storage.sql)另加仅作用于 assistant 树的用户唯一索引及助理绑定外键，落实每位用户至多一棵助理树；探索树数量不变。迁移前须核查历史重复树，完整约束和当前实现范围见[助理存储](assistant-storage.md)。
 
 [007-question-node-path-type.sql](../../../schema/007-question-node-path-type.sql)为节点表补充路径类型，不新增表或索引；全树读取仍使用现有树内序号索引。
 
@@ -192,3 +192,9 @@ QUESTION_TREE_TEST_MYSQL_PORT=独立临时端口 python -m unittest tests.test_q
 树用途与路径类型适配后，[专项测试](../../../tests/test_question_tree_types.py)新增 4 项离线和 8 项独立 MySQL 测试，覆盖字段校验、用户与用途筛选、摘要/分支归属、重连后的快照恢复、调用方伪造标记拒绝、助理自动起点与摘要、完整输出/推理落盘、失败起点一致性、并发冲突及损坏标记拒绝。完整回归 351 项通过，无跳过，包括 61 项独立 MySQL/MyVector 验证；`pip check` 无冲突。所有模型及外部身份请求均使用隔离替身，不代表真实模型端到端性能验收或业务库迁移完成。
 
 探索任务注册和首次订阅激活现已接入，见[任务生命周期](../workflow/question-answering/exploration-session.md#停止删除与生命周期)。整树删除在本进程先取消并等待生产者，再删除 SQL 与文件；跨进程协调不由进程锁保证。
+
+---
+
+## 主题摘要正文编码
+
+新摘要在 `SummaryContent.text` 中序列化保存主题记忆，旧纯文本仍可读取；不新增 SQL 列或改写既有记录。打开树的公开 `content.text` 保持可读正文，模型上下文同样投影主题和业务来源。完整格式、验收和后续整理规则见[主题发现与总结](../workflow/question-answering/topic-summary.md#存储与注入)。

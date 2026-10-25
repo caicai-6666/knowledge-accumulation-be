@@ -11,6 +11,7 @@ from app.repository.question_tree_deletion import QuestionTreeDeletionRepository
 from app.model.display_history import DisplayEvent, TaskDisplayHistory
 from app.schema.exploration import ExplorationNodeResponse, ExplorationTreeResponse, MessageDisplay, TaskDisplayContent
 from app.service.question_tree import LoadedQuestionTree, QuestionTreeSnapshot
+from app.agent.core.subgraph.context_management.topic_summary.rendering import display_text
 
 
 def render_tree(loaded: LoadedQuestionTree) -> ExplorationTreeResponse:
@@ -24,6 +25,9 @@ def render_tree(loaded: LoadedQuestionTree) -> ExplorationTreeResponse:
         node, content = write.node, write.content
         if isinstance(content, TaskContent):
             content = TaskDisplayContent(question=content.question, attachments=tuple(content.attachments), answer=content.answer)
+        else:
+            # 落盘保留主题来源供下次整理，公开树仍只返回可读摘要，不暴露编码结构。
+            content = content.model_copy(update={'text': display_text(content.text)})
         display = None
         if node.kind == 'task':
             recorded = loaded.display_histories.get(node.id)

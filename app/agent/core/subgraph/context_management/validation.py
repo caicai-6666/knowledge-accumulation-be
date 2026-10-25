@@ -1,23 +1,44 @@
-"""只校验整理候选的结构保真和修改目标保护，不提交状态。"""
+"""工作区整理的保护路径、预留位置与既有结论状态校验。"""
+from ...workspace import WorkspacePayload
 
 
-def validate_workspace_compression(original,candidate,protected=None):
-    if original.task_constraints!=candidate.task_constraints:
-        raise ValueError('整理不能改变用户任务和补充')
-    for region in ('known_information','explored_directions','remaining_directions'):
-        before=getattr(original,region);after=getattr(candidate,region)
-        if before.keys()!=after.keys():
-            raise ValueError('整理不能删除或新增条目身份')
-    for key,item in original.known_information.items():
-        other=candidate.known_information[key]
-        if (item.source,item.status)!=(other.source,other.status):
-            raise ValueError('整理不能改变事实来源或确认状态')
-    for key,item in original.explored_directions.items():
-        other=candidate.explored_directions[key]
-        if (item.outcome,item.information_ids)!=(other.outcome,other.information_ids):
-            raise ValueError('整理不能改变探索结果或引用')
+def get_path(data,path):
+    if not isinstance(path,str) or not path.startswith('/') or any(not p for p in path.split('/')[1:]):
+        raise ValueError('保护路径无效')
+    for part in path.split('/')[1:]:
+        if not isinstance(data,dict) or part not in data:
+            raise ValueError('保护路径不存在')
+        data=data[part]
+    return data
+
+
+def protection_paths(protected):
+    # 既有内部调用的区域/条目格式在边界转换，执行与提示词只使用绝对路径。
+    result={}
+    for key,value in (protected or {}).items():
+        if key.startswith('/'):
+            result[key]=value
+        else:
+            result.update({f'/{key}/{entry}':item for entry,item in value.items()})
+    return result
+
+
+def validate_workspace_compression(original,candidate,protected=None,reserved_path=None):
+    candidate=WorkspacePayload.model_validate(candidate.model_dump()).model_copy(deep=True)
     data=candidate.model_dump()
-    for region,entries in (protected or {}).items():
-        for key,value in entries.items():
-            if data[region].get(key)!=value:
-                raise ValueError('整理不能改写本次修改的目标条目')
+    for path,value in protection_paths(protected).items():
+        if get_path(data,path)!=value:
+            raise ValueError('整理不能改变保护目标及其引用')
+    if reserved_path:
+        parent,key=reserved_path.rsplit('/',1)
+        if key in get_path(data,parent):
+            raise ValueError('整理不能占用待处理操作的预留ID')
+    for key,item in candidate.known_information.items():
+        before=original.known_information.get(key)
+        if before and item.status!=before.status:
+            raise ValueError('整理不能改变已有信息确认状态')
+    for key,item in candidate.explored_directions.items():
+        before=original.explored_directions.get(key)
+        if before is None or item.outcome!=before.outcome:
+            raise ValueError('整理不能创建探索成果或改变已有结果')
+    return candidate

@@ -54,7 +54,15 @@ class MemoryJournal:
         self.generations.append(generation)
         await self._save_generation(generation)
 
-    async def commit(self,*,workspace,exchanges,output=None,final=False):
+    async def record_file_retrieval(self, event):
+        """保留子检索完整反馈，成功后的模型上下文可以清除连续失败轨迹。"""
+        generation = NodeGeneration(node_id=self.node_id, status='complete',
+            payload=GenerationPayload(purpose='file_retrieval',
+                assistant_message=deepcopy(event['assistant_message']), raw_response=deepcopy(event)))
+        self.generations.append(generation)
+        await self._save_generation(generation)
+
+    async def commit(self,*,workspace,exchanges,output=None,final=False,output_id=None):
         if self.status!='generating':
             raise RuntimeError('运行已结束')
         self.workspace=workspace.model_copy(deep=True)
@@ -94,13 +102,14 @@ class NodeJournal(MemoryJournal):
             self.restored=await self.repository.append_terminal_generation(self.tree_id,self.owner,self.node_id,event)
             self.status=self.restored.node.status
 
-    async def commit(self,*,workspace,exchanges,output=None,final=False):
+    async def commit(self,*,workspace,exchanges,output=None,final=False,output_id=None):
         if self.status!='generating':
             raise RuntimeError('运行已结束')
         version=None
         if workspace.model_dump()!=self.restored.workspace.content:
             version=WorkspaceVersion(tree_id=self.tree_id,content=workspace.model_dump(mode='json'))
-        event=NodeMessage(node_id=self.node_id,kind='final' if final else 'intermediate',text=output) if output is not None else None
+        event=NodeMessage(node_id=self.node_id,kind='final' if final else 'intermediate',text=output,
+            **({'id':output_id} if output_id is not None else {})) if output is not None else None
         kwargs={'expected_revision':self.restored.tree.revision,'workspace':version,'exchanges':exchanges}
         if final:
             if event is None:
@@ -110,7 +119,7 @@ class NodeJournal(MemoryJournal):
             updated=await self.repository.checkpoint(self.tree_id,self.owner,self.node_id,events=(event,) if event else (),**kwargs)
         self.restored=updated
         # 数据库确认后才更新内存和发布回执；提交不确定时上抛并停止，不重放。
-        await super().commit(workspace=workspace,exchanges=exchanges,output=output,final=final)
+        await super().commit(workspace=workspace,exchanges=exchanges,output=output,final=final,output_id=output_id)
 
     async def abort(self,status):
         if status=='cancelled' and self.cancellation_status is not None:

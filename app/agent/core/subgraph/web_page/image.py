@@ -4,13 +4,13 @@ import base64
 import hashlib
 import ipaddress
 from io import BytesIO
-import socket
 from urllib.parse import urljoin, urldefrag
 import warnings
 
 import httpx
 from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field
+from app.infrastructure.public_dns import resolve_public_address as _public_address
 
 
 class WebImage(BaseModel):
@@ -71,17 +71,6 @@ def extract_candidates(root, base_url, limit):
     return selected
 
 
-async def _public_address(host, port):
-    try:
-        addresses = [str(ipaddress.ip_address(host))]
-    except ValueError:
-        records = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        addresses = list(dict.fromkeys(row[4][0] for row in records))
-    if not addresses or any((not ipaddress.ip_address(address).is_global or ipaddress.ip_address(address).is_multicast) for address in addresses):
-        raise ValueError('图片地址不能指向本地或内网')
-    return addresses[0]
-
-
 def _normalize(content, max_pixels, max_side, max_bytes):
     with warnings.catch_warnings():
         warnings.simplefilter('error', Image.DecompressionBombWarning)
@@ -109,13 +98,18 @@ async def download_images(candidates, *, transport=None, timeout_seconds=15, max
     """逐图下载，共享总时限；固定经校验的公网 IP，逐跳校验，失败只影响该图。"""
     images, seen, failed = [], set(), 0
     resolver = resolver or _public_address
+    addresses = {}
     try:
         async with asyncio.timeout(timeout_seconds):
             for index, candidate in enumerate(candidates, 1):
                 try:
                     current = _url(candidate['url'])
                     for hop in range(4):
-                        address = await resolver(current.host, current.port or (443 if current.scheme == 'https' else 80))
+                        endpoint = (current.host, current.port or (443 if current.scheme == 'https' else 80))
+                        # 仅在本次下载中复用已校验地址，三张同源图无需重复 HTTPS DNS 查询。
+                        if endpoint not in addresses:
+                            addresses[endpoint] = await resolver(*endpoint)
+                        address = addresses[endpoint]
                         if not ipaddress.ip_address(address).is_global or ipaddress.ip_address(address).is_multicast:
                             raise ValueError('图片地址不是公网 IP')
                         target = current.copy_with(host=address)

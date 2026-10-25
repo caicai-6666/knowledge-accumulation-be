@@ -4,7 +4,7 @@
 
 探索问答复用 contract-service-be 的两阶段交互：先注册任务并返回 `turn_id`，前端首次订阅该任务 SSE 才激活执行。路由在 `app/router/exploration_turn.py`，输入与公开快照在 `app/schema/exploration_turn.py`，进程内任务、回放和生命周期在 `app/service/exploration_turn.py`。请求路径和示例见[探索 API](../../../api/exploration.md#注册探索任务)。
 
-新探索先通过[创建问答树](../../../api/exploration.md#创建问答树)获得服务端 ID，再注册首问；也可延续本人已有 exploration 树，不开放 assistant 创建。归属和平台等级均取中央认证所得身份，不接受客户端指定用户、权限或模型角色。创建、订阅、快照、取消请求分别校验中央 token；已建立的连接和后台任务不周期查询中央，下一次 HTTP 请求重新验证。
+新探索先通过[创建问答树](../../../api/exploration.md#创建问答树)获得服务端 ID，再注册首问；也可延续本人已有 exploration 树，不开放 assistant 创建。归属和平台等级均取中央认证所得身份，不接受客户端指定用户、权限或模型角色。创建、订阅、快照、取消请求分别校验中央 token；已建立的连接和后台任务不周期查询中央，下一次 HTTP 请求重新验证。[注册中心文件查看](registry-file-reading.md)另在每次GET原件时由registry校验；首次SSE激活的用户Bearer只在本轮生产者内存中持有，不进入轮次状态或数据库，结束后释放。
 
 ---
 
@@ -44,22 +44,41 @@
 
 事件使用 `id: <sequence>`、`event: <type>`、JSON `data`。序号在单任务内递增；心跳为 `: heartbeat`，不占序号。支持 `turn.status`、`task.progress`、`message.delta`、`message.completed`、`error`。
 
-Core 目前按通过校验且已落库的完整公开输出调用发布器，因此一条输出发送一次包含完整正文的 `message.delta`，随后 `message.completed`。这不是未经校验的模型逐 token 直播。前端按 `message_id` 累积 delta，收到 completed 后以其 `text` 覆盖正文；消息 ID 与打开树返回的 SQL 消息 ID 相同。原生推理、工具参数、私有生成、工作区内部内容和图片 base64 不进入 SSE。
+exploration 中所有列表查看工具统一发布 `task.progress.type=thinking`，提示文案继续说明正在查看的内容：
+
+| 工具 | 提示文案 |
+| --- | --- |
+| `view_web_search_results` | 正在查看搜索结果 |
+| `view_file_candidates` | 正在查看文件列表 |
+| `view_memory_query` | 正在查看历史记忆 |
+| `list_sub_management_platforms` | 正在查看子管理平台 |
+
+探索包沿用 contract-service-be 的输出工具流式展示：MLLM 收到分片后构造累计工具消息，[`exploration/output_stream.py`](../../../../app/agent/exploration/output_stream.py) 的 `InteractionOutputStream` 只解码 `emit_progress/finish_task` 参数中已经完整到达的 `content` 字符，立即发送 `message.delta`。不等待整次生成结束，不通过 sleep 模拟流式。JSON 转义、中文及 UTF-16 代理对跨片时，等字符完整后再发送；单个事件最多携带 512 个字符，短分片不等待凑满。
+
+前端按 `message_id` 追加 delta，此时消息状态为 `streaming`。完整调用通过协议、参数及执行校验，并完成节点 SQL 提交后，才发送 `message.completed(status=completed)`；前端以其 `text` 覆盖正文。预览 ID 直接用于节点公开消息落盘，避免完成后出现第二条重复答案。中途输出后继续执行，最终输出后再发布任务终态。
+
+生成截断、非法调用、停止或改变方向时，已展示正文通过 `message.completed(status=interrupted)` 收束。纠正后的输出使用新 ID。预览及中断正文只属于展示历史，不写入权威答案、有效工具交互、工作区或记忆向量。原生推理、普通模型文本、非输出工具参数、私有生成和图片 base64 均不进入 SSE。提交回执不明或交付取消时，宿主先回查 SQL：已提交的公开消息恢复为 completed，不能误判为中断答案；其余预览在任务终态前标记 interrupted。
+
+Core 的 `publish_stream(event, data)` 是独立的展示回调，由 `QuestionAgentService` 透传；内部非流式调用仍可使用原有 `publish(kind, text)`。同时提供时优先使用流式回调，避免重复发布。展示交付故障不会重放模型请求。
 
 - 首次激活期限 180 秒，超过后为 `expired`，释放暂存文件字节，订阅返回 `410`。
 - 断线只释放订阅；生产者继续。多次或并发订阅不重复执行模型。
 - 事件缓存每任务最多 512 条，任务快照保存累计公开消息；终态保留 1800 秒。
 - `Last-Event-ID` 缺省 0，必须是最多 20 位 ASCII 非负整数。超前或过旧返回 `409`；先读快照、以 `last_sequence` 重连。流已开始时用无 `id` 的连接级 `error` 提示恢复，不更改业务终态。
 - 空闲每 15 秒心跳。进程最多驻留 128 个任务，暂存附件总量最多 256 MiB；满时 `503`，不驱逐正在执行的任务。每秒清理过期任务。
-- 模型设置和客户端首次激活时装配，未设置模型地址不影响只读树 API 启动。总执行时限沿用 Core；不读取或修改其他项目配置。
+- 模型设置和客户端首次激活时装配，未设置模型地址不影响只读树 API 启动。整轮任务无总运行时间限制；单次模型/HTTP/SQL超时及停止、替代、停机清理仍生效；不读取或修改其他项目配置。
 
 这些容量由服务构造参数明确提供，当前没有新增 `.env` 配置项。
 
-展示过程沿用 contract-service-be 的精简事件投影：独立于有界回放队列保存 `turn.status/task.progress/message.completed/error`，过滤 delta、心跳和连接级错误，但保留原始事件序号及最后游标。字段定义见[打开问答树](../../../api/exploration.md#打开问答树)。任务快照另返回最近动作 `progress`，终态保留仅供展示。
+[树列表](../../../api/exploration.md#获取问答树列表)通过 `ExplorationTurnService.running_tree_ids` 在事件条件锁下批量读取本人执行状态，返回 `has_running_task`；仅计入 `processing` 且生产协程未结束的任务，不激活任务、不读取节点。列表与执行状态同属本进程，多实例需将同一用户的列表和任务请求路由到同一实例。
+
+展示过程沿用 contract-service-be 的精简事件投影：独立于有界回放队列保存 `turn.status/task.progress/message.completed/error`，过滤 delta、心跳和连接级错误，但保留原始事件序号及最后游标。正在生成的正文另存为 `streaming_messages` 累计快照，完成或中断时移出快照并归档为 message.completed。字段定义见[打开问答树](../../../api/exploration.md#打开问答树)。任务快照另返回最近动作 `progress`，终态保留仅供展示。
 
 本项目使用 MySQL 的 `question_node_contents.display_history` JSON 列，部署需手工执行 [010 迁移](../../../../schema/010-question-node-display.sql)。该列与上下文 `content` 独立，节点检查点不会覆盖它，也不会把动作记录注入模型或生成向量；整树删除随正文行一起清理。保存时校验用户、树和节点归属，并持树行锁拒绝游标回退、历史改写及已记录终态后的追加；展示写入不推进模型 revision。
 
 有 SQL 节点后，事件快照先保存成功再进入 SSE 队列；节点登记之前的 pending/processing 暂存在内存，节点就绪时一起保存。没有创建 SQL 节点便终止的待激活或准备失败任务仍只驻留内存，不制造空节点。写入等待最长 5 秒，取消须等待本次提交或回滚完成；数据库故障停止任务，实时发送脱敏失败通知，已保存前缀与 SQL 消息保留。失败通知本身可能无法保存，打开树以节点当前状态为准，不伪造缺失事件。登记、节点终态和展示快照分属事务，崩溃也可能留下末尾不完整的展示记录；不宣称与 SQL 状态跨事务原子提交。
+
+进程异常退出可能留下最后确认的 streaming 快照；该片段不代表答案完成，打开树须结合节点状态展示，不自动恢复执行。
 
 完整展示历史不受 512 条回放窗口限制。当前按任务写入完整 JSON 快照，适合现有受轮数限制的任务；读树时在一致性事务中批量加载，未引入独立事件分页接口或后台补写器。
 
@@ -106,3 +125,10 @@ Core 目前按通过校验且已落库的完整公开输出调用发布器，因
 
 
 展示恢复专项为 `tests/test_display_history.py`、`tests/test_display_history_mysql.py`：覆盖旧记录、不截断历史、取消等待提交、数据库故障、真实 MySQL 重建服务读取、用户隔离、历史幂等/防回退及删除。网页 SSE 测试逐项比较实际事件与打开树展示记录；改变方向测试检查旧/新任务历史关系。
+
+
+---
+
+## 流式输出隔离验证
+
+`tests/test_output_stream.py` 使用实际 MLLM 流消费、Core 和探索 SSE 服务，模型响应由 MockTransport 提供。通过在半段正文后阻塞传输，确认订阅端在模型结束前已收到 delta；覆盖中途/最终输出、跨片转义与代理对、校验失败与纠错、断流、取消、改变方向、快照重连、历史恢复、存储故障与 SQL 消息 ID 一致性。不访问真实模型、数据库、附件或默认 data 目录。

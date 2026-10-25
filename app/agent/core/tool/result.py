@@ -1,5 +1,5 @@
 """工具执行事实与提交回调；内容类别独立于成功、失败和不确定状态。"""
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -76,7 +76,7 @@ class ToolExecutionResult(ResultModel):
 class ToolExecution:
     """宿主内部信封；回调不属于可序列化结果，也不进入模型上下文。"""
     result: ToolExecutionResult
-    after_commit: Callable[[], None] | None = None
+    after_commit: Callable[[], None | Awaitable[None]] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'result', ToolExecutionResult.model_validate(self.result))

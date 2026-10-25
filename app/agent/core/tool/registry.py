@@ -1,5 +1,6 @@
 """唯一工具注册契约：Schema、兼容解析和预演处理器共同绑定。"""
 from dataclasses import dataclass
+from typing import Literal
 from types import MappingProxyType
 from collections.abc import Callable
 import re
@@ -23,6 +24,10 @@ class RegisteredTool:
     # 所有工具注册时均声明动作类型；基础工具默认思考，专用工具显式覆盖。
     progress: ToolProgress = DEFAULT_TOOL_PROGRESS
     progress_factory: Callable | None = None
+    # 公共输出提交与流式预览读取此声明，不按模式或工具名猜测行为。
+    output_kind: Literal["intermediate", "final"] | None = None
+    # 输出仍须提交，只有通过此条件才交给宿主发送；条件不进入模型 Schema。
+    deliver_output: Callable | None = None
 
     def definition(self):
         return {'type':'function','function':{'name':self.name,'description':self.description,
@@ -72,11 +77,29 @@ class ToolRegistry:
                 raise TypeError('动态工具状态必须可调用')
             if 'foldable' in entry.return_types and (entry.executor is None or entry.page_resolver is None):
                 raise ValueError('可折叠工具必须绑定执行器和页面解析器')
+            if entry.output_kind not in (None, 'intermediate', 'final'):
+                raise ValueError('不支持的公开输出类别')
+            if entry.deliver_output is not None and (entry.output_kind is None or not callable(entry.deliver_output)):
+                raise ValueError('条件交付只适用于输出工具，且必须可调用')
             schema=entry.definition()['function']['parameters']
+            if entry.output_kind is not None:
+                content=schema.get('properties',{}).get('content',{})
+                if content.get('type')!='string' or 'content' not in schema.get('required',[]):
+                    raise ValueError('公开输出工具必须声明必填字符串 content')
             if schema.get('type')!='object':raise ValueError('工具参数顶层必须为对象')
             check_descriptions(schema)
             self.entries[entry.name]=entry
         self.entries=MappingProxyType(self.entries)
+
+    def require_mode_tools(self):
+        """主循环必须具有模式最终输出；独立子工具集合仍可只构造 ToolRegistry。"""
+        from .base import OutputArguments
+        final = self.entries.get('finish_task')
+        if final is None or final.output_kind != 'final' or not issubclass(final.arguments_model, OutputArguments):
+            raise ValueError('必须提供满足契约的模式 finish_task 实现')
+
+    def output_kinds(self):
+        return {name:entry.output_kind for name,entry in self.entries.items() if entry.output_kind is not None}
 
     def definitions(self):
         return [entry.definition() for entry in self.entries.values()]
@@ -111,6 +134,9 @@ class ToolRegistry:
         entry=self.entries[name]
         progress=(entry.progress_factory(arguments.model_copy(deep=True))
                   if entry.progress_factory is not None else entry.progress)
+        # 文件名称等动作资料须先异步鉴权读取；同步状态工厂继续按原契约执行。
+        if isawaitable(progress):
+            progress=await progress
         if not isinstance(progress,ToolProgress):
             raise TypeError('动态工具状态必须返回 ToolProgress')
         if publish_progress is not None:
@@ -138,10 +164,20 @@ class ToolRegistry:
         return ToolExecution(result.model_copy(deep=True),execution.after_commit)
 
 
-def build_registry(*, additional=()):
-    # 各能力只负责自己的注册，组合入口不按工具名前缀猜测解析方式。
+def build_builtin_registrations():
+    """可直接复用的基础工具；不含必须由模式实现的最终输出。"""
     from .workspace import build_workspace_registrations
-    from .interaction import build_interaction_registrations
     from .context import build_context_registrations
-    return ToolRegistry([*build_workspace_registrations(),*build_interaction_registrations(),
-        *build_context_registrations(),*additional])
+    from .date_calculator import build_date_calculation_registration
+    from .current_time import build_current_time_registration
+    return [build_date_calculation_registration(), build_current_time_registration(),
+            *build_workspace_registrations(), *build_context_registrations()]
+
+
+def build_registry(*, finish_task, additional=()):
+    from .base import FinishTaskTool
+    if not isinstance(finish_task, FinishTaskTool):
+        raise TypeError('必须显式提供继承 FinishTaskTool 的模式实现')
+    registry = ToolRegistry([*build_builtin_registrations(), finish_task.build_registration(), *additional])
+    registry.require_mode_tools()
+    return registry

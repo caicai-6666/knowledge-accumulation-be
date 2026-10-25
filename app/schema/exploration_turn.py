@@ -32,7 +32,7 @@ class TurnMessage(TreeModel):
     message_id: TreeID
     message_kind: Literal['intermediate', 'final']
     text: str
-    status: Literal['completed'] = 'completed'
+    status: Literal['streaming', 'completed', 'interrupted'] = 'completed'
 
 
 class TurnSnapshot(TreeModel):

@@ -12,6 +12,7 @@
 | `asyncmy` | 基于 asyncio 的 MySQL/MariaDB 驱动，支持异步连接与连接池。 | `import asyncmy` |
 | `cryptography` | 为 asyncmy 的 `caching_sha2_password` / `sha256_password` 完整 RSA 认证提供加密实现。 | 由驱动认证模块调用。 |
 | `httpx` | 中间件异步 HTTP 客户端。 | `httpx.AsyncClient` |
+| `websockets==16.1.1` | 钉钉机器人 Stream 长连接；与异步 HTTP 适配配合，不跟随重定向或环境代理。 | `websockets.asyncio.client.connect` |
 | `pydantic` | 接入配置及响应契约校验。 | `BaseModel`、`SecretStr` |
 | `PyYAML` | Core 工作区及任务元数据的可读 YAML 展示。 | `yaml.SafeDumper`、`safe_dump` |
 | `python-dotenv` | 加载项目根目录 `.env`。 | `dotenv_values` |
@@ -52,7 +53,7 @@ python -m pip check
 
 ## 当前边界
 
-FastAPI 应用及中间件接入已实现，启动方式见[中间件平台注册与心跳](../infrastructure/middleware.md)。人员仓库、钉钉和头像适配见[用户基础设施](../infrastructure/user-infrastructure.md)，启动自动同步用户及管理员总表。问答树及记忆已提供存储仓库，另有 [MyVector/vLLM 适配](../infrastructure/myvector.md)；内部 Core 已支持[图像阅读](../../architecture/workflow/question-answering/image-reading.md)，已接入探索问答 HTTP/SSE，启动不自动发起模型请求。
+FastAPI 应用及中间件接入已实现，启动方式见[中间件平台注册与心跳](../infrastructure/middleware.md)。人员仓库、钉钉和头像适配见[用户基础设施](../infrastructure/user-infrastructure.md)，启动自动同步用户及管理员总表。问答树及记忆已提供存储仓库，另有 [MyVector/vLLM 适配](../infrastructure/myvector.md)；内部 Core 已支持[图像阅读](../../architecture/workflow/question-answering/image-reading.md)，已接入探索问答 HTTP/SSE，配置 Embedding 地址后启动[记忆自动向量化](memory-embedding.md)，后台扫描已落盘消息并请求向量模型；主模型仍按问答需求调用。
 
 本地依赖检查覆盖包兼容性、模块导入、异步客户端初始化与关闭、最小状态图及 RSA 分支，不发送模型请求或连接数据库。协作方隔离 MySQL 8.4 补验通过；真实模型样例另见[Core 实验](../../../experiment/agent-core/20261021-package-prompts/analysis.md)，不代表生产钉钉或共享业务服务已验收。测试和联调必须遵守[项目开发规范](../../../AGENTS.md)的数据目录边界。
 

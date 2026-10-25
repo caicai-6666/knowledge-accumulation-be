@@ -1,0 +1,137 @@
+"""增量规划 → 并行生成 → 全量验收；任一失败不产生部分摘要。"""
+import asyncio
+from copy import deepcopy
+from app.infrastructure.tool_tag import tool_tag_section
+from ....context_budget import validate_count
+from ....json_codec import load_model_json, validate_model_payload, validate_model_json
+from .schema import (SummaryTopic, FinishPlanningArguments, TopicGenerationOutput,
+    TopicSummary, TopicMemory, planning_tools, generation_schema)
+from .prompt import build_topic_planning_prompt, TOPIC_GENERATION_PROMPT
+from .rendering import prepare_sources, render_material, render_topic
+from .sampling import summary_generation
+
+
+async def checked_generate(messages, tools, generation, *, generate, counter, context_window, **kwargs):
+    count = validate_count(await counter(messages, tools, generation))
+    if count + generation.max_completion_tokens > context_window:
+        raise ValueError('主题整理输入与输出预留超过上下文上限')
+    return await generate(messages, tools, generation, **kwargs)
+
+
+def validate_topic(topic, tasks, previous):
+    if not set(topic.task_ids) <= tasks.keys() or not set(topic.previous_topic_ids) <= previous.keys():
+        raise ValueError('主题只能引用实际提供的来源')
+
+
+async def plan_topics(tasks, previous, *, focus, generate, counter, generation, context_window,
+                      max_errors, tool_call_template):
+    tools = planning_tools()
+    base = [{'role': 'system', 'content': build_topic_planning_prompt(tool_call_template)},
+        {'role': 'user', 'content': render_material(tasks, previous)+'\n\n整理重点：'+focus}]
+    topics = {}
+    temporary = []
+    errors = 0
+    for _ in range(96):
+        # 权威主题集合每轮重建；合法动作后清除整段错误调用及反馈。
+        from ....context_rendering.block import metadata_block
+        state = {'role': 'user', 'content': '已接受的主题选择：\n'+metadata_block(
+            [t.model_dump() for t in topics.values()])}
+        response = await checked_generate(base+[state]+temporary, tools, generation,
+            generate=generate, counter=counter, context_window=context_window)
+        try:
+            if response.assistant_message.get('refusal') or response.finish_reason not in ('stop', 'tool_calls'):
+                raise ValueError('主题规划未完成生成')
+            if not response.tool_calls and response.finish_reason == 'stop' and any(
+                    isinstance(response.assistant_message.get(key), str) and response.assistant_message[key].strip()
+                    for key in ('content', 'reasoning', 'reasoning_content')):
+                # 分析文字仅暂存，不变更主题集合；原生推理始终只进入私有生成审计。
+                if response.content and response.content.strip():
+                    temporary.append({'role': 'assistant', 'content': response.content})
+                temporary.append({'role': 'user', 'content': '主题集合未修改，规划尚未完成；准备好后用extract_topic提交主题，最终用finish_topic_planning结束。'})
+                continue
+            if len(response.tool_calls) != 1 or response.content not in ('', None):
+                raise ValueError('每次只提交一个主题工具')
+            call = response.tool_calls[0]
+            if call.name == 'extract_topic':
+                topic = validate_model_payload(SummaryTopic, load_model_json(call.arguments))
+                validate_topic(topic, tasks, previous)
+                if topic.topic_id not in topics and len(topics) >= 32:
+                    raise ValueError('主题数量超过32个')
+                topics[topic.topic_id] = topic
+                errors = 0
+                temporary.clear()
+            elif call.name == 'finish_topic_planning':
+                validate_model_payload(FinishPlanningArguments, load_model_json(call.arguments))
+                return list(topics.values())
+            else:
+                raise ValueError('只能提交主题规划工具')
+        except (ValueError, TypeError):
+            errors += 1
+            if errors >= max_errors:
+                raise ValueError('主题规划连续未通过验收') from None
+            # 不回显无效参数、异常信息或伪造标识；完整原始响应由调用边界保存。
+            temporary.append({'role': 'user', 'content': '本次动作未接受。请只调用一个规划工具，按Schema提交完整字段；只引用已提供来源，不重复引用，每个主题至少一种来源，最多32个主题。'
+                + tool_tag_section(tool_call_template)})
+    raise ValueError('主题规划超过最大轮数')
+
+
+async def generate_topic(topic, tasks, previous, *, generate, counter, generation,
+                         context_window, max_errors):
+    selected_tasks = {k: v for k, v in tasks.items() if k in topic.task_ids}
+    selected_previous = {k: v for k, v in previous.items() if k in topic.previous_topic_ids}
+    base = [{'role': 'system', 'content': TOPIC_GENERATION_PROMPT},
+        {'role': 'user', 'content': render_material(selected_tasks, selected_previous)+'\n\n'+render_topic(topic)}]
+    messages = deepcopy(base)
+    for _ in range(max_errors):
+        response = await checked_generate(messages, [], generation, generate=generate,
+            counter=counter, context_window=context_window, json_schema=generation_schema())
+        try:
+            if response.tool_calls or response.finish_reason != 'stop' or response.assistant_message.get('refusal'):
+                raise ValueError('主题总结必须提交完整JSON正文')
+            result = validate_model_json(TopicGenerationOutput, response.content).summary
+            for item in result.current_memory + result.open_items:
+                if not set(item.task_ids) <= selected_tasks.keys():
+                    raise ValueError('摘要引用超出分配来源')
+            summary = TopicSummary(topic_id=topic.topic_id, title=topic.title, **result.model_dump())
+            return summary
+        except (ValueError, TypeError):
+            messages = base+[{'role': 'user', 'content': '摘要未通过验收。仅输出完整summary JSON及其current_memory/open_items；条目字段完整、引用限于所给任务且不重复，不添加事实。'}]
+    raise ValueError('主题总结连续未通过验收')
+
+
+def reduce_topics(plan, summaries):
+    by_id = {s.topic_id: s for s in summaries}
+    if len(by_id) != len(summaries) or set(by_id) != {t.topic_id for t in plan}:
+        raise ValueError('主题结果缺失、重复或包含未规划主题')
+    for topic in plan:
+        summary = by_id[topic.topic_id]
+        if summary.title != topic.title or any(not set(i.task_ids) <= set(topic.task_ids)
+                for i in summary.current_memory + summary.open_items):
+            raise ValueError('主题结果与规划不一致')
+    return TopicMemory(topics=[by_id[t.topic_id] for t in plan])
+
+
+async def summarize(*, source, focus, generate, counter, generation, context_window,
+                    max_errors, summary_limit, tool_call_template):
+    tasks, previous = prepare_sources(source)
+    # generation 由宿主传入配置快照；不能传用户本轮请求覆盖后的主任务档位。
+    generation = summary_generation(generation)
+    common = dict(generate=generate, counter=counter, generation=generation,
+        context_window=context_window, max_errors=max_errors)
+    plan = await plan_topics(tasks, previous, focus=focus, tool_call_template=tool_call_template, **common)
+    pending = [asyncio.create_task(generate_topic(topic, tasks, previous, **common)) for topic in plan]
+    try:
+        summaries = await asyncio.gather(*pending)
+    except BaseException:
+        # 一个主题失败或外层取消时，取消并等待其他分支，避免后台继续写审计。
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise
+    memory = reduce_topics(plan, summaries)
+    from ....context_rendering.summary import render_summary_section
+    text = memory.model_dump_json()
+    count = validate_count(await counter([{'role': 'user', 'content': render_summary_section(text)}], [], generation))
+    if count >= summary_limit:
+        raise ValueError('完整主题摘要未达到容量目标')
+    return text

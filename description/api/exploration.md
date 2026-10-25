@@ -22,15 +22,15 @@
 
 ## 获取问答树列表
 
-`GET /knowledge-accumulation/api/exploration/trees`：获取当前用户的全部探索问答树，仅返回树 ID 和名称。
+`GET /knowledge-accumulation/api/exploration/trees`：获取当前用户的全部探索问答树，返回树 ID、名称及是否有任务正在执行。
 
 - **认证方式**：必填 header `Authorization: Bearer <access_token>`，使用显式登录签发的中央用户 token。每次请求查询中央会话，不隐式登录或恢复失效 token。
 - **请求参数**：无 query 参数、无请求体；传入任何 query 或非空请求体返回 `422`。不接受客户端传入 userid 或树类型。
-- **成功响应**：`200 application/json`，对象数组，每项只有 `id`（32 位小写十六进制字符串）和 `name`（树名称）；没有探索树返回 `[]`。附带 `Cache-Control: no-store`。
+- **成功响应**：`200 application/json`，对象数组，每项包含 `id`（32 位小写十六进制字符串）、`name`（树名称）和 `has_running_task`（布尔值，是否有任务正在执行）；没有探索树返回 `[]`。附带 `Cache-Control: no-store`。
 
 ```json
 [
-  {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "技术方案比较"}
+  {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "技术方案比较", "has_running_task": true}
 ]
 ```
 
@@ -41,7 +41,7 @@
 | `401` | Bearer 缺失、不合法或中央用户会话失效 | `{"detail":"用户 token 无效、过期或中央登录已离线"}` |
 | `422` | 携带额外查询参数或请求体 | `{"detail":"请求参数不合法"}` |
 | `503` | 认证依赖不可用 | 脱敏 `detail`，遵循[身份查询契约](auth.md#查询当前身份) |
-| `503` | 数据库故障、超时或仓库未装配 | `{"detail":"问答树列表暂不可用"}` |
+| `503` | 数据库故障、超时或仓库/任务服务未装配 | `{"detail":"问答树列表暂不可用"}` |
 
 错误响应同样附带 `Cache-Control: no-store`；认证依赖故障不作为用户失效处理，数据库故障不降级为空列表。
 
@@ -52,7 +52,11 @@ curl -i http://127.0.0.1:24000/knowledge-accumulation/api/exploration/trees \
   -H 'Authorization: Bearer <access_token>'
 ```
 
+`has_running_task` 取当前请求时刻的进程内执行状态：只有 `processing` 且生产协程尚未结束时为 `true`。待激活 `pending_activation`、完成、失败、停止、被替代及过期均为 `false`；SSE 断线后仍在后台执行则为 `true`。它是状态快照，不是执行锁，不能代替注册接口的并发校验。创建和改名响应仍只含 `id/name`。
+
 查询仅使用认证所得的 userid，并在 SQL 中固定筛选 `kind='exploration'`；排除 `assistant` 个人助理树及其他用户的所有树。按 `updated_at DESC, id DESC` 排序，当前返回全部匹配项、不分页；只读取树表的 `id/name`，不加载节点、正文或工作区，不要求管理员或文件访问等级。
+
+执行标识批量读取当前用户的任务状态，不按树查询节点，也不将 SQL 遗留的 `generating` 当作仍在执行。当前任务调度仅驻留本进程；多实例时列表请求必须与该用户的任务路由到同一实例，不能用任意实例的列表判断全局状态，详见[任务生命周期边界](../architecture/workflow/question-answering/exploration-session.md#停止删除与生命周期)。
 
 ---
 
@@ -169,7 +173,7 @@ curl -i -X PATCH http://127.0.0.1:24000/knowledge-accumulation/api/exploration/t
 | --- | --- |
 | `events` | 按原始 SSE 序号排序的 `{sequence,event,data}`，仅含 `turn.status/task.progress/message.completed/error`；`data` 与实时 SSE 一致。 |
 | `last_sequence` | 已确认的 SSE 游标，包含过滤的 delta，所以事件序号可不连续；旧记录为 `null`。 |
-| `streaming_messages` | 当前为 `[]`，Core 只发布已验收的完整公开输出，没有待恢复的逐字半成品。 |
+| `streaming_messages` | 当前未收束正文的累计快照，每项为 `message_id/message_kind/text/status`，status 为 `streaming`；完成或中断后移入 events。异常退出留下的片段不代表答案完成，不自动恢复执行。 |
 | `event_source` | `recorded` 为真实事件记录；`legacy` 只从已有公开输出恢复 `message.completed`，事件 sequence 为 `null`，不补造动作、错误或状态变化。 |
 
 例如一次真实工具动作对应的历史事件（仅展示 `display` 中的一项）：
@@ -333,7 +337,7 @@ curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/exploration/tree
 
 `GET /knowledge-accumulation/api/exploration/trees/{tree_id}/turns/{turn_id}/events`
 
-携带中央用户 Bearer，无 query/body。可选 `Last-Event-ID: <sequence>`，默认 0；必须是最多 20 位 ASCII 非负整数。首次订阅在归属、游标和最新树状态校验通过后激活一次，随后订阅只回放和追踪同一任务。无需再调用独立 activate API。
+携带中央用户 Bearer，无 query/body。可选 `Last-Event-ID: <sequence>`，默认 0；必须是最多 20 位 ASCII 非负整数。首次订阅在归属、游标和最新树状态校验通过后激活一次，随后订阅只回放和追踪同一任务。无需再调用独立 activate API。首次激活的同一用户Bearer仅在本轮后台任务内用于[注册中心原件授权读取](../architecture/workflow/question-answering/registry-file-reading.md)，不进入任务快照、SSE或数据库；重连不会替换正在执行任务的凭据。
 
 成功 `200 text/event-stream`，`Cache-Control: no-cache, no-transform`、`X-Accel-Buffering: no`。示例：
 
@@ -354,12 +358,12 @@ data: {"turn_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"processing","can_i
 | event | data 主要字段 |
 | --- | --- |
 | `turn.status` | `turn_id/status/can_interrupt/context_status/created_at/activated_at/finished_at/processing_duration_ms/node_id/summary_id/supersedes_turn_id/superseded_by_turn_id` |
-| `task.progress` | `turn_id/type/message`；type 为 `thinking`（思考）、`online-search`（网页检索/读取）或 `external-expert`（专家咨询/追问）；基础工具默认声明 `thinking`，每个工具执行前发布其注册状态，结束恢复 `thinking`；message 为不超过 2000 字符的动作提示 |
+| `task.progress` | `turn_id/type/message`；type 为 `thinking`（思考）、`online-search`（网页检索/读取）、`external-expert`（专家咨询/追问）或 `local-search`（注册中心文件检索）；基础工具默认声明 `thinking`，每个工具执行前发布其注册状态，结束恢复 `thinking`；message 为不超过 2000 字符的动作提示 |
 | `message.delta` | `turn_id/message_id/message_kind/delta`；kind 为 `intermediate/final` |
-| `message.completed` | `turn_id/message_id/message_kind/text/status`，status 为 `completed` |
+| `message.completed` | `turn_id/message_id/message_kind/text/status`；status 为 `completed`（已验收落盘）或 `interrupted`（预览中断） |
 | `error` | `turn_id/code/message/retryable`，脱敏错误 |
 
-输出在 Core 校验并落库后发送：当前一条完整公开输出对应一次 delta 和一次 completed，**不是模型原生逐 token 推理流**。前端追加 delta，completed 的 text 覆盖该消息正文。消息 ID 与打开树的历史一致；最终答复消息之后仍须以任务 `completed` 状态判断整轮结束。终态还包括 `cancelled/superseded/failed/expired`；`superseded` 的 `context_status=user_goal_adjusted`，并用 `superseded_by_turn_id` 指向新任务。
+输出随模型生成实时发送：`emit_progress/finish_task` 的正文参数每到达可解码片段，就产生 `message.delta`，无需等待完整工具调用或最终答案。前端按消息 ID 累积正文，标记为 `streaming`；`message.completed` 的 text 覆盖正文，并以其 status 区分已完成或中断。仅通过校验并成功落库的输出标记 `completed`；截断、校验失败、停止或改变方向的预览标记 `interrupted`，不能当作最终答案。成功消息的预览 ID 与 SQL 历史 ID 相同，失败后纠正的输出使用新 ID。原生推理和其他工具参数不公开。最终答复消息之后仍须以任务 `completed` 状态判断整轮结束。终态还包括 `cancelled/superseded/failed/expired`；`superseded` 的 `context_status=user_goal_adjusted`，并用 `superseded_by_turn_id` 指向新任务。
 
 网络断开不取消执行。使用 `Last-Event-ID` 重连，恢复时只发送更大序号事件；不能把重连当新任务创建。前端需使用支持 Authorization header 的 fetch 流或 SSE 客户端。
 
@@ -373,7 +377,7 @@ data: {"turn_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"processing","can_i
 
 Bearer 认证，无 query/body。返回 `200 application/json`、`Cache-Control: no-store`，用于刷新页面或回放窗口不足后的展示恢复；不会激活任务。
 
-字段：`tree_id/turn_id/node_id/summary_id/supersedes_turn_id/superseded_by_turn_id/status/can_interrupt/context_status/activation_expires_at/activated_at/finished_at/processing_duration_ms/last_sequence/earliest_sequence/messages/progress/error`。`messages` 是完整公开消息数组，每项 `message_id/message_kind/text/status`；没有原生推理或工具轨迹。使用快照替换界面后，以 `last_sequence` 订阅 SSE，不重复追加快照内容。`node_id` 在尚未登记节点时为 null。`progress` 为最近一次 `{type,message}`，没有动作时为 null；终态保留它，但不表示仍在执行。
+字段：`tree_id/turn_id/node_id/summary_id/supersedes_turn_id/superseded_by_turn_id/status/can_interrupt/context_status/activation_expires_at/activated_at/finished_at/processing_duration_ms/last_sequence/earliest_sequence/messages/progress/error`。`messages` 是累计公开消息数组，每项 `message_id/message_kind/text/status`；status 为 `streaming/completed/interrupted`，包含当前正文预览，没有原生推理或工具轨迹。使用快照替换界面后，以 `last_sequence` 订阅 SSE，不重复追加快照内容。`node_id` 在尚未登记节点时为 null。`progress` 为最近一次 `{type,message}`，没有动作时为 null；终态保留它，但不表示仍在执行。
 
 任务与事件在当前进程驻留：终态保留 1800 秒；进程重启或回收后返回 `404`，已落库历史通过[打开问答树](#打开问答树)取得。错误 `401/404/422/503`，不从内存绕过中央用户认证。
 

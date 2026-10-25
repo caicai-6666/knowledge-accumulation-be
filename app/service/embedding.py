@@ -38,20 +38,33 @@ class VLLMEmbedding(OpenAILikeEmbedding):
 
     async def _aget_text_embedding(self, text: str) -> list[float]:
         async with get_model_request_limiter('embedding', self._request_maximum):
-            vector = await super()._aget_text_embedding(text)
-        return self._prepare_vector(vector)
+            vectors = await self._request_embeddings([text], self._text_engine)
+        return self._prepare_vector(vectors[0])
 
     async def _aget_query_embedding(self, query: str) -> list[float]:
         async with get_model_request_limiter('embedding', self._request_maximum):
-            vector = await super()._aget_query_embedding(query)
-        return self._prepare_vector(vector)
+            vectors = await self._request_embeddings([query], self._query_engine)
+        return self._prepare_vector(vectors[0])
 
     async def _aget_text_embeddings(self, texts: list[str]) -> list[list[float]]:
         async with get_model_request_limiter('embedding', self._request_maximum):
-            vectors = await super()._aget_text_embeddings(texts)
+            vectors = await self._request_embeddings(texts, self._text_engine)
         if len(vectors) != len(texts):
             raise ValueError("批量 embedding 返回数量与输入不一致")
         return [self._prepare_vector(vector) for vector in vectors]
+
+    async def _request_embeddings(self, texts, engine):
+        # OpenAIEmbedding 默认把换行替换为空格，会破坏 vLLM 文本指令边界。
+        # 保留 LlamaIndex 客户端、缓存、重试与限流，只替换其正文预处理步骤。
+        client = self._get_aclient()
+        @self._create_retry_decorator()
+        async def request():
+            return await client.embeddings.create(input=texts, model=engine, **self.additional_kwargs)
+        response = await request()
+        rows = sorted(response.data, key=lambda row: row.index)
+        if [row.index for row in rows] != list(range(len(texts))):
+            raise ValueError('embedding 响应数量或序号不合法')
+        return [row.embedding for row in rows]
 
     def _get_text_embedding(self, text):
         raise NotImplementedError("vLLM 服务请使用异步 embedding 方法")

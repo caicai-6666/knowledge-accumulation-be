@@ -10,6 +10,8 @@ asyncmy==0.2.16
 cryptography==50.0.2
 # 中间件 HTTP 客户端与契约校验（作为直接依赖声明）
 httpx==0.28.1
+# 钉钉机器人 Stream 异步连接；显式关闭环境代理及握手重定向。
+websockets==16.1.1
 pydantic==2.14.1
 # Core 工作区和任务元数据的可读 YAML 渲染
 PyYAML==6.0.3

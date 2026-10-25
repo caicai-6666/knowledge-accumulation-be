@@ -11,7 +11,7 @@ from app.config.database import MySQLSettings, load_mysql_settings
 from app.infrastructure.avatar import avatar_response_filename
 from app.model.dingtalk import DingTalkDepartment
 from app.model.platform_admin import PlatformAdminProfile
-from app.model.personnel import Department, PlatformAdmin
+from app.model.personnel import Department, PlatformAdmin, EmployeeName
 
 
 _EMPLOYEE_SELECT = (
@@ -82,6 +82,30 @@ class MySQLEmployeeRepository:
                 await cursor.execute(_EMPLOYEE_SELECT + ' ORDER BY e.userid')
                 rows = await cursor.fetchall()
         return [_user(row) for row in rows]
+
+    async def search_user_names(self, username: str, *, offset: int = 0, limit: int = 11) -> list[EmployeeName]:
+        """按姓名全文相关性分页，字面包含补充短词；不加载权限等额外资料。"""
+        if not isinstance(username, str) or not username.strip() or len(username) > 200:
+            raise ValueError('用户名查询条件不合法')
+        if type(offset) is not int or offset < 0 or type(limit) is not int or limit < 1:
+            raise ValueError('人员目录分页参数不合法')
+        # 使用显式转义符，不让名字里的 %、_ 变成通配符；值始终作为绑定参数。
+        text = username.strip().replace('!', '!!').replace('%', '!%').replace('_', '!_')
+        await self._initialize()
+        async with asyncio.timeout(self._settings.operation_timeout_seconds):
+            async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
+                # ngram 全文召回不要求连续包含查询词；LIKE 补充单字/停用词。
+                # 完整姓名优先，随后按全文相关性和稳定身份排序；分数不进入目录 DTO。
+                keyword = username.strip()
+                await cursor.execute("SELECT e.userid,e.name AS username FROM employees AS e "
+                    "WHERE MATCH(e.name) AGAINST(%s IN NATURAL LANGUAGE MODE)>0 "
+                    "OR LOWER(e.name) LIKE LOWER(%s) ESCAPE '!' "
+                    "ORDER BY (LOWER(e.name)=LOWER(%s)) DESC, "
+                    "MATCH(e.name) AGAINST(%s IN NATURAL LANGUAGE MODE) DESC, "
+                    'e.name,e.userid LIMIT %s OFFSET %s',
+                    (keyword, '%' + text + '%', keyword, keyword, limit, offset))
+                rows = await cursor.fetchall()
+        return [EmployeeName.model_validate(row) for row in rows]
 
     async def list_platform_admins(self) -> dict[str, list[str]]:
         """读取全部管理员关联；失败上抛，禁止把数据库故障作为空总表发布。"""

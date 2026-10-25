@@ -8,6 +8,7 @@ import httpx
 from app.auth.error import AuthUnavailable
 from app.infrastructure.middleware import MiddlewareClient
 from app.repository.employee import MySQLEmployeeRepository
+from app.model.platform import PlatformInfo
 from app.schema.platform import PlatformResponse
 from app.service.middleware_session import MiddlewareSessionService
 
@@ -31,7 +32,8 @@ class PlatformQueryService:
                     return []
                 # 一次 SQL 批量读取管理员；只为中间件返回的平台附加资料，不用 SQL 关联扩充平台目录。
                 profiles = await self._employees.list_platform_admin_profiles()
-                return [PlatformResponse(**platform.model_dump(), admins=profiles.get(platform.code, []))
+                # 显式投影既有公开字段，内部A2A职责不进入对外JSON或OpenAPI。
+                return [PlatformResponse(**platform.model_dump(include=set(PlatformInfo.model_fields)), admins=profiles.get(platform.code, []))
                         for platform in platforms]
         except Exception as error:
             status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None

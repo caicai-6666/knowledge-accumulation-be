@@ -4,7 +4,7 @@
 
 沿用同级 registry-be 已验证的 MyVector 四参数 UDF、HNSW/Cosine、候选扩展和精确兜底实现，适配本项目 asyncmy、节点记忆和用户归属。Embedding 沿用其 LlamaIndex `OpenAILikeEmbedding` 对接 vLLM 的异步方式，不使用全局 `Settings.embed_model`。
 
-本模块已提供可独立调用的基础设施，未挂载问答路由、模型工具、启动任务或自动向量化消费者。现有应用启动不加载 Embedding 配置，不自动建表、清空索引或向模型发请求。真实 `.env`、共享数据库及其他项目均不改动。
+本模块提供可独立调用的检索基础设施，未新增检索 HTTP 路由；[祖先任务记忆工具](../../architecture/workflow/question-answering/memory-retrieval.md)已复用本适配器。[自动向量化](../application/memory-embedding.md)已在配置 Embedding 地址后随应用启动，结果写入权威记忆表；缓存刷新由查询调用方触发；祖先混合召回使用范围内精确距离，既有 HNSW 接口按需重建，不自动建表。
 
 ---
 
@@ -37,7 +37,7 @@
 5. 通过四参数 `myvector_ann_set` 获取候选，在同一条 SQL 中使用 `myvector_row_distance(id)` 读取对应距离，返回 `1 - distance` 相似度。
 6. 按候选 ID 再次读取权威成功记忆及原文，排除查询期间删除、状态变化或向量变化的记录；核对索引中的用户、树、节点和类型，最后返回 `memory_id/node_id/source_id/kind/text/similarity`。
 
-服务要求调用方传入已认证的用户标识，本身不验证用户 token。查询范围目前是明确指定的一棵树，不会自动跨树或跨用户搜索；是否只检索祖先路径由未来模型工具契约决定，不能把记忆召回与上下文父链回溯混为一谈。返回引用不表示已回查原文；规范化消息来源由节点落盘层提供，需要调用方另行读取。
+服务要求调用方传入已认证的用户标识，本身不验证用户 token。此基础查询限定指定树，不会自动跨树或跨用户搜索；探索 Agent 使用独立的[祖先任务召回入口](../../architecture/workflow/question-answering/memory-retrieval.md)，先限定父链再做精确排名和混合融合。基础查询返回命中消息及原文，完整任务展示仍由节点落盘层回读。
 
 默认至少获取 100 个或 `10 × top_k` 的 ANN 候选，再扩大候选，最多 10000 个。到达候选上限仍不足时使用 `myvector_distance(...,'Cosine')` 的精确 SQL 兜底；全表已进入候选时返回实际匹配数量。Top-K 为 1 至 100。HNSW 是近似检索，候选扩展不保证任意数据分布下都与精确排序相同；`search_mode='exact'` 可作为精确基线。
 
@@ -59,7 +59,7 @@
 | `VLLM_EMBEDDING_MAX_CONCURRENT_REQUESTS` | 默认 10，单条、批量和查询共用限制。 |
 | `VLLM_EMBEDDING_NORMALIZE` | 默认 true，客户端 L2 归一化。 |
 
-`EmbeddingService(settings)` 由调用方创建并关闭，文本通过 `embed_text` / `embed_texts` 生成向量，查询可使用 `service.model.aget_query_embedding`。HTTP 不信任环境代理、不跟随重定向，SDK 重试最多 2 次；模型与维度来自同一配置，文档请求不传维度裁剪参数。并发额度已统一到事件循环级，多个 EmbeddingService 实例共享，见 [vLLM 配置与生命周期](vllm-models.md#分词与共享并发)。
+`EmbeddingService(settings)` 由调用方创建并关闭，自动向量化的客户端由应用 lifespan 托管，文本通过 `embed_text` / `embed_texts` 生成向量，查询可使用 `service.model.aget_query_embedding`。HTTP 不信任环境代理、不跟随重定向，LlamaIndex/SDK 沿用既有请求重试配置；模型与维度来自同一配置，文档请求不传维度裁剪参数。并发额度已统一到事件循环级，多个 EmbeddingService 实例共享，见 [vLLM 配置与生命周期](vllm-models.md#分词与共享并发)。
 
 创建 `MyVectorStore(cache_pool, dimensions=settings.dimensions)` 时，必须提供独立的 `asyncmy` **autocommit=True** 连接池，并由调用方关闭；不能直接传入节点仓库的 autocommit=False 事务池。再通过 `QuestionMemorySearch(repository, store)` 注入。缓存自身的替换操作使用显式事务，索引管理在提交后执行。
 
@@ -99,6 +99,6 @@ QUESTION_MEMORY_TEST_MYVECTOR=1 QUESTION_TREE_TEST_MYSQL_PORT=独立临时端口
 
 2026-10-21 验证结果：本项目 Conda 环境已安装两项 LlamaIndex 直接依赖，`pip check` 无冲突；携带独立容器端口和插件测试标志运行全量回归，239 项通过，无跳过，其中 24 项为 MySQL/MyVector 实库测试。新改文档 64 个相对文件链接通过。临时容器及匿名卷在验证后清理；其他项目、真实配置、共享业务数据及索引未修改。
 
-节点原文可通过[节点落盘层](../../architecture/data/node-persistence.md)的 `load_memory_source` 按归属回查；检索本身仍返回引用，尚未自动拼接模型上下文。
+节点原文可通过[节点落盘层](../../architecture/data/node-persistence.md)的 `load_memory_source` 按归属回查；Agent 通过 `view_memory_query` 分页回读祖先任务并注入可折叠历史正文，基础向量接口本身不拼接上下文。
 
 全文缓存迁移、独立刷新及只读关键词查询见[节点记忆全文检索](fulltext.md)。旧缓存先执行 005 迁移，再显式刷新正文；向量列仍不可为 NULL。

@@ -54,3 +54,11 @@ def load_embedding_settings(env_file: Path | None = None) -> EmbeddingSettings:
         )
     except ValidationError:
         raise ValueError("embedding 配置不完整或不合法，请检查地址、模型、维度及超时") from None
+
+
+def load_optional_embedding_settings(env_file: Path | None = None) -> EmbeddingSettings | None:
+    """未配置地址时不启动自动加工；已配置但非法时明确失败，不静默忽略。"""
+    values = {**dotenv_values(env_file or PROJECT_ROOT / '.env', interpolate=False), **os.environ}
+    if not (values.get('VLLM_EMBEDDING_BASE_URL') or '').strip():
+        return None
+    return load_embedding_settings(env_file)

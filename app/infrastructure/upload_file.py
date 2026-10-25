@@ -43,15 +43,27 @@ class UploadFileStore:
         upload=self.validate_upload(upload)
         return await asyncio.to_thread(self._save,upload)
 
-    def _save(self,upload):
+    async def save_reference(self,upload:UploadedFile,reference:AttachmentReference) -> AttachmentReference:
+        """可信宿主按稳定 UUID 幂等转存队列附件；已有不同内容及符号链接一律拒绝。"""
+        upload=self.validate_upload(upload)
+        reference=AttachmentReference.model_validate(reference.model_dump())
+        if upload.type!=reference.type:raise ValueError('附件类型与引用不一致')
+        return await asyncio.to_thread(self._save,upload,reference)
+
+    def _save(self,upload,reference=None):
         directory=self._directory(create=True)
         try:
+            fixed=reference
             for _ in range(8):
-                reference=AttachmentReference(type=upload.type,file_id=str(uuid4()))
+                reference=fixed or AttachmentReference(type=upload.type,file_id=str(uuid4()))
                 try:
                     descriptor=os.open(reference.filename,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,
                         0o600,dir_fd=directory)
-                except FileExistsError:continue
+                except FileExistsError:
+                    if fixed:
+                        if self._read(reference)!=upload.content:raise ValueError('已有附件内容与稳定引用不一致')
+                        return reference
+                    continue
                 try:
                     with os.fdopen(descriptor,'wb') as handle:
                         handle.write(upload.content)

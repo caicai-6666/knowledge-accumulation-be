@@ -4,4 +4,6 @@ from .cache import FileKey,FileModelCache,FileCacheBusyError
 from .image_viewer import ImageFileViewer,FileViewError
 
 __all__=['FileModel','PDFOpenError','PDFRenderConfig','PDFPage','FileKey','FileModelCache','FileCacheBusyError',
-    'ImageFileViewer','FileViewError']
+    'ImageFileViewer','FileViewError','RegistryFileViewer']
+
+from .registry_viewer import RegistryFileViewer

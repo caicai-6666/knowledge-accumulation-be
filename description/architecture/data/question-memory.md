@@ -4,7 +4,7 @@
 
 为用户提问、模型阶段输出和最终输出准备可检索的向量记录，通过任务节点和来源标识关联原始内容。树结构与恢复规则见[问答树存储](question-tree.md)。
 
-本表提供数据契约、二进制编码、MySQL 迁移及仓库读写；另已提供 [MyVector 检索与 vLLM 适配](../../capability/infrastructure/myvector.md)，复用本表作为权威向量来源。[节点落盘层](node-persistence.md)已在保存公开消息时原子登记 pending 记忆，并独立保存完整原生生成；尚未接入问答运行时或自动向量化。
+本表提供数据契约、二进制编码、MySQL 迁移及仓库读写；另已提供 [MyVector 检索与 vLLM 适配](../../capability/infrastructure/myvector.md)，复用本表作为权威向量来源。[节点落盘层](node-persistence.md)已在保存公开消息时原子登记 pending 记忆，并独立保存完整原生生成；已接入问答运行时及[终态消息自动向量化](../../capability/application/memory-embedding.md)。
 
 ---
 
@@ -43,7 +43,7 @@ Embedding 模型及维度由调用方统一配置，入口和客户端见 [MyVec
 
 ## 仓库接口与并发
 
-复用 [MySQLQuestionTreeRepository](../../../app/repository/question_tree.py)的连接池、用户归属校验、超时及事务生命周期，不额外建立后台任务或连接池。
+复用 [MySQLQuestionTreeRepository](../../../app/repository/question_tree.py)的连接池、用户归属校验、超时及事务生命周期，仓库本身不建立后台任务或独立连接池，后台加工由应用服务装配。
 
 | 方法 | 行为 |
 | --- | --- |
@@ -52,9 +52,11 @@ Embedding 模型及维度由调用方统一配置，入口和客户端见 [MyVec
 | `complete_memory(tree_id, owner_userid, memory_id, embedding)` | 将 pending/failed 记忆写为 success；同向量重复完成幂等，不同结果拒绝覆盖。 |
 | `fail_memory(tree_id, owner_userid, memory_id)` | 将未完成记录标记 failed；成功结果不能降级。 |
 
-所有方法都需要上游传入已认证的用户标识，不接受凭来源 ID 绕过树归属。摘要节点不能登记记忆，跨树记录不能读写。登记依赖唯一键，写后当前读取得并发赢家；完成和失败更新先锁定记录再校验状态。冲突抛出 `QuestionTreeConflict`，不自动重放；异常、取消及超时复用仓库事务回滚规则。
+上述按用户调用的方法都需要上游传入已认证的用户标识，不接受凭来源 ID 绕过树归属。摘要节点不能登记记忆，跨树记录不能读写。登记依赖唯一键，写后当前读取得并发赢家；完成和失败更新先锁定记录再校验状态。冲突抛出 `QuestionTreeConflict`，不自动重放；异常、取消及超时复用仓库事务回滚规则。
 
-记忆加工不更新树的主干、工作区、活动时间或 revision。向量服务故障时，上游可以只标记记忆失败，不改变已完成问答的终态；源消息回查由节点落盘层提供；自动调度、批处理重试及模型更换重建暂未实现。
+记忆加工不更新树的主干、工作区、活动时间或 revision。向量服务故障时，上游可以只标记记忆失败，不改变已完成问答的终态；源消息回查由节点落盘层提供；自动调度与失败重试已由后台服务实现，模型更换重建仍须显式执行。
+
+可信后台另使用 `list_memory_embedding_jobs(after_id, limit)` 分页取得完整消息与身份快照，使用 `store_memory_embedding(job, vector)` 在树锁下复核来源后提交；`vector=None` 表示失败，已成功或过期记录跳过。这两个内部方法不作为外部用户入口，详细过滤与生命周期见[自动向量化](../../capability/application/memory-embedding.md)。
 
 仓库还提供 `list_searchable_memories(tree_id, owner_userid)`，只读取本人指定树内成功记忆，供检索前后刷新和回查；依赖失败不能作为空列表返回。插件索引不参与问答树结构加载。
 

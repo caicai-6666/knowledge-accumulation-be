@@ -2,9 +2,9 @@
 
 ## 当前范围
 
-已实现通用异步 Agent Core、必要工作区与输出工具、受控压缩、问答树上下文装配和节点持久化。参考 contract-service-be 的注册表、单工具循环、四区域工作区、上下文预算；不迁入合同门禁、合同检索、日期、程序执行或其他业务工具。
+已实现通用异步 Agent Core、必要工作区与输出工具、受控压缩、问答树上下文装配和节点持久化。参考 contract-service-be 的注册表、单工具循环、四区域工作区、上下文预算；不迁入合同门禁、合同检索、程序执行或其他业务工具。
 
-已接入[网页搜索与正文读取](web-search.md)，支持三工具、精炼子图与自动折叠；已接入[外部专家问答](external-expert.md)，复用源项目首次求助、追问与 LRU 会话契约。当前提供内部 Python 调用及[探索任务注册与 SSE](exploration-session.md)，已支持 HTTP PDF 上传、任务附件登记、归属读取、图像逐页阅读及停止/改变方向的独立控制；音频/视频阅读尚未接入。模型及 SQL 按需连接，不自动执行数据库迁移。现有登录、头像、平台查询及中央 token 契约不变。
+已对齐[任务时间感知](context-rendering.md#任务时间与相对日期)与公共[日期计算工具](agent-core.md#日期计算工具)。已接入[祖先任务记忆召回](memory-retrieval.md)，支持检索子 Agent、三字段关键词/向量融合及可折叠分页；已接入[网页搜索与正文读取](web-search.md)，支持三工具、精炼子图与自动折叠；已接入[外部专家问答](external-expert.md)，复用源项目首次求助、追问与 LRU 会话契约。当前提供内部 Python 调用及[探索任务注册与 SSE](exploration-session.md)，已支持 HTTP PDF 上传、任务附件登记、归属读取、图像逐页阅读及停止/改变方向的独立控制；音频/视频阅读尚未接入。个人助理采用单任务最终回复；中途输出、开场/长执行提醒和 SSE 正文适配归[探索模式](agent-modes.md#探索中途输出与沟通提醒)，Core 保留公共执行与交付协议。主模型按问答需求连接；配置 Embedding 地址后，[记忆自动向量化](../../../capability/application/memory-embedding.md)在后台扫描 SQL 并调用向量模型，不自动执行数据库迁移。现有登录、头像、平台查询及中央 token 契约不变。
 
 ---
 
@@ -14,14 +14,23 @@
 | --- | --- |
 | [包结构与导出](package-structure.md) | 提示词、工具、预算、渲染及子 Agent 的组织和依赖。 |
 | [助理与探索模式](agent-modes.md) | 模式工厂、专用工具扩展、个人背景注入及身份隔离。 |
+| [助理消费与交付](../../../capability/application/assistant-consumption.md) | 任务领取、消息渲染、条件最终回复、助理间发送及故障恢复。 |
+| [助理定时任务](../../../capability/application/assistant-reminders.md) | 三个提醒工具、时间规则、到期生产和可靠入队。 |
+| [助理空闲心跳](../../../capability/application/assistant-heartbeat.md) | 空闲与间隔检查、稳定发布键、执行锁和停机清理。 |
+| [助理记忆加载](assistant-memory.md) | 最新末端至最近摘要的局部读取、线性追加与按需记忆检索。 |
 | [核心循环](agent-core.md) | 输入、工具、校验、提交、输出、取消及故障。 |
 | [上下文与工作区](context-management.md) | 最近摘要、分支恢复、token 预算与压缩。 |
+| [多轮工作区精简](workspace-compression.md) | 逐步编辑、容量反馈、保护路径和预留操作。 |
+| [主题发现与总结](topic-summary.md) | 增量主题规划、并行两区域总结、来源隔离与完整验收。 |
 | [上下文渲染与消息](context-rendering.md) | 参考项目的任务/工作区展示、独立消息及原生历史。 |
 | [节点落盘](../../data/node-persistence.md) | 消息、原生生成及快照的事务与恢复。 |
 | [附件引用与文件定位](../../data/question-file.md) | UUID、固定后缀、任务登记、磁盘保存与归属读取。 |
 | [工具注册、返回与折叠](tool-content-contract.md) | 返回类型声明、执行事实、页面解析、自动折叠及提交边界。 |
 | [网页搜索与正文读取](web-search.md) | 搜索、候选分页、正文精炼、LRU 与 SSE 动作提示。 |
 | [外部专家问答](external-expert.md) | 专业求助、连续追问、独立 Responses 客户端与私有原生审计。 |
+| [注册中心文件图像查看](registry-file-reading.md) | 携用户Bearer读取PDF、逐页原生图像、LRU及自动折叠。 |
+| [注册中心文件查询](file-retrieval.md) | 名称/摘要组合检索、结果集AND/OR、可折叠分页。 |
+| [子管理平台查看](sub-management-platform.md) | 平台代码、功能、A2A职责、存活状态与可折叠目录。 |
 | [图像文件阅读](image-reading.md) | 单一图像工具、LRU 驻留、临时原生图片及提交边界。 |
 | [节点生命周期](node-lifecycle.md) | 停止、方向调整、失败、完成及迟到写入保护。 |
 | [可选工具格式注入](../../../capability/infrastructure/tool-tag.md) | 模型协议模板、装配快照、开关及分词/生成一致性。 |

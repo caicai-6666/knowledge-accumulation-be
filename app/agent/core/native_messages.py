@@ -102,7 +102,9 @@ def messages_from_exchanges(exchanges):
     messages=[]
     for entry in exchanges:
         if entry.get('kind')=='context_summary':
-            if set(entry)!={'kind','text'} or not isinstance(entry['text'],str) or not entry['text'].strip():
+            if (set(entry) not in ({'kind','text'}, {'kind','text','covered_turns'})
+                    or not isinstance(entry['text'],str) or not entry['text'].strip()
+                    or ('covered_turns' in entry and (type(entry['covered_turns']) is not int or entry['covered_turns']<=0))):
                 raise ValueError('上下文整理检查点不合法')
             # 检查点不能掩盖一半的调用；原始已接受工具对仍按实际顺序保留。
             validate_native_messages(messages)

@@ -24,15 +24,23 @@ class DisplayEvent(TreeModel):
         TypeAdapter(TreeID).validate_python(self.data['turn_id'])
         if self.event == 'task.progress':
             message = self.data.get('message')
-            if (self.data.get('type') not in ('thinking', 'online-search', 'external-expert')
+            if (self.data.get('type') not in ('thinking', 'online-search', 'external-expert', 'local-search')
                     or not isinstance(message, str) or not message.startswith('正在')
                     or not message[2:].strip() or len(message) > 2000):
                 raise ValueError('展示动作不合法')
         return self
 
 
+class StreamingMessage(TreeModel):
+    message_id: TreeID
+    message_kind: Literal['intermediate', 'final']
+    text: str
+    status: Literal['streaming'] = 'streaming'
+
+
 class StoredDisplayHistory(TreeModel):
     events: tuple[DisplayEvent, ...] = ()
+    streaming_messages: tuple[StreamingMessage, ...] = ()
     last_sequence: int = Field(default=0, strict=True, ge=0)
 
     @model_validator(mode='after')
@@ -42,6 +50,10 @@ class StoredDisplayHistory(TreeModel):
             if event.sequence is None or event.sequence <= previous or event.sequence > self.last_sequence:
                 raise ValueError('展示事件序号必须严格递增且不超过游标')
             previous = event.sequence
+        ids = [message.message_id for message in self.streaming_messages]
+        completed = {event.data.get('message_id') for event in self.events if event.event == 'message.completed'}
+        if len(ids) != len(set(ids)) or set(ids) & completed:
+            raise ValueError('流式消息不能重复或与已收束消息冲突')
         return self
 
     def validate_owner(self, node_id: TreeID):
@@ -52,7 +64,7 @@ class StoredDisplayHistory(TreeModel):
 
 class TaskDisplayHistory(TreeModel):
     events: tuple[DisplayEvent, ...] = ()
-    # 当前 Core 仅发布完整输出，没有尚未验收的流式正文。
-    streaming_messages: tuple[dict, ...] = ()
+    # 独立展示快照；不得作为权威答案或上下文交互回注模型。
+    streaming_messages: tuple[StreamingMessage, ...] = ()
     last_sequence: int | None = Field(default=None, ge=0)
     event_source: Literal['recorded', 'legacy']

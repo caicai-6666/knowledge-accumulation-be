@@ -29,6 +29,8 @@
 
 仓库复用 `MySQLQuestionTreeRepository` 的连接池和事务，统一关闭原仓库即可；每次调用必须传入上游已认证的 `owner_userid`。
 
+宿主可注入 `commit_hook(cursor, tree, node_id, content, status)`，在节点检查点或终态写入后、同一事务提交前执行附加 SQL。回调失败与节点一起回滚；回调不得进行网络交付。当前用于[助理交付账本](../../capability/application/assistant-consumption.md#处理与一致性)，将已接受发送动作与节点原子保存，提交后才调用机器人或中间件。
+
 | 方法 | 使用方式 |
 | --- | --- |
 | `start_task` | 预先生成稳定 node_id，传 question、attachments、parent_id、expected_revision；原子保存 generating 节点、附件引用、提问、pending 记忆及初始快照引用。 |
@@ -40,9 +42,9 @@
 
 根任务创建空 JSON 工作区版本；子任务继承所选父节点的实际版本。内容变化创建新版本，不修改旧快照，不从树的最新叶子取代历史父节点状态。Agent 入口会将空对象转为规范四区域工作区并校验其他快照，见[上下文与工作区](../workflow/question-answering/context-management.md)。
 
-`start_task` 与底层 `append_path` 共用持锁追加路径，自动保存任务及可选摘要的 `path_type`；检查点、终态提交和稳定 ID 重放保留已有归属。`load_node` 返回包含树 `kind` 和节点 `path_type` 的恢复结果。`load_agent_context` 读取结构时同时校验归属标记，助理模式未指定节点时选择主干末端；底层仍支持显式读取历史或分支，助理生成入口不接受外部节点选择。
+探索 `start_task` 与底层 `append_path` 共用持锁追加路径，自动保存任务及可选摘要的 `path_type`；检查点、终态提交和稳定 ID 重放保留已有归属。`load_node` 返回包含树 `kind` 和节点 `path_type` 的恢复结果。助理 `load_agent_context` 沿最新主干末端回溯至最近摘要即停止，`start_task` 也走局部线性追加，不构建完整树；两个入口均拒绝选择旧节点或创建分支，详见[助理记忆加载](../workflow/question-answering/assistant-memory.md)。通用树仓库仍提供完整结构读取，不代表助理生成应调用这些入口。
 
-每个公开消息与其 pending 记忆在同一事务登记，`source_id` 等于消息 ID；提问 ID 等于节点 ID。输出必须是完整消息，不把流式碎片登记为最终消息。自动向量化和调度尚未实现。
+每个公开消息与其 pending 记忆在同一事务登记，`source_id` 等于消息 ID；提问 ID 等于节点 ID。输出必须是完整消息，不把流式碎片登记为最终消息。[自动向量化](../../capability/application/memory-embedding.md)在节点终态后异步读取完整消息并加工，不延长节点提交事务。记忆检索子 Agent 的原生生成以 `memory_retrieval` 用途写入当前节点私有生成记录，文件检索子智能体的原生生成及执行反馈使用`file_retrieval`用途；公开候选来源不读取这些记录。
 
 上述记忆登记仅适用于 completed 消息，interrupted 只用于展示和审计。取消、原子替代、结束时间与终态私有审计追加见[节点生命周期](../workflow/question-answering/node-lifecycle.md)；私有追加不能改变公开状态或工作区。
 
@@ -78,3 +80,9 @@ Agent Core 进一步通过 `load_agent_context` 一致性读取公开路径，�
 ## 公开展示历史
 
 [010 迁移](../../../schema/010-question-node-display.sql)为 `question_node_contents` 增加独立的 `display_history` JSON 列，保存 SSE 精简展示事件及游标；旧节点为 NULL。此列不属于 `TaskContent`，不参与模型上下文、私有生成序号、工作区快照或记忆索引。节点内容更新只写 `content`，不会覆盖展示历史；整树删除一并移除。写入规则和故障边界见[展示恢复](../workflow/question-answering/exploration-session.md#sse-与恢复)。
+
+---
+
+## 部分历史摘要检查点
+
+任务 `exchanges` 内的 `context_summary` 保存 `text` 与正整数 `covered_turns`。覆盖数量针对当时继承的有效祖先任务前缀，不含本轮任务；多次检查点顺序应用，恢复时拒绝范围越界。原生工具投影先校验完整配对，再排除检查点，不向模型展示覆盖字段。全部旧交换及私有生成仍保留；不新增SQL列，不修改其他分支。完整范围与恢复规则见[上下文管理](../workflow/question-answering/context-management.md#预算与压缩)。

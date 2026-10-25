@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer
+from starlette.requests import ClientDisconnect
 
 from app.auth.error import AuthUnavailable
 from app.auth.model import AuthenticatedUser
@@ -35,7 +36,14 @@ def bearer_token(request: Request) -> str:
 
 
 async def reject_extra_input(request: Request, *, allow_body: bool = False) -> None:
-    if request.query_params or (not allow_body and await request.body()):
+    try:
+        extra_input = request.query_params or (not allow_body and await request.body())
+    except ClientDisconnect:
+        # 读取请求体时客户端可能已取消请求。终止当前处理，不将断线误报为认证失败，
+        # 也不能把未读完的请求当作空请求放行；499仅标识断线，客户端通常已无法收到响应。
+        raise HTTPException(status_code=499, detail='客户端已断开请求',
+                            headers={'Cache-Control':'no-store'}) from None
+    if extra_input:
         raise HTTPException(status_code=422, detail='请求参数不合法', headers={'Cache-Control':'no-store'})
 
 

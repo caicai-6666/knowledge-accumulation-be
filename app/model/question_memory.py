@@ -73,3 +73,11 @@ class SearchableMemory(TreeModel):
     """检索快照携带原文副本，不向权威记忆表增加 text 字段。"""
     memory: QuestionNodeMemory
     text: str = Field(strict=True)
+
+
+class MemoryEmbeddingJob(TreeModel):
+    """后台扫描取得的权威消息快照；身份只由仓库提供，不由模型生成。"""
+    tree_id: TreeID
+    owner_userid: str = Field(min_length=1, strict=True)
+    memory: QuestionNodeMemory
+    text: str = Field(min_length=1, strict=True)

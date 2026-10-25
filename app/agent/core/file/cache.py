@@ -13,7 +13,8 @@ _OWNERSHIP_LOCK=RLock()
 class FileKey:
     scope:tuple[str,str]
     file_id:str
-    digest:str
+    # 本地上传 UUID 对应不可变文件，不需要内容摘要；远程来源仍可显式携带版本。
+    digest:str|None=None
 
 
 @dataclass

@@ -32,7 +32,17 @@ python -m pip install -r requirement.txt
 python -m app.main
 ```
 
-默认监听 `127.0.0.1:24000`。需要调整监听地址或端口时：
+默认监听 `127.0.0.1:24000`，本地入口已开启热加载：保存 `app/` 下的 Python 文件后自动重启服务，包含工具及提示词代码。监视目录按入口文件绝对定位，不依赖 IDE 的工作目录；不监视 `data/`、测试和实验目录。现有未开启热加载的进程需要手动重启一次才能生效。
+
+热加载复用现有 Uvicorn，不需要安装额外依赖；`.env` 和 `assets/` 不在此监视范围，修改后仍需手动重启。自动重启会结束当前进程，正在执行的问答及 SSE 会受影响，随后重新执行应用启动生命周期。
+
+需要调整本地开发监听地址或端口时，在项目根目录执行：
+
+```bash
+python -m uvicorn app.main:app --host 127.0.0.1 --port 24000 --reload --reload-dir app
+```
+
+生产使用单 worker、不开启热加载的独立 CLI；Docker 沿用原生产命令：
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 24000 --workers 1

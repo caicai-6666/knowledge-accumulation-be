@@ -9,14 +9,14 @@ from app.model.question_tree import QuestionTreeListItem, TreeID
 from app.repository.question_tree import QuestionTreeConflict, QuestionTreeNotFound
 from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer
 from app.schema.auth import AuthErrorResponse
-from app.schema.exploration import CreateTreeRequest, ExplorationTreeResponse, RenameTreeRequest
+from app.schema.exploration import CreateTreeRequest, ExplorationTreeListItem, ExplorationTreeResponse, RenameTreeRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/exploration', tags=['exploration'])
 TreePath = Annotated[TreeID, Path(description='问答树 ID，32 位小写十六进制字符串。')]
 
 
-@router.get('/trees', response_model=list[QuestionTreeListItem], summary='获取探索问答树列表',
+@router.get('/trees', response_model=list[ExplorationTreeListItem], summary='获取探索问答树列表',
             dependencies=[Depends(user_bearer)], responses={
                 401: {'description': '用户 token 无效或中央登录已失效', 'model': AuthErrorResponse},
                 422: {'description': '请求参数不合法', 'model': AuthErrorResponse},
@@ -30,12 +30,18 @@ async def list_trees(request: Request, response: Response, user: AuthenticatedUs
             raise RuntimeError('问答树仓库未装配')
         # 身份只能来自中央认证结果；客户端不能指定 userid 或切换到 assistant 类型。
         trees = await repository.list_exploration_trees(user.userid)
+        turns = getattr(request.app.state, 'exploration_turn_service', None)
+        if turns is None:
+            raise RuntimeError('探索任务服务未装配')
+        running = await turns.running_tree_ids(user.userid)
+        result = [ExplorationTreeListItem(id=tree.id, name=tree.name,
+                    has_running_task=tree.id in running) for tree in trees]
     except Exception as error:
         logger.warning('探索问答树列表查询失败：error_type=%s', type(error).__name__)
         raise HTTPException(status_code=503, detail='问答树列表暂不可用',
                             headers={'Cache-Control': 'no-store'}) from None
     response.headers['Cache-Control'] = 'no-store'
-    return trees
+    return result
 
 
 @router.post('/trees', status_code=201, response_model=QuestionTreeListItem, summary='创建探索问答树',

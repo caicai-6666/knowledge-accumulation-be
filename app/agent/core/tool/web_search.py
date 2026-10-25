@@ -53,7 +53,19 @@ class WebSearchResult(SearchModel):
 class SearchWebArguments(BaseModel):
     """当你需要从公开网络寻找资料、事实依据或候选网页时，使用这个工具。说明要查的对象及所需资料，获得结果集ID和条数后，调用view_web_search_results查看候选；搜索摘要不代表已读取或核实网页正文。"""
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    query: str = Field(min_length=1, max_length=128, description='1至128字符的简短检索词，包含准确对象名称、主题及必要时间或来源限制；例如“某公司 官网 最近公告”。可使用 site: 指定站点、双引号限定词组、after: 或 before: 限定日期。保留关键实体和排除条件，不附加答案排版要求；复杂需求拆成多次搜索。')
+    query: str = Field(min_length=1, max_length=128, description=(
+        '必填，1至128个Unicode字符，不能全为空白。一次聚焦一个检索目标，包含准确对象名称、主题及必要限定；'
+        '论文、产品和技术术语优先用已知原名，必要时分别用中英文或别名搜索，不附加答案排版要求。'
+        '支持以下DeepSeek检索语法，可用空格组合：'
+        'site:arxiv.org限定站点；多个备选站点用大写OR连接，如site:arxiv.org OR site:aclanthology.org；'
+        '-site:example.com排除站点，-广告排除词，-"release notes"排除完整词组；'
+        '英文双引号包住确定的完整词组以精确匹配，如"Attention Is All You Need"；'
+        'lang:en限定结果页面为英文，lang:zh,en允许中文或英文，不是指定回答语言；'
+        'after:2025-01-01、before:2026-01-01分别限定页面发布日期在该日期之后、之前，也支持YYYY格式，时间区间可组合两者。'
+        '例如："Attention Is All You Need" site:arxiv.org lang:en。'
+        '仅在确有需要时添加限制；标题不确定时不强加精确词组，日期按实际问题填写。'
+        '结果过少时逐步放宽非必要的引号、站点、语言或日期条件，但保留用户明确要求；零结果不能证明资料不存在。'
+        '复杂需求拆成多次搜索，每次完整查询（含运算符）都须在128字符内。'))
 
 
 class ViewWebSearchResultsArguments(BaseModel):
@@ -347,7 +359,7 @@ def build_web_search_registrations(*, pool, service, authorize):
         RegisteredTool('search_web', SearchWebArguments.__doc__, SearchWebArguments, prepare, executor=search,
             progress=ToolProgress(type='online-search',message='正在搜索网页'),progress_factory=search_progress),
         RegisteredTool('view_web_search_results', ViewWebSearchResultsArguments.__doc__, ViewWebSearchResultsArguments,
-            prepare, executor=view, return_types=('ordinary', 'foldable'), page_resolver=resolve,progress=ToolProgress(type='online-search',message='正在查看搜索结果')),
+            prepare, executor=view, return_types=('ordinary', 'foldable'), page_resolver=resolve,progress=ToolProgress(type='thinking',message='正在查看搜索结果')),
     )
 
 

@@ -18,6 +18,7 @@ class MLLMGenerationSettings(BaseModel):
     temperature: float = Field(default=0.7, ge=0, allow_inf_nan=False)
     top_p: float = Field(default=0.8, ge=0, le=1, allow_inf_nan=False)
     top_k: int = Field(default=20, ge=0)
+    min_p: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     presence_penalty: float = Field(default=1.5, allow_inf_nan=False)
     repetition_penalty: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     seed: int = 3407

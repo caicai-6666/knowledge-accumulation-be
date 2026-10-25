@@ -29,13 +29,17 @@
 - 与企业知识沉淀相关组件交互，协调请求、结果及失败反馈，为用户提供完整服务。
 - 确保问答数据按用户及授权范围访问，避免用户间的数据混用。
 
-已准备[问答树存储与内存索引](architecture/data/question-tree.md)：独立树表、任务/摘要节点、按需加载正文、工作区版本及最近摘要回溯。另已提供[节点落盘与恢复](architecture/data/node-persistence.md)，保存完整生成、公开消息和检查点快照。[核心 Agent 循环与上下文管理](architecture/workflow/question-answering/readme.md)已接入内部节点生成入口，支持工作区、中途与最终输出、受控摘要及私有生成落盘。另支持[用户附件登记与读取](architecture/data/question-file.md)，使用 UUID 和固定类型后缀定位磁盘文件。生成支持内部 Python 入口及[探索任务注册与 SSE](architecture/workflow/question-answering/exploration-session.md)，HTTP 可直接上传 PDF；外部业务工具留待后续设计；应用不自动执行数据库迁移。
+已准备[问答树存储与内存索引](architecture/data/question-tree.md)：独立树表、任务/摘要节点、按需加载正文、工作区版本及最近摘要回溯。另已提供[节点落盘与恢复](architecture/data/node-persistence.md)，保存完整生成、公开消息和检查点快照。[核心 Agent 循环与上下文管理](architecture/workflow/question-answering/readme.md)已接入内部节点生成入口，支持工作区、中途与最终输出、受控摘要及私有生成落盘。另支持[用户附件登记与读取](architecture/data/question-file.md)，使用 UUID 和固定类型后缀定位磁盘文件。生成支持内部 Python 入口及[探索任务注册与 SSE](architecture/workflow/question-answering/exploration-session.md)，HTTP 可直接上传 PDF；已接入[注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)，支持名称/摘要组合检索、单个通行证精确查找、平台过滤与分页列表，已接入[注册中心PDF逐页查看](architecture/workflow/question-answering/registry-file-reading.md)，使用本轮用户Bearer远程授权读取；应用不自动执行数据库迁移。
 
-节点记忆另提供 [MyVector/vLLM 基础设施](capability/infrastructure/myvector.md)，以权威记忆和消息表刷新独立缓存，支持 HNSW 向量及[原生中文全文检索](capability/infrastructure/fulltext.md)，按用户与树过滤、返回前回查。尚未接入问答自动向量化或启动任务，插件和模型部署由运行环境显式准备。
+节点记忆另提供 [MyVector/vLLM 基础设施](capability/infrastructure/myvector.md)，以权威记忆和消息表刷新独立缓存，支持 HNSW 向量及[原生中文全文检索](capability/infrastructure/fulltext.md)，按用户与树过滤、返回前回查。已接入[节点记忆自动向量化](capability/application/memory-embedding.md)，配置 Embedding 地址后后台加工终态任务的完整公开消息；已接入[祖先任务记忆召回](architecture/workflow/question-answering/memory-retrieval.md)，检索时按需刷新缓存、混合召回并分页查看，范围限于当前任务的祖先父链。插件和模型部署由运行环境显式准备。
 
-已实现[探索问答树列表 API](api/exploration.md#获取问答树列表)，中央身份校验后只返回本人 exploration 树的 ID 和名称；助理树不返回；另提供[本人探索树改名](api/exploration.md#修改问答树名称)。[打开接口](api/exploration.md#打开问答树)已支持将完整结构及公开历史加载到内存并返回，[删除接口](api/exploration.md#删除问答树)清理关联 SQL、内存快照及已登记附件，支持失败后重试。
+已实现[探索问答树列表 API](api/exploration.md#获取问答树列表)，中央身份校验后返回本人 exploration 树的 ID、名称及正在执行任务的标识 `has_running_task`；助理树不返回；另提供[本人探索树改名](api/exploration.md#修改问答树名称)。[打开接口](api/exploration.md#打开问答树)已支持将完整结构及公开历史加载到内存并返回，[删除接口](api/exploration.md#删除问答树)清理关联 SQL、内存快照及已登记附件，支持失败后重试。
 
 Core 已提供[独立图像文件阅读工具](architecture/workflow/question-answering/image-reading.md)，支持多图逐页原生图片展示与 LRU 文件模型驻留；音频和视频阅读尚未接入。
+
+个人助理已准备[助理绑定、任务执行、交付与提醒存储](architecture/data/assistant-storage.md)：每位用户绑定唯一 assistant 树，队列附件复用现有上传目录、节点登记和 Core 查看工具。生成路径已支持[最近摘要边界的局部记忆加载](architecture/workflow/question-answering/assistant-memory.md)；另提供[中间件队列发布、领取、续租与确认](capability/infrastructure/assistant-queue.md)及单次消费处理器。已接入[后台消费、助理消息工具与可靠交付](capability/application/assistant-consumption.md)，默认关闭；已实现[查看、创建、删除定时任务及到期调度](capability/application/assistant-reminders.md)，已接入[空闲心跳调度](capability/application/assistant-heartbeat.md)，已接入[钉钉消息原子接收与发布](capability/application/assistant-inbound.md)，不支持的附件导致整条拒绝；未执行真实数据库迁移。
+
+另已准备[钉钉单聊机器人基础设施](capability/infrastructure/dingtalk-robot.md)：Stream 接收、可信单聊过滤、OpenAPI 完整回复和主动发送、附件下载。已通过可靠接收器接入队列，与助理消费共用默认关闭的启动开关，尚未完成真实机器人联通。
 
 [vLLM 模型基础设施](capability/infrastructure/vllm-models.md)已准备 MLLM/Embedding 配置、异步生成、工具及流式响应、原生推理返回、共享并发和服务端分词；用户已填写实际地址并通过合成样例联通验证，已供[问答 Agent Core](architecture/workflow/question-answering/readme.md)调用。
 

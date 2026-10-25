@@ -7,6 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 PlatformCode = Annotated[str, Field(strict=True, pattern=r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$')]
 
 
+class EmployeeName(BaseModel):
+    """人员目录的最小投影；不给通信目标查询附带权限或其他身份资料。"""
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    userid: str = Field(strict=True, min_length=1, max_length=128, pattern=r'\S', description='用户 userid，也是其唯一助理的通信标识，保留原始大小写。')
+    username: str = Field(strict=True, min_length=1, max_length=200, pattern=r'\S', description='权威员工表中保存的用户名。')
+
+
 class Department(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
 

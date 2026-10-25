@@ -1,6 +1,7 @@
 """首次打开网页的串行提取图；所有业务失败均进入唯一尾部节点。"""
 from functools import partial
 from langgraph.graph import START, END, StateGraph
+from .routing import select_processing, route_processing, preserve_original
 from .state import WebPageInput, WebPageOutput, WebPageState
 from .node import fetch_html, extract_text, load_images, refine_content, finalize, route_after_stage
 
@@ -23,13 +24,18 @@ def build_web_page_subgraph(*, timeout_seconds=30, max_bytes=3 * 1024 * 1024, ma
         max_bytes=image_max_bytes, resolver=image_resolver))
     graph.add_node('refine_content', partial(refine_content, settings=settings, client=client,
         audit=audit, max_attempts=max_attempts, max_images=image_max_selected))
+    graph.add_node('select_processing', partial(select_processing, settings=settings, client=client, audit=audit))
+    graph.add_node('preserve_original', partial(preserve_original, max_images=image_max_selected))
     graph.add_node('finalize', finalize)
     graph.add_edge(START, 'fetch_html')
     graph.add_conditional_edges('fetch_html', route_after_stage,
                                {'continue': 'extract_text', 'finalize': 'finalize'})
     graph.add_conditional_edges('extract_text', route_after_stage,
                                {'continue': 'load_images', 'finalize': 'finalize'})
-    graph.add_edge('load_images', 'refine_content')
+    graph.add_edge('load_images', 'select_processing')
+    graph.add_conditional_edges('select_processing', route_processing,
+                                {'original': 'preserve_original', 'refine': 'refine_content'})
+    graph.add_edge('preserve_original', 'finalize')
     graph.add_edge('refine_content', 'finalize')
     graph.add_edge('finalize', END)
     return graph.compile()

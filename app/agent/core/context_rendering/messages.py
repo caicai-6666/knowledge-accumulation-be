@@ -11,11 +11,12 @@ from .workspace import render_workspace_section
 def render_current_input(request: AgentInput):
     return render_task_input(request.question,task_number=len(request.context.turns)+1,
         attachments=request.attachments,supplemental=request.context.supplemental,
-        platform_permissions=request.platform_permissions)
+        platform_permissions=request.platform_permissions,created_at=request.created_at)
 
 
 def build_fixed_messages(request: AgentInput,*,system_prompt=SYSTEM_PROMPT):
-    return [{'role':'system','content':system_prompt},{'role':'user','content':render_current_input(request)}]
+    # 用户问题、附件及补充资料在活动任务记账，固定区只计系统、工具和聊天外壳。
+    return [{'role':'system','content':system_prompt},{'role':'user','content':''}]
 
 
 def build_messages(request: AgentInput,*,workspace=None,summary=None,accepted=(),temporary=(),

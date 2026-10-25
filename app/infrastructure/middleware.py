@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, model
 
 from app.model.platform_admin import PlatformAdminTable, PlatformAdminTableResult
 from app.model.middleware_user import MiddlewareUserInfo, MiddlewareUserTableResult, MiddlewareUserLoginStatus, MiddlewareUserLoginQueryStatus
-from app.model.platform import PlatformInfo
+from app.model.platform import MiddlewarePlatformInfo
 
 
 class MiddlewareSessionResponse(BaseModel):
@@ -97,13 +97,13 @@ class MiddlewareClient:
     async def establish_user_login(self, userid: str, access_token: str, token: SecretStr) -> MiddlewareUserLoginStatus:
         return await self._user_login('PUT', access_token, token, userid=userid)
 
-    async def list_platforms(self, token: SecretStr) -> list[PlatformInfo]:
+    async def list_platforms(self, token: SecretStr) -> list[MiddlewarePlatformInfo]:
         response = await self._http.get('middleware-service/api/platform/list',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'})
         response.raise_for_status()
         if response.status_code != 200:
             raise ValueError('平台目录必须返回 200')
-        platforms = TypeAdapter(list[PlatformInfo]).validate_python(response.json())
+        platforms = TypeAdapter(list[MiddlewarePlatformInfo]).validate_python(response.json())
         if len({platform.code for platform in platforms}) != len(platforms):
             raise ValueError('平台目录包含重复代号')
         return platforms

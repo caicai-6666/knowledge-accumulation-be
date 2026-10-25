@@ -7,6 +7,7 @@ import logging
 import time
 
 import pymupdf
+from pydantic import SecretStr
 from starlette.concurrency import run_in_threadpool
 
 from app.auth.model import AuthenticatedUser
@@ -102,7 +103,30 @@ class ExplorationTurnService:
         if self._reaper is None:
             self._reaper = asyncio.create_task(self._cleanup_loop())
 
+    @staticmethod
+    def _project_messages(turn, event, data):
+        messages = list(turn.messages)
+        if event not in ('message.delta', 'message.completed'):
+            return messages
+        index = next((i for i, m in enumerate(messages) if m.message_id == data['message_id']), None)
+        previous = messages[index] if index is not None else None
+        if previous is not None and previous.message_kind != data['message_kind']:
+            raise ValueError('公开消息类型不能改变')
+        if event == 'message.delta':
+            if previous is not None and previous.status != 'streaming':
+                raise ValueError('已收束消息不能继续追加')
+            message = TurnMessage(message_id=data['message_id'], message_kind=data['message_kind'],
+                text=(previous.text if previous else '') + data['delta'], status='streaming')
+        else:
+            message = TurnMessage.model_validate({k: v for k, v in data.items() if k != 'turn_id'})
+        if index is None:
+            messages.append(message)
+        else:
+            messages[index] = message
+        return messages
+
     def _append_event(self, turn, item):
+        turn.messages = self._project_messages(turn, item['event'], item['data'])
         turn.sequence = item['sequence']
         turn.events.append(item)
         while len(turn.events) > self.event_limit:
@@ -118,6 +142,7 @@ class ExplorationTurnService:
         item = {'sequence': turn.sequence + 1, 'event': event, 'data': {'turn_id': turn.id, **data}}
         history = StoredDisplayHistory(events=tuple(turn.display_events) + (
             (DisplayEvent.model_validate(item),) if event != 'message.delta' else ()),
+            streaming_messages=tuple(m.model_dump() for m in self._project_messages(turn,event,data) if m.status == 'streaming'),
             last_sequence=item['sequence'])
         cancelled = False
         if turn.node_id is not None and not turn.history_failed:
@@ -139,6 +164,11 @@ class ExplorationTurnService:
                 turn.status, turn.finished = 'failed', utc_now()
                 turn.request, turn.uploads = None, ()
                 turn.error = {'code': 'history_unavailable', 'message': '任务展示历史保存失败，请重新打开问答树核对', 'retryable': True}
+                # 存储已不可用，至少收束实时界面的已有预览；不声称这些故障事件已落库。
+                for message in tuple(turn.messages):
+                    if message.status == 'streaming':
+                        self._append_event(turn, {'sequence': turn.sequence + 1, 'event': 'message.completed',
+                            'data': {'turn_id': turn.id, **message.model_dump(mode='json'), 'status': 'interrupted'}})
                 self._append_event(turn, {'sequence': turn.sequence + 1, 'event': 'error',
                     'data': {'turn_id': turn.id, **turn.error}})
                 self._append_event(turn, {'sequence': turn.sequence + 1, 'event': 'turn.status',
@@ -150,6 +180,12 @@ class ExplorationTurnService:
             raise asyncio.CancelledError()
 
     async def _status(self, turn, status):
+        if status in TERMINAL:
+            # 在同一条件锁内先收束预览，再公布任务终态；迟到分片不能重新打开消息。
+            for message in tuple(turn.messages):
+                if message.status == 'streaming':
+                    await self._event(turn, 'message.completed', {
+                        **message.model_dump(mode='json'), 'status': 'interrupted'})
         turn.status = status
         if status in TERMINAL:
             turn.finished = utc_now()
@@ -352,6 +388,14 @@ class ExplorationTurnService:
             earliest_sequence=turn.events[0]['sequence'] if turn.events else turn.sequence + 1,
             messages=tuple(turn.messages), progress=turn.progress, error=turn.error)
 
+    async def running_tree_ids(self, owner: str) -> set[str]:
+        """一次读取本人正在执行的树；不激活任务，也不加载树节点。"""
+        async with self._condition:
+            # SQL generating 也可能是待激活接替节点或崩溃遗留，不能据此断言仍在执行。
+            return {turn.tree_id for turn in self._turns.values()
+                    if turn.user.userid == owner and turn.status == 'processing'
+                    and turn.worker is not None and not turn.worker.done()}
+
     async def snapshot(self, tree_id, turn_id, owner):
         async with self._condition:
             turn = await self._get(tree_id, turn_id, owner)
@@ -366,7 +410,9 @@ class ExplorationTurnService:
         if cursor > turn.sequence or (turn.events and cursor < turn.events[0]['sequence'] - 1):
             raise ReplayUnavailable('事件游标不可回放，请先获取任务快照')
 
-    async def subscribe(self, tree_id, turn_id, user, after_sequence=0):
+    async def subscribe(self, tree_id, turn_id, user, after_sequence=0, *, access_token: SecretStr | None = None):
+        if access_token is not None and not isinstance(access_token,SecretStr):
+            raise TypeError('激活凭据必须使用SecretStr')
         async with self.tree_service.operation(tree_id, user.userid):
             await self._expire_pending(tree_id, user.userid)
             async with self._condition:
@@ -393,11 +439,11 @@ class ExplorationTurnService:
                     self._cursor(turn, after_sequence)
                     if revision != turn.revision:
                         raise QuestionTreeConflict('树已变化，请取消待激活任务并重新创建')
-                    # 首次订阅重新取得当前权限；不保留 Bearer，不借注册时的身份跳过中央验证。
+                    # 首次订阅重新取得中央身份；Bearer只交给本轮生产者，不进入Turn、事件或数据库。
                     turn.user = user.model_copy(deep=True)
                     turn.activated, turn.started = utc_now(), time.monotonic()
                     await self._status(turn, 'processing')
-                    turn.worker = asyncio.create_task(self._run(turn))
+                    turn.worker = asyncio.create_task(self._run(turn, access_token=access_token))
 
         async def iterate():
             cursor = after_sequence
@@ -444,17 +490,16 @@ class ExplorationTurnService:
             if turn.status != 'processing':
                 return
             if restored is not None:
-                seen = {message.message_id for message in turn.messages}
+                seen = {message.message_id for message in turn.messages if message.status == 'completed'}
                 for message in restored.messages:
                     if message.kind in ('intermediate', 'final') and message.status == 'completed' and message.id not in seen:
                         public = TurnMessage(message_id=message.id, message_kind=message.kind, text=message.text)
-                        turn.messages.append(public)
                         await self._event(turn, 'message.completed', public.model_dump(mode='json'))
             if status == 'superseded' and restored is not None:
                 turn.superseded_by_turn_id = restored.node.superseded_by_node_id
             await self._status(turn, status)
 
-    async def _run(self, turn):
+    async def _run(self, turn, *, access_token: SecretStr | None = None):
         try:
             await run_in_threadpool(validate_pdfs, turn.uploads)
             if self._agent is None:
@@ -470,10 +515,14 @@ class ExplorationTurnService:
                         return
                     turn.node_id = turn.id
                     public = TurnMessage(message_id=message.id, message_kind=kind, text=text)
-                    turn.messages.append(public)
-                    # Core 当前按已验收输出提交，不把未完成工具参数或原生推理当作可展示 token。
+                    # 不带流式回调的内部宿主仍可一次交付已提交正文。
                     await self._event(turn, 'message.delta', {'message_id': message.id, 'message_kind': kind, 'delta': text})
                     await self._event(turn, 'message.completed', public.model_dump(mode='json'))
+            async def publish_stream(event, data):
+                async with self._condition:
+                    if turn.status != 'processing':
+                        return
+                    await self._event(turn, event, data)
             async def progress(value):
                 async with self._condition:
                     if turn.status == 'processing':
@@ -486,7 +535,8 @@ class ExplorationTurnService:
                 selected_node_id=request.selected_node_id, question=request.question,
                 advance_main=request.mode == 'main', expected_revision=turn.revision,
                 thinking_effort=request.thinking_effort, uploads=turn.uploads, attachments=turn.attachments,
-                publish=publish, publish_progress=progress, on_registered=registered, resume_registered=turn.registered)
+                publish=publish, publish_stream=publish_stream, publish_progress=progress, on_registered=registered, resume_registered=turn.registered,
+                **({'access_token':access_token} if access_token is not None else {}))
             async with self._condition:
                 turn.node_id, turn.summary_id = result.node_id, result.summary_id
             if getattr(getattr(result, 'result', None), 'delivery_error_type', None):
@@ -504,7 +554,12 @@ class ExplorationTurnService:
                 if turn.status == 'processing':
                     turn.error = {'code': 'generation_failed', 'message': '问答未完成，请检查附件或稍后重试', 'retryable': True}
                     await self._event(turn, 'error', turn.error)
-                    await self._status(turn, 'failed')
+            # 提交回执或完成交付失败时回查 SQL；已保存答案不能被当成中断预览。
+            await self._settle(turn, 'failed')
+
+        finally:
+            # 重连只订阅，不替换正在执行任务的凭据；终态立即释放生产者对token的引用。
+            access_token=None
 
     async def _wait_workers(self, workers):
         waiting = asyncio.gather(*workers, return_exceptions=True)
