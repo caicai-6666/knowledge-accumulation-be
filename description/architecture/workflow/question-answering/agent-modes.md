@@ -73,7 +73,7 @@ app/agent/
 
 ## 工厂与调用
 
-个人助理提示词不规定面向钉钉的正文排版，不限制 Markdown 标题、表格、加粗或链接等表达形式。`finish_task` 执行后、提交前通过其独立注册的钩子完成转换；渠道适配由[单次转换子智能体](assistant-message-rendering.md)承担，通过[正文渲染钩子](../../../capability/application/assistant-consumption.md#最终正文渲染钩子)调用，默认启用 medium 原生推理与 JSON Schema 正文输出。转换结果替代已接受 `finish_task.content`，经普通提交同步写入答案和后续上下文；钉钉使用现有 Markdown 消息接口。
+个人助理提示词不规定面向钉钉的正文排版，不限制 Markdown 标题、表格、加粗或链接等表达形式。`finish_task` 执行后、提交前通过其独立注册的钩子完成转换；渠道适配由[单次转换子智能体](assistant-message-rendering.md)承担，通过[正文渲染钩子](../../../capability/application/assistant-consumption.md#最终正文渲染钩子)调用，默认开启 `medium` 原生推理，通过提示生成 JSON 正文并使用本地 Pydantic 严格校验，不发送接口级 `response_format`。转换结果替代已接受 `finish_task.content`，经普通提交同步写入答案和后续上下文；钉钉使用现有 Markdown 消息接口。
 
 两个模式均导出：
 

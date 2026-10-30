@@ -5,15 +5,17 @@ from app.infrastructure.mllm import MLLMClient
 from app.infrastructure.vllm_tokenizer import count_chat_tokens
 from app.model.node_persistence import GenerationPayload
 from .prompt import build_messages
-from .schema import MessageRenderingError, accepted_content, output_schema
+from .schema import MessageRenderingError, accepted_content
 
 
 class DingTalkMessageRenderer:
     def __init__(self, settings: MLLMSettings, *, thinking_effort='medium', client=None, counter=None):
         self.settings = settings
+        # 转换默认启用 medium 推理；独立覆盖本次参数，不改变主助理共用的模型配置。
+        # none 不属于底层推理档位，关闭时内部占位为 low，客户端不会发送该档位。
         self.generation = MLLMGenerationSettings.model_validate({
-            **settings.generation.model_dump(), 'enable_thinking': True,
-            'reasoning_effort': thinking_effort,
+            **settings.generation.model_dump(), 'enable_thinking': thinking_effort != 'none',
+            'reasoning_effort': thinking_effort if thinking_effort != 'none' else 'low',
         })
         self.client = client if client is not None else MLLMClient(settings)
         self._owns_client = client is None
@@ -32,8 +34,9 @@ class DingTalkMessageRenderer:
             if type(count) is not int or count < 0 or count + self.generation.max_completion_tokens > self.settings.context_window_tokens:
                 raise MessageRenderingError('转换输入计数无效或超过上下文预算，未生成或发送；需调整模型容量，不能截断原文。')
             # 无工具、无流式回调、无纠错循环；每次 render 最多发起一次生成。
+            # 实测当前服务在 Schema 约束下丢失换行；由提示要求 JSON，响应仍经 Pydantic 严格验收。
             response = await self.client.create_chat_completion(
-                messages=messages, generation=self.generation, json_schema=output_schema())
+                messages=messages, generation=self.generation)
         except asyncio.CancelledError:
             await on_generation('cancelled', GenerationPayload(
                 purpose='assistant_message_rendering', error_type='CancelledError'))

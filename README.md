@@ -58,7 +58,7 @@ fi
 | `REGISTRY_BASE_URL`、`FILE_SOURCE_MYSQL_*` | 注册中心原件服务与文件检索数据源，按需配置。 |
 | `ASSISTANT_ENABLED`、`PLATFORM_A2A_ENABLED` | 默认均为 `false`，完成对应依赖和迁移后再开启。 |
 
-主模型服务需支持原生工具调用和 `/tokenize`，主题总结及助理正文转换还使用 JSON Schema；模型名、上下文容量和工具模板需与实际服务一致，见[模型配置](description/capability/infrastructure/vllm-models.md)。仅启动身份接口且关闭助理时，主模型地址可以暂留空。
+主模型服务需支持原生工具调用和 `/tokenize`，主题总结还使用 JSON Schema；助理正文转换通过提示生成 JSON 并在本地使用 Pydantic 校验；模型名、上下文容量和工具模板需与实际服务一致，见[模型配置](description/capability/infrastructure/vllm-models.md)。仅启动身份接口且关闭助理时，主模型地址可以暂留空。
 
 中间件接入后会自动同步用户及管理员全表，启动前应准备完整权威人员源。数据库结构由部署侧显式初始化或迁移，应用不会自动建表；迁移清单与旧库升级前提见[数据与迁移](description/capability/application/docker.md#数据与迁移)。不要将全部 SQL 无差别重复执行到已有数据库。
 
@@ -94,7 +94,7 @@ OpenAPI 可访问仅说明 Web 入口正常；登录、数据库和模型仍需�
 
 钉钉后台需完成机器人发布、可见范围及权限配置，具体步骤见[机器人接入](description/capability/infrastructure/dingtalk-robot.md)。助理当前工作区升级涉及 `021` 迁移和显式数据迁移器，操作前提见[助理记忆迁移](description/architecture/workflow/question-answering/assistant-memory.md#显式迁移与部署)。
 
-最终正文转换使用同一 MLLM 服务，原生推理默认 `medium`，由 `ASSISTANT_RENDERING_THINKING_EFFORT` 单独配置。转换失败不会自动降级发送原文；任务失败、确认与交付恢复的当前规则见[助理消费](description/capability/application/assistant-consumption.md#失败与恢复)。
+最终正文转换使用同一 MLLM 服务，默认开启 `medium` 原生推理（`ASSISTANT_RENDERING_THINKING_EFFORT=medium`），通过提示生成 JSON 并由本地 Pydantic 严格校验，不发送接口级 `response_format`；该配置与主助理推理档位独立。转换失败不会自动降级发送原文；任务失败、确认与交付恢复的当前规则见[助理消费](description/capability/application/assistant-consumption.md#失败与恢复)。
 
 ---
 

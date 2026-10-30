@@ -194,7 +194,7 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 | `ASSISTANT_DIRECTORY_MAX_RESULTS` | 1000 | 每次查询最多保存的用户条数，超过时明确标记截断。 |
 | `ASSISTANT_MAX_CONCURRENT_USERS` | 4 | 同时处理的用户数；同用户始终串行。 |
 | `ASSISTANT_THINKING_EFFORT` | medium | low / medium / xhigh，符合当前 Core 与模型配置契约。 |
-| `ASSISTANT_RENDERING_THINKING_EFFORT` | medium | 最终正文转换独立档位，low / medium / xhigh；始终启用原生推理。 |
+| `ASSISTANT_RENDERING_THINKING_EFFORT` | medium | 最终正文转换独立推理档位；可选 none / low / medium / xhigh，none 关闭推理。 |
 | `ASSISTANT_PUBLICATION_RETRY_WINDOW_SECONDS` | 3600 | 未知中间件发布的自动重试窗口，必须小于中央幂等回执保留期。 |
 
 启用需要可用的本平台中间件会话、权威员工 SQL、助理迁移、MLLM 和钉钉机器人凭据。缺少中间件或机器人凭据时本地失败。配置见 [.env.example](../../../.env.example) 与[队列传输配置](../infrastructure/assistant-queue.md#装配与配置)。本轮不改真实 .env，不启用共享消费，启用后会发布已设置提醒的到期消息；[空闲心跳调度](assistant-heartbeat.md)已接入，默认每用户间隔 -1 不发布。提醒扫描与重试配置见[定时任务专题](assistant-reminders.md#生命周期与配置)。

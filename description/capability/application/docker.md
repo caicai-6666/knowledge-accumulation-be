@@ -42,9 +42,9 @@ Docker/ASGI 默认不设置 `APP_PATH_PREFIX`，继续使用生产 API 路径和
 
 中间件接入后会自动执行用户及管理员全表同步，启动前必须准备完整权威人员源，并停止旧的同身份运行实例。跨后端旧快照覆盖并发权限更新的边界仍需由部署侧保证。配置 `VLLM_EMBEDDING_BASE_URL` 后另会启动[记忆自动向量化](memory-embedding.md)，须预先准备问答表和向量服务；空地址不装配该任务。
 
-个人助理及平台 A2A 配置也从 `KNOWLEDGE_BACKEND_ENV_FILE` 读取，不在 deploy `.env` 或 Compose 环境中维护第二份值。部署模板已提示同步 `ASSISTANT_MODEL_RETRY_SECONDS=30`、`ASSISTANT_RENDERING_THINKING_EFFORT=medium` 及 A2A 响应缓冲、轮询、HTTP 超时和并发上限；已有开关、模型地址与自定义值保留。部署侧配置清单见[助理、转换钩子与平台协作](../../../../knowledge-accumulation-deploy/readme.md#助理转换钩子与平台协作)。
+个人助理及平台 A2A 配置也从 `KNOWLEDGE_BACKEND_ENV_FILE` 读取，不在 deploy `.env` 或 Compose 环境中维护第二份值。部署模板已提示同步 `ASSISTANT_MODEL_RETRY_SECONDS=30`、`ASSISTANT_RENDERING_THINKING_EFFORT=medium` 及 A2A 响应缓冲、轮询、HTTP 超时和并发上限；其他开关、模型地址与自定义值保留；已有转换档位若为 `none`，需显式改为 `medium` 才会开启推理。部署侧配置清单见[助理、转换钩子与平台协作](../../../../knowledge-accumulation-deploy/readme.md#助理转换钩子与平台协作)。
 
-启用助理时，[转换子智能体](../../architecture/workflow/question-answering/assistant-message-rendering.md)作为 `finish_task` 独立钩子自动装配，共用 `VLLM_MLLM_*`，要求模型服务支持 `/tokenize`、原生推理和 JSON Schema。转换正文在普通提交前替换，失败不会自动降级发送原文；无需新增容器、端口或 SQL 迁移。配置文件变更需重新创建/启动后端才会加载，镜像仍通过 `COPY app` 包含钩子实现。
+启用助理时，[转换子智能体](../../architecture/workflow/question-answering/assistant-message-rendering.md)作为 `finish_task` 独立钩子自动装配，共用 `VLLM_MLLM_*`，转换默认开启 `medium` 原生推理，要求模型服务支持 `/tokenize`；通过提示生成 JSON 并由本地 Pydantic 严格校验，不发送接口级 `response_format`。转换正文在普通提交前替换，失败不会自动降级发送原文；无需新增容器、端口或 SQL 迁移。配置文件变更需重新创建/启动后端才会加载，镜像仍通过 `COPY app` 包含钩子实现。
 
 Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取。可准备仅部署用户和 GID `10001` 可读的独立配置副本（如权限 `0640`），将 `KNOWLEDGE_BACKEND_ENV_FILE` 指向该副本；不要公开配置内容或把权限 `0600` 且属于其他用户的文件直接视为容器可读。路径缺失时 Compose 拒绝自动创建同名目录。
 
