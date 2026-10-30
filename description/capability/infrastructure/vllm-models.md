@@ -2,7 +2,7 @@
 
 ## 用途与当前状态
 
-参考 contract-service-be 的通用模型参数、异步 Chat Completions、工具流式响应和原生分词协议，提供本项目的 MLLM 基础设施；Embedding 继续使用已适配的 LlamaIndex 客户端。MLLM 按需创建，已供内部问答 Core 调用；配置 Embedding 地址后，FastAPI 启动时装配[记忆自动向量化](../application/memory-embedding.md)，后台扫描并请求向量模型。
+参考 contract-service-be 的通用模型参数、异步 Chat Completions、工具流式响应和原生分词协议，提供本项目的 MLLM 基础设施；Embedding 继续使用已适配的 LlamaIndex 客户端。MLLM 由宿主装配，已供问答 Core 和助理正文转换使用；配置 Embedding 地址后，FastAPI 启动时装配[记忆自动向量化](../application/memory-embedding.md)，后台扫描并请求向量模型。
 
 配置分离为 [MLLM](../../../app/config/mllm.py)和 [Embedding](../../../app/config/embedding.py)，工具型 Agent 支持[可选工具格式模板](tool-tag.md)。本项目不沿用合同提取、业务门禁、视觉页面渲染或推理窗口的专属配置。完整原生推理由客户端返回，不按窗口丢弃；[节点落盘层](../../architecture/data/node-persistence.md)已提供显式保存接口，内部问答 Core 已接入，外部探索问答路由已装配。
 
@@ -21,7 +21,7 @@ VLLM_EMBEDDING_BASE_URL=http://你的向量模型服务地址/v1
 
 模型默认分别为 `qwen38-flash-next`、`qwen3-vl-embedding-8b`，沿用参考项目公开示例命名；服务 `served-model-name` 若不同，必须修改对应 `VLLM_*_MODEL`，不能仅凭地址推断模型。服务需要认证时填写对应 `API_KEY`，无认证则留空。Embedding 默认 4096 维，必须与服务真实输出和 MyVector 索引声明一致，更换模型需统一重建历史向量。
 
-加载顺序为本项目 `.env`，再由进程环境覆盖；不展开 `${...}`。地址为空不影响现有应用启动；Embedding 地址已配置时会在启动期间校验其完整配置，MLLM 仍在按需加载时校验，错误只返回脱敏提示。数值和布尔示例不加引号，API key 以 `SecretStr` 保存。
+加载顺序为本项目 `.env`，再由进程环境覆盖；不展开 `${...}`。未启用助理时，MLLM 通常由探索入口按需加载；启用助理且使用默认 Agent 或转换钩子时，应用启动即加载并校验 MLLM 配置，空地址会阻止启动。Embedding 地址已配置时会在启动期间校验其完整配置；错误只返回脱敏提示。数值和布尔示例不加引号，API key 以 `SecretStr` 保存。
 
 ---
 
@@ -70,7 +70,7 @@ async with MLLMClient(settings) as client:
 
 | 方法 | 行为 |
 | --- | --- |
-| `create_chat_completion(messages=..., json_schema=...)` | JSON Schema 约束正文输出；不能同时启用工具，业务层仍做完整校验，供主题总结使用。 |
+| `create_chat_completion(messages=..., json_schema=...)` | JSON Schema 约束正文输出；不能同时启用工具，业务层仍做完整校验，供主题总结和助理正文转换等单次生成使用。 |
 | `create_chat_completion(messages=..., generation=...)` | 普通非流式请求，返回完整助手消息、用量、结束原因及原始响应。 |
 | `create_tool_chat_completion(messages=..., tools=..., tool_choice=...)` | 保留原生工具调用及参数字符串，不解析或执行业务工具。 |
 | 上述方法的 `stream=True` / `on_delta=callback` | 消费流并合并正文、推理和工具参数，完成后返回统一结果；回调非空时自动启用流式。 |

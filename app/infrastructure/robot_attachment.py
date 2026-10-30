@@ -3,11 +3,16 @@ from io import BytesIO
 from pathlib import PurePath
 
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
 import pymupdf
 
 
-IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.avif'}
-IMAGE_FORMATS = {'PNG', 'JPEG', 'WEBP', 'GIF', 'BMP', 'TIFF', 'AVIF'}
+# HEIC/HEIF 复用同一逐帧校验和 PDF 转换流程；缩略图不作为独立正文页面。
+register_heif_opener(thumbnails=False)
+
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.avif',
+                    '.heic', '.heif', '.heics', '.heifs', '.hif'}
+IMAGE_FORMATS = {'PNG', 'JPEG', 'WEBP', 'GIF', 'BMP', 'TIFF', 'AVIF', 'HEIF'}
 
 
 class AttachmentRejected(ValueError):

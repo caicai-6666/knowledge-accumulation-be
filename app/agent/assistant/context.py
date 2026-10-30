@@ -2,7 +2,6 @@
 from typing import Annotated,Literal
 from pydantic import BaseModel,ConfigDict,Field
 from app.agent.core import ContextInjection
-from app.agent.core.json_codec import render_json
 
 Text=Annotated[str,Field(strict=True,min_length=1,pattern=r'\S')]
 
@@ -30,7 +29,13 @@ def build_context(base:ContextInjection,personal:AssistantContext | None=None) -
     if not any((personal.profile,personal.preferences,personal.relevant_memories)):
         return result
     # 所有背景作为普通资料注入；不会因包含指令、偏好或旧结论而获得系统角色。
-    return result.model_copy(update={'supplemental':render_json({
-        'provided_material':result.supplemental,'personal_background':personal.model_dump(mode='json')})})
+    labels={'profile':'员工个人信息','preferences':'服务偏好','relevant_memories':'相关记忆'}
+    statuses={'confirmed':'已确认的记录','user_reported':'用户陈述','unverified':'待核实','conflicted':'存在冲突'}
+    sections=[result.supplemental] if result.supplemental else []
+    for field,label in labels.items():
+        for item in getattr(personal,field):
+            # 来源与确认状态保持可见，正文直接展示，不再包装成 YAML 或 JSON。
+            sections.append(f'【{label}】\n来源：{item.source}\n确认状态：{statuses[item.status]}\n{item.content}')
+    return result.model_copy(update={'supplemental':'\n\n'.join(sections)})
 
 __all__=['AssistantContext','ContextMaterial','build_context']

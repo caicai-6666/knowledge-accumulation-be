@@ -1,4 +1,4 @@
-"""注册中心文件原件读取配置；凭据来自当前用户，不设置平台密钥。"""
+"""注册中心原件读取配置；复用中间件平台会话，不另设下载密钥。"""
 import os
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator

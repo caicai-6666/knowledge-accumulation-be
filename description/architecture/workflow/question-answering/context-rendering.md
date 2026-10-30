@@ -14,7 +14,7 @@
 
 | 顺序 | 角色与内容 |
 | --- | --- |
-| 1 | system：当前模式的角色、交互及工作区规则。 |
+| 1 | system：当前模式角色、公司背景、平台协作、交互及工作区规则。 |
 | 2 | user：最近树摘要；不存在时省略。 |
 | 3 | 逐轮历史：user 任务输入 → 已接受的 assistant/tool 工具对或真实助手正文 → user 结束记录。 |
 | 4 | user：当前工作区，紧邻本轮任务。 |
@@ -56,7 +56,7 @@
 
 公共 Core 的 `AttachmentReference` 只定义 `type` 与 `file_id`；`AgentInput.attachments` 默认空列表，内部 `QuestionAgentService.generate(attachments=..., uploads=...)` 接入同一入口。`type` 接受 `images`（多图）、`audio`（音频）、`video`（视频），不使用文件扩展名或 MIME 类型；文件 ID 为完整小写、带连字符 UUID。
 
-用户上传文件保存于项目根目录下的 `data/user/upload-file/`，由 `.gitignore` 排除。类型决定固定后缀，UUID 与任务正文登记共同用于定位和鉴权，完整契约见[用户附件引用与文件定位](../../data/question-file.md)。模型上下文只显示引用，不显示服务器存储路径。内部保存和读取已实现，图像附件可通过[独立图像工具](image-reading.md)逐页查看；HTTP 上传及音频/视频查看尚未接入。测试文件仍使用 `tests/fixtures/` 或 `tests/tmp/`。
+用户上传文件保存于项目根目录下的 `data/user/upload-file/`，由 `.gitignore` 排除。类型决定固定后缀，UUID 与任务正文登记共同用于定位和鉴权，完整契约见[用户附件引用与文件定位](../../data/question-file.md)。模型上下文只显示引用，不显示服务器存储路径。内部保存和读取已实现，图像附件可通过[独立图像工具](image-reading.md)逐页查看；探索 HTTP 已接入 multipart PDF 上传；音频/视频查看尚未接入。测试文件仍使用 `tests/fixtures/` 或 `tests/tmp/`。
 
 [附件渲染器](../../../../app/agent/core/context_rendering/attachment.py) 在当前问题之后展示“用户附件”。每项仅显示文件类型和文件 ID，保留输入顺序；不添加文件名、摘要、补充说明、查看工具名或使用方法。空附件不生成区域，未定义字段与非法类型在生成前拒绝；替代旧任务时，也先校验附件再执行停止操作。
 
@@ -79,7 +79,7 @@
 
 [build_tree_context](../../../../app/agent/context.py) 从已经选定的路径读取 TaskContent.exchanges，填入 HistoryTurn.native_messages。继续使用已有 JSON 正文，无需新增表、列、启动任务或第二份缓存。
 
-[原生消息校验](../../../../app/agent/core/native_messages.py) 沿用参考项目契约：每条 assistant 恰有一个工具调用；反馈必须紧邻并匹配；调用标识不能重复；参数必须是无重复键、无非法数值的 JSON 对象。普通文本和私有推理不能混入工具消息。原始参数字符串、工具名称和回执原样保留，不从公开输出重建参数。
+[原生消息校验](../../../../app/agent/core/native_messages.py) 沿用参考项目契约：每条 assistant 恰有一个工具调用；反馈必须紧邻并匹配；调用标识不能重复；参数必须是无重复键、无非法数值的 JSON 对象。普通文本和私有推理不能混入工具消息。已接受的参数字符串、工具名称和回执按提交结果恢复，不从公开输出重建参数。输出工具若注册执行后钩子，先转换再提交；助理已接受的 `finish_task.content` 为转换后的正文，原始生成仅保存在私有审计，见[正文转换](assistant-message-rendering.md)。
 
 历史封闭时去除已完成任务的程序操作提示，但不按正文关键字删除资料。context_summary 是宿主保存的整理检查点，带 covered_turns 的新检查点先应用祖先覆盖投影，随后从原生消息中排除，不能用它掩盖一半的工具调用。原始完整 exchanges 保留在数据库；需要进一步缩短历史时仍由树摘要和容量规则处理。
 
@@ -93,9 +93,9 @@
 
 已移植参考项目的[主题发现与总结](topic-summary.md)，按选中路径而非线性 FIFO 提供资料。内部结构继续由 SummaryContent.text 承载；模型注入及打开树的公开 text 显示主题、当前记忆、未决事项与业务出处，隐藏编码和来源标签。历史纯文本保持原样展示，不在展示阶段重新生成摘要。
 
-从选定节点只回溯首个摘要及其后的路径，工作区恢复选定快照；其他分支和未来节点不注入。原生推理完整持久化、不采用窗口，但不会自动再次送入模型。
+探索从选定节点回溯摘要及其后的有效路径，恢复选定工作区快照；助理只读取主干的[持久化压缩窗口与当前工作区](assistant-memory.md)，不允许选择历史分支。其他分支和未来节点不注入。原生推理完整持久化、不采用窗口，但不会自动再次送入模型。
 
-问答 HTTP/SSE、HTTP 文件上传、音频/视频查看和合同业务工具仍未接入。[公共折叠机制](tool-content-contract.md)按页面引用注入图片、文本和表格，正文只进入当前请求的临时 user 消息；历史工具轨迹保留来源及未展示占位，不自动重开资源。没有恢复已撤销接口，也没有修改实际 .env、业务数据库或其他项目。
+[探索 HTTP/SSE 与 PDF 上传](exploration-session.md)已接入；音频/视频查看和合同业务工具仍未接入。[公共折叠机制](tool-content-contract.md)按页面引用注入图片、文本和表格，正文只进入当前请求的临时 user 消息；历史工具轨迹保留来源及未展示占位，不自动重开资源。
 
 ---
 

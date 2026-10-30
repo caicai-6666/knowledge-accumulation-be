@@ -15,11 +15,11 @@ from .context import build_messages,render_history,build_fixed_messages,render_w
 from .context_budget import validate_count,budget
 from .context_budget.fifo import measure_fifo,capacity_guidance,compression_notice
 from .subgraph.context_management.workspace_compression.errors import WorkspaceEditRejected
-from .json_codec import render_json
+from .json_codec import render_json,ModelActionRejected
 from .journal import MemoryJournal
 from .model import AgentInput, AgentResult, CoreSettings
 from .prompt import build_system_prompt,build_system_guidence_message
-from .tool import ToolRegistry
+from .tool import ToolRegistry,ToolHookContext
 from .context_rendering.page import render_tool_receipt
 from .page_display import PageDisplayWindow
 from .guidance import RequestGuidance
@@ -151,6 +151,8 @@ class AgentCore:
     async def run(self,request: AgentInput,*,journal=None,publish=None,publish_progress=None,output_observer: OutputObserver | None = None) -> AgentResult:
         if output_observer is not None and any(t.deliver_output is not None for t in self.registry.entries.values()):
             raise ValueError('条件交付工具不支持流式预览，须在完整参数验收后决定发送')
+        if output_observer is not None and any(t.output_kind is not None and t.hooks for t in self.registry.entries.values()):
+            raise ValueError('带钩子的输出工具不支持流式预览，须等待最终正文验收')
         request=AgentInput.model_validate(request.model_dump())
         journal=journal if journal is not None else MemoryJournal()
         if (journal.status!='generating' or journal.exchanges or
@@ -266,12 +268,23 @@ class AgentCore:
             if journal.status!='generating':
                 raise AgentCoreError('任务已结束，丢弃迟到业务动作')
             try:
-                if (len(response.tool_calls)!=1 or response.content not in (None,'') or response.assistant_message.get('refusal')
-                        or response.finish_reason not in ('stop','tool_calls')):
-                    raise ValueError('每次必须提交一个完整原生工具调用，不能附带普通文本')
+                # 附带说明不否定原生调用；原始生成已留审计，后续只提交规范化工具对。
+                if response.assistant_message.get('refusal'):
+                    raise ModelActionRejected('本轮响应包含拒绝标记，工具未执行。',
+                        '核对任务能否在授权和工具边界内完成；不能完成时通过最终输出工具说明限制，不绕过拒绝。')
+                if response.finish_reason not in ('stop','tool_calls'):
+                    raise ModelActionRejected('本轮生成未完整结束，工具未执行。',
+                        '缩短本次参数，重新提交一个完整调用，不从未完成的调用推断结果。')
+                if not response.tool_calls:
+                    raise ModelActionRejected('本轮没有原生工具调用，未执行任何动作。',
+                        '通过当前提供的原生函数机制提交一个调用；普通说明、工具名文字或代码块不能代替调用。')
+                if len(response.tool_calls)!=1:
+                    raise ModelActionRejected('本轮同时提交多个工具调用，所有调用均未执行。',
+                        '只选择当前最必要的一个调用，收到真实结果后再决定下一步。')
                 call=response.tool_calls[0]
                 if not re.fullmatch(r'[A-Za-z0-9_-]{1,256}',call.call_id) or call.call_id in seen:
-                    raise ValueError('原生调用标识不合法或重复')
+                    raise ModelActionRejected('本轮调用无法与工具回执唯一配对，工具未执行。',
+                        '通过原生函数机制重新生成一个调用，使用新的有效调用标识，不复制历史调用。')
                 seen.add(call.call_id)
                 arguments,candidate=self.registry.prepare(call.name,call.arguments,workspace)
             except (ValueError,TypeError) as error:
@@ -279,9 +292,16 @@ class AgentCore:
                 errors+=1
                 # 完整错误响应仅在私有生成；不给模型回显无效正文或参数。
                 location='、'.join('.'.join(map(str,e['loc'])) for e in error.errors()[:5]) if isinstance(error,ValidationError) else ''
-                reason='工具参数不符合定义，请检查 '+location if location else '需要一个可用工具，且参数、路径、引用和当前状态必须合法。'
+                if isinstance(error,ModelActionRejected):
+                    reason,action=error.reason,error.required_action
+                else:
+                    # 未分类异常不泄露原文；具体业务校验应在产生处提供定向反馈。
+                    reason='本次动作未通过调用前校验，未提交修改。'
+                    action='依据当前工具的字段说明和最新工作区选择合法动作；无法确定时说明限制，不猜测调用结果。'
+                if len(response.tool_calls)==1 and response.tool_calls[0].name in self.registry.entries:
+                    reason='工具 '+response.tool_calls[0].name+'：'+reason
                 temporary.append(build_system_guidence_message(kind='output_error',reason=reason+' 本次动作未提交。',
-                    required_action='请按当前工具 Schema 修正参数、路径或引用，并只调用一个工具。'+
+                    required_action=action+
                         ('\n'+tool_tag_section(self.tool_call_template) if self.tool_call_template else '')))
                 journal.audit.append({'event':'rejected','error_type':type(error).__name__,'fields':location})
                 if errors>=self.options.max_consecutive_errors:
@@ -320,10 +340,14 @@ class AgentCore:
                                 candidate=apply_pending(compressed,pending)
                             except (ValueError,TypeError,KeyError):
                                 # 这里只做纯副本重放；已知无法应用不代表外部执行或提交状态不明。
-                                raise WorkspaceEditRejected('整理后无法应用原操作，候选未提交') from None
+                                raise WorkspaceEditRejected('整理后无法应用原操作，候选未提交',
+                                    reason='整理后的工作区无法应用原编辑，本次修改未提交，旧工作区保持不变。',
+                                    required_action='依据最新工作区重新选择有效路径和值，必要时缩小本次修改，不假定原修改已生效。') from None
                             final_tokens=validate_count(await self.counter([{'role':'user','content':render_workspace_section(candidate)}],[],generation))
                             if final_tokens*5>=workspace_budget*4:
-                                raise WorkspaceEditRejected('整理后应用本次操作仍未低于80%，不提交修改')
+                                raise WorkspaceEditRejected('整理后应用本次操作仍未低于80%，不提交修改',
+                                    reason='整理后应用本次编辑仍未低于80%容量目标，修改未提交，旧工作区保持不变。',
+                                    required_action='缩小本次新增或替换内容，或先精简已有重复信息，再提交修改。')
                         usage=f'{final_tokens}/{workspace_budget} token（{final_tokens/workspace_budget:.1%}）'
                         workspace_feedback='工作区修改成功。当前使用量：'+usage+'。'
                         if full or final_tokens*5>workspace_budget*4:
@@ -334,23 +358,27 @@ class AgentCore:
                     elif prospective>=workspace_budget:
                         candidate=await self._compress_workspace(client,journal,workspace=candidate,generation=generation,
                             token_budget=workspace_budget)
-            except WorkspaceEditRejected:
+            except WorkspaceEditRejected as error:
                 # 只有纯副本整理/重放的确定拒绝可纠错；分词、网络、落盘及未知回执仍上抛。
                 if output_observer is not None:await output_observer.interrupt()
                 errors+=1
                 temporary.append(build_system_guidence_message(kind='output_error',
-                    reason='工作区整理或重放未达到容量要求，本次修改未提交，旧工作区保持不变。',
-                    required_action='请缩小本次修改或先使用工作区工具整理已有内容，再提交合法操作；不要假定失败修改已生效。'))
+                    reason=error.reason or '工作区整理未能完成，本次修改未提交，旧工作区保持不变。',
+                    required_action=error.required_action or '缩小本次修改或先精简已有重复内容；不要假定失败修改已生效。'))
                 journal.audit.append({'event':'rejected','tool':call.name,'code':'workspace_edit_rejected'})
                 if errors>=self.options.max_consecutive_errors:
                     raise AgentCoreError('连续工具校验失败达到上限')
                 continue
-            assistant={'role':'assistant','content':None,'tool_calls':[{'id':call.call_id,'type':'function',
-                'function':{'name':call.name,'arguments':render_json(arguments.model_dump(mode='json'))}}]}
             # 执行或提交故障直接停止，不当作模型参数错误反复调用外部服务。
             try:
-                execution=await self.registry.execute(call.name,arguments,publish_progress=publish_progress)
+                execution=await self.registry.execute(call.name,arguments,publish_progress=publish_progress,call_id=call.call_id,
+                    hook_context=ToolHookContext(record_generation=journal.record_payload))
                 result=execution.result
+                if execution.output is not None:
+                    # 钩子只替换输出正文，不修改已经执行的动作参数或工作区候选。
+                    # 正常提交同时保存转换后的调用历史与答案；原生调用仍在私有生成审计中。
+                    arguments=type(arguments).model_validate({**arguments.model_dump(),
+                        'content':execution.output})
                 pages.validate(call.call_id,result)
             except BaseException:
                 journal.audit.append({'event':'execution_unknown','tool':call.name})
@@ -360,15 +388,16 @@ class AgentCore:
                 raise AgentCoreError('工具执行结果不确定；已停止且不自动重放')
             if workspace_feedback and result.status=='succeeded':
                 result=result.model_copy(update={'tool_result':{**result.tool_result,'workspace_feedback':workspace_feedback}})
+            assistant={'role':'assistant','content':None,'tool_calls':[{'id':call.call_id,'type':'function',
+                'function':{'name':call.name,'arguments':render_json(arguments.model_dump(mode='json'))}}]}
             receipt={'role':'tool','tool_call_id':call.call_id,'content':render_tool_receipt(result)}
             pair=[assistant,receipt]
             guidance=[{**item.message,'source':item.source} for item in result.system_guidence]
             if result.status=='failed':
                 if output_observer is not None:await output_observer.interrupt()
                 errors+=1
-                temporary.extend([*pair,*[dict(item.message) for item in result.system_guidence],
-                    build_system_guidence_message(kind='output_error',reason='本次工具动作未成功。',
-                    required_action='请根据工具反馈修正调用；无法继续时说明限制，不假定动作已完成。')])
+                # 具体原因和修复动作由工具错误分支提供，不能再用“检查参数”覆盖。
+                temporary.extend([*pair,*[dict(item.message) for item in result.system_guidence]])
                 journal.audit.append({'event':'rejected','tool':call.name,'code':result.tool_result.get('code')})
                 if errors>=self.options.max_consecutive_errors:raise AgentCoreError('连续工具校验失败达到上限')
                 continue

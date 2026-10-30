@@ -66,7 +66,8 @@ class InteractionOutputStream:
         if self.blocked:
             return
         calls = message.get('tool_calls', ())
-        if len(calls) > 1 or message.get('content') or message.get('refusal'):
+        # 仅预览输出工具参数；旁附说明既不否定调用，也不混入公开正文。
+        if len(calls) > 1 or message.get('refusal'):
             await self.interrupt()
             return
         if not calls:

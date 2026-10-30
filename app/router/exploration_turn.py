@@ -6,13 +6,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import ValidationError, SecretStr
+from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.model.question_file import UploadedFile
 from app.repository.question_tree import QuestionTreeConflict, QuestionTreeNotFound
-from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer, bearer_token
+from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer
 from app.router.exploration import TreePath
 from app.schema.exploration_turn import TurnCreated, TurnInput, TurnSnapshot
 from app.service.exploration_turn import InvalidTurnInput, ReplayUnavailable, TurnCapacity, TurnExpired
@@ -118,8 +118,7 @@ async def events(tree_id: TreePath, turn_id: TreePath, request: Request, user: A
     if last_event_id is not None and (not last_event_id.isascii() or not last_event_id.isdecimal() or len(last_event_id) > 20):
         raise HTTPException(422, 'Last-Event-ID 必须是非负整数', headers={'Cache-Control': 'no-store'})
     async with errors():
-        stream = await service(request).subscribe(tree_id, turn_id, user, int(last_event_id or 0),
-            access_token=SecretStr(bearer_token(request)))
+        stream = await service(request).subscribe(tree_id, turn_id, user, int(last_event_id or 0))
     async def iterate():
         try:
             async for event in stream:

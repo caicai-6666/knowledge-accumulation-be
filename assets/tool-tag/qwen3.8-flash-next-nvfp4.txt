@@ -7,3 +7,8 @@
 </function>
 </tool_call>
 请替换为实际工具名称和全部必填参数；调用结束后不得追加任何文本。
+无参数工具省略所有 parameter 标签，保留空的 function 块，格式如下；不要添加占位字段，也不要把空对象作为参数值：
+<tool_call>
+<function=工具名称>
+</function>
+</tool_call>

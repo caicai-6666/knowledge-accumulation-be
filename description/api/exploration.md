@@ -26,11 +26,11 @@
 
 - **认证方式**：必填 header `Authorization: Bearer <access_token>`，使用显式登录签发的中央用户 token。每次请求查询中央会话，不隐式登录或恢复失效 token。
 - **请求参数**：无 query 参数、无请求体；传入任何 query 或非空请求体返回 `422`。不接受客户端传入 userid 或树类型。
-- **成功响应**：`200 application/json`，对象数组，每项包含 `id`（32 位小写十六进制字符串）、`name`（树名称）和 `has_running_task`（布尔值，是否有任务正在执行）；没有探索树返回 `[]`。附带 `Cache-Control: no-store`。
+- **成功响应**：`200 application/json`，对象数组，每项包含 `id`（32 位小写十六进制字符串）、`name`（树名称）、`updated_at`（最后更新时间，带时区的 UTC 时间）和 `has_running_task`（布尔值，是否有任务正在执行）；没有探索树返回 `[]`。附带 `Cache-Control: no-store`。
 
 ```json
 [
-  {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "技术方案比较", "has_running_task": true}
+  {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "技术方案比较", "updated_at": "2026-10-26T02:30:00Z", "has_running_task": true}
 ]
 ```
 
@@ -54,7 +54,9 @@ curl -i http://127.0.0.1:24000/knowledge-accumulation/api/exploration/trees \
 
 `has_running_task` 取当前请求时刻的进程内执行状态：只有 `processing` 且生产协程尚未结束时为 `true`。待激活 `pending_activation`、完成、失败、停止、被替代及过期均为 `false`；SSE 断线后仍在后台执行则为 `true`。它是状态快照，不是执行锁，不能代替注册接口的并发校验。创建和改名响应仍只含 `id/name`。
 
-查询仅使用认证所得的 userid，并在 SQL 中固定筛选 `kind='exploration'`；排除 `assistant` 个人助理树及其他用户的所有树。按 `updated_at DESC, id DESC` 排序，当前返回全部匹配项、不分页；只读取树表的 `id/name`，不加载节点、正文或工作区，不要求管理员或文件访问等级。
+查询仅使用认证所得的 userid，并在 SQL 中固定筛选 `kind='exploration'`；排除 `assistant` 个人助理树及其他用户的所有树。按 `updated_at DESC, id DESC` 排序，当前返回全部匹配项、不分页；只读取树表的 `id/name/updated_at`，不加载节点、正文或工作区，不要求管理员或文件访问等级。
+
+`updated_at` 直接取数据库树记录，与列表排序依据一致；创建时初始化，改名、追加节点及任务结束持久化等树数据更新会刷新该时间，重复提交相同名称不刷新。普通列表读取、打开树及尚未落盘的流式输出不代表树数据更新。返回 ISO 8601 UTC 时间（例如 `2026-10-26T02:30:00Z`），前端按展示需要转换为本地时区。
 
 执行标识批量读取当前用户的任务状态，不按树查询节点，也不将 SQL 遗留的 `generating` 当作仍在执行。当前任务调度仅驻留本进程；多实例时列表请求必须与该用户的任务路由到同一实例，不能用任意实例的列表判断全局状态，详见[任务生命周期边界](../architecture/workflow/question-answering/exploration-session.md#停止删除与生命周期)。
 
@@ -229,7 +231,7 @@ curl -i -X POST http://127.0.0.1:24000/knowledge-accumulation/api/exploration/tr
   -H 'Authorization: Bearer <access_token>'
 ```
 
-每次打开都重新确认数据库归属与用途，并在同一 REPEATABLE READ 事务中批量读取完整结构、正文及公开消息，验证成功后才驻留。失败不返回旧缓存或不完整树。打开本身不更新活动时间、节点状态或工作区；内存快照的刷新、容量与停机行为见[内存构树与正文加载](../architecture/data/question-tree.md#内存构树与正文加载)。
+每次打开都重新确认数据库归属与用途，并在同一 REPEATABLE READ 事务中复用同版本驻留结构（未命中时批量加载），读取完整正文及公开消息。结构在事务提交成功后驻留，与后续问答执行共用。失败不返回旧缓存或不完整树。打开本身不更新活动时间、节点状态或工作区；内存快照的刷新、容量与停机行为见[内存构树与正文加载](../architecture/data/question-tree.md#内存构树与正文加载)。
 
 ---
 
@@ -337,7 +339,7 @@ curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/exploration/tree
 
 `GET /knowledge-accumulation/api/exploration/trees/{tree_id}/turns/{turn_id}/events`
 
-携带中央用户 Bearer，无 query/body。可选 `Last-Event-ID: <sequence>`，默认 0；必须是最多 20 位 ASCII 非负整数。首次订阅在归属、游标和最新树状态校验通过后激活一次，随后订阅只回放和追踪同一任务。无需再调用独立 activate API。首次激活的同一用户Bearer仅在本轮后台任务内用于[注册中心原件授权读取](../architecture/workflow/question-answering/registry-file-reading.md)，不进入任务快照、SSE或数据库；重连不会替换正在执行任务的凭据。
+携带中央用户 Bearer，无 query/body。可选 `Last-Event-ID: <sequence>`，默认 0；必须是最多 20 位 ASCII 非负整数。首次订阅在归属、游标和最新树状态校验通过后激活一次，随后订阅只回放和追踪同一任务。无需再调用独立 activate API。首次激活只向后台任务绑定已认证用户身份，不传递网页登录 Bearer。[注册中心原件授权读取](../architecture/workflow/question-answering/registry-file-reading.md)使用平台认证并按该用户 userid 实时检查文件权限；重连只订阅同一任务，不替换任务归属。
 
 成功 `200 text/event-stream`，`Cache-Control: no-cache, no-transform`、`X-Accel-Buffering: no`。示例：
 
@@ -358,10 +360,12 @@ data: {"turn_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"processing","can_i
 | event | data 主要字段 |
 | --- | --- |
 | `turn.status` | `turn_id/status/can_interrupt/context_status/created_at/activated_at/finished_at/processing_duration_ms/node_id/summary_id/supersedes_turn_id/superseded_by_turn_id` |
-| `task.progress` | `turn_id/type/message`；type 为 `thinking`（思考）、`online-search`（网页检索/读取）、`external-expert`（专家咨询/追问）或 `local-search`（注册中心文件检索）；基础工具默认声明 `thinking`，每个工具执行前发布其注册状态，结束恢复 `thinking`；message 为不超过 2000 字符的动作提示 |
+| `task.progress` | `turn_id/type/message`；type 为 `thinking`（思考）、`online-search`（网页检索/读取）、`external-expert`（专家咨询/追问）、`local-search`（注册中心文件检索）、`boardcast`（跨平台广播求助）或 `a2a`（跨平台续聊）；基础工具默认声明 `thinking`，每个工具执行前发布其注册状态，结束恢复 `thinking`；message 为不超过 2000 字符的动作提示 |
 | `message.delta` | `turn_id/message_id/message_kind/delta`；kind 为 `intermediate/final` |
 | `message.completed` | `turn_id/message_id/message_kind/text/status`；status 为 `completed`（已验收落盘）或 `interrupted`（预览中断） |
 | `error` | `turn_id/code/message/retryable`，脱敏错误 |
+
+A2A 广播使用固定负载 `type: "boardcast"`、`message: "正在广播求助"`（`boardcast` 是前后端约定的实际拼写）。续聊使用 `type: "a2a"`，message 例如 `正在与平台协作：合同管理平台`，按第一个全角冒号 `：` 分隔动作与详情。续聊名称从平台目录取得，目录不可用或名称缺失时回退对应平台代码；名称内换行压平，竖线替换为 `／`。message 超长时会截断并加 `…`，仅供展示，不作为平台身份或权限依据；协作正文和响应 ID 不放入动作提示。广播提示不查询平台名称；工具结束后恢复 `thinking`。历史 `a2a` 广播事件仍可读取。
 
 输出随模型生成实时发送：`emit_progress/finish_task` 的正文参数每到达可解码片段，就产生 `message.delta`，无需等待完整工具调用或最终答案。前端按消息 ID 累积正文，标记为 `streaming`；`message.completed` 的 text 覆盖正文，并以其 status 区分已完成或中断。仅通过校验并成功落库的输出标记 `completed`；截断、校验失败、停止或改变方向的预览标记 `interrupted`，不能当作最终答案。成功消息的预览 ID 与 SQL 历史 ID 相同，失败后纠正的输出使用新 ID。原生推理和其他工具参数不公开。最终答复消息之后仍须以任务 `completed` 状态判断整轮结束。终态还包括 `cancelled/superseded/failed/expired`；`superseded` 的 `context_status=user_goal_adjusted`，并用 `superseded_by_turn_id` 指向新任务。
 

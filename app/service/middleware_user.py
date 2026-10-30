@@ -26,8 +26,13 @@ class EmployeeReader(Protocol):
 
 
 def middleware_profile(user: AuthenticatedUser) -> MiddlewareUserInfo:
+    # 中央契约只接收名称；按部门 ID 稳定排序后去重同名，不改写本地多部门身份。
+    # 仅旧身份/未落库模拟用户缺少完整列表时，回退已有单部门名称。
+    names = ([item.name for item in sorted(user.departments, key=lambda item: item.id)]
+             if user.departments else [user.department_name] if user.department_name is not None else [])
+    departments = list(dict.fromkeys(name.strip() for name in names))
     return MiddlewareUserInfo(userid=user.userid, username=user.name or user.userid,
-                              permissions=user.platform_permissions)
+                              permissions=user.platform_permissions, departments=departments)
 
 
 class MiddlewareUserSyncService:

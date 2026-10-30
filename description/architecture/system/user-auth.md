@@ -26,15 +26,17 @@
 
 ## 首次员工初始化
 
-[EmployeeOnboardingService](../../../app/service/employee_onboarding.py) 在可信钉钉 userid 首次登录时执行：
+[EmployeeOnboardingService](../../../app/service/employee_onboarding.py) 在可信钉钉 userid 首次登录或[机器人首次消息](../../capability/application/assistant-inbound.md#整条消息规则)时执行：
 
 1. 先读取已有员工；存在则直接使用，不重置任何姓名、头像、部门、文件权限或管理员身份。
-2. 获取与可信 userid 相符的钉钉员工详情，向上追溯部门层级到根部门或根下一级部门。检测环、深度超过 32、断裂及多个不同顶级部门，不能确定唯一归属时失败。
+2. 获取与可信 userid 相符的钉钉员工详情，向上追溯部门层级到根部门或根下一级部门。去重后保留全部一级部门；有实际一级部门时忽略企业根部门，只有根部门时保留根。环、深度超过32、断裂或上游查询失败仍拒绝，不因多个一级部门而失败。
 3. 通过轻量 [PlatformDirectoryService](../../../app/service/platform_directory.py) 实时读取中间件平台目录。包含返回列表中的离线平台，并补入自身 `knowledge-accumulation`，为每个平台初始化 0 文件访问等级，不赋予管理身份。
-4. 有头像时调用既有安全下载与无损 WebP 存储，再通过人员事务写入部门及缺失员工。没有头像使用 null。
+4. 从用户详情采集直属主管 userid 和职位，保存为[任职资料 JSON](../data/personnel.md#任职资料与初始化)；未维护字段为空，不采集岗位说明书。有头像时调用既有安全下载与无损 WebP 存储，再通过同一人员事务写入部门、缺失员工及任职资料。没有头像使用 null。
 5. 并发初始化由进程内 userid 锁和数据库主键共同约束；已有员工不会被后来的尝试重置。失败时清理未引用头像；数据库提交结果不确定且无法确认引用时保留头像供核对，不冒险删除可能已生效的文件。
 
-**目录可见性边界：** 当前中间件 `GET platform/list` 仅返回 `show_in_list=true` 的平台。新员工初始化覆盖全部返回平台（含离线）与自身，不虚构其他隐藏平台键。缺少平台键表示未授权，不能当成默认 0 或自动允许访问，具体语义以[人员权限契约](../data/personnel.md#部门员工与管理员)为准。已有员工再次登录不重置或补全权限，目录可见性改变也不会自动扩权。完整隐藏平台目录须由用户另行协调外部契约，本阶段不新增目录接口或门户路由。
+部门阶段诊断：`stage=department` 表示已取得员工详情，但部门查询或层级解析失败，尚未初始化员工及助理任务。钉钉适配器记录固定接口路径、数值 `errcode` 或异常类型；部门响应不合法记录 `invalid_department_response`。归属规则分别记录 `department_cycle`、`department_disconnected`、`department_depth_limit`、`top_department_count`。不输出 access_token、上游 errmsg 或完整员工资料，多一级部门现为合法归属。隔离验证见 `tests/test_onboarding_diagnostics.py`。
+
+**目录与权限边界：** 2026-10-26 核对的中间件 `GET platform/list` 返回全部已配置平台，包含离线平台，不再按 `show_in_list` 过滤。本项目按实际返回目录及自身初始化新员工的平台等级，不自行推断目录以外的平台。缺少平台键表示未授权，不能当成默认 0 或自动允许访问，具体语义以[人员权限契约](../data/personnel.md#部门员工与管理员)为准。已有员工再次登录不重置或补全权限，目录变化也不会自动扩权；本次契约核对不迁移既有人员权限。
 
 人员字段及权限定义见[人员与权限数据契约](../data/personnel.md)，头像和仓库实现见[用户基础设施](../../capability/infrastructure/user-infrastructure.md)。
 
@@ -51,6 +53,8 @@
 ## 本地与中央会话规则
 
 [随机 token 生成器](../../../app/auth/session.py) 不存会话。[MiddlewareUserAuthService](../../../app/service/middleware_user_auth.py) 的查询只发送 `POST login-cache`，body 精确为 `{"access_token":"用户token"}`，绝不传 userid。在线响应必须同时满足 userid 非空合法、is_logged_in=true、ttl 为正严格整数；离线必须为 userid=null、false、0。PUT 还必须返回与可信身份相同的 userid 和在线状态，禁止类型宽松转换或额外字段。
+
+中央 POST 登录查询新增部门名称列表 `departments`：有效登录为数组（无部门为 []），无效登录为 null；兼容旧响应省略字段，但显式值必须与登录状态一致。PUT 响应维持原结构，未知额外字段仍拒绝。`me` 的完整员工身份继续读取本地权威人员库。
 
 中央有效查询负责续期；`expires_in` 仅表示登录响应时中央确认的 ttl，不是知识后端固定截止时间。知识后端重启和关闭不撤销中央 token；其他进程已绑定的有效 token 也能查询，身份不依赖本进程是否签发过。中间件同用户新登录使旧 token 立即失效；me 不能通过重新查库或钉钉信息复活它。
 
@@ -99,7 +103,7 @@
 
 ## 组合根与日志
 
-[create_app()](../../../app/main.py) 只维护一个平台会话任务，按需共享员工仓库及用户 HTTP 客户端。开发模式不构造钉钉客户端；两种模式共享本应用唯一头像 Store，生产模式另构造钉钉、目录和首次初始化。登录和验证按请求执行，没有用户心跳后台任务。
+[create_app()](../../../app/main.py) 只维护一个平台会话任务，按需共享员工仓库及用户 HTTP 客户端。未启用机器人时，开发模式不构造钉钉客户端；启用机器人后使用机器人应用凭据读取真实员工，不使用开发模拟身份建档。两种模式共享本应用唯一头像 Store；生产网页登录与机器人复用同一钉钉客户端、平台目录及首次初始化服务。登录和验证按请求执行，没有用户心跳后台任务。
 
 关闭时先取消并等待可选全表同步，再按资源逆序关闭钉钉客户端、头像 Store、用户 HTTP 客户端、人员仓库及平台会话。依赖初始化失败也通过 `AsyncExitStack` 清理已登记资源。原平台单实例、单 worker 约束继续适用。
 
@@ -164,3 +168,12 @@ registry 主开发助手报告：其可选 `tests/test_shared_login_token.py` �
 ### 2026-10-22 开发账户落库与授权启动验证
 
 用户授权本项目实际建表、重启并全量同步后，已在当前 `registry` 权威库一次性固化开发员工、部门及初始管理关系；未修改实际 `.env`。开发身份现按本章 SQL 优先规则读取，已有人员记录未改写。新服务启动用户全表 count=7、管理员全表 admin_count=6；真实开发登录、me、探索列表及平台列表均 200。完整隔离回归 736 项（597 通过、139 环境条件跳过），pip check 通过。步骤、脱敏证据、旧会话 409 重试及范围限制见[部署记录](../../../experiment/deployment/20261022-exploration-init/report.md)。本节是后续授权执行结果；前文未真实发布的描述对应历史迁移阶段，不代表当前运行状态。
+
+
+---
+
+## 多一级部门存储与兼容
+
+知识后端初始化与注册中心刷新统一归并所有一级部门，同事务更新部门表和员工 `department_ids`。旧 `department_id`使用按ID排序的首项，只是兼容投影，不表示主部门。历史JSON列NULL时读取为旧单部门列表；新建员工写完整非空数组，重复初始化不覆盖已建档资料。
+
+认证身份新增 `departments: [{id,name}, ...]`，助理个人背景展示全部名称；中央全表现增加部门名称列表，见[中间件资料映射](../data/personnel.md#中间件资料映射)；本地仍保留部门 ID 和名称，不能被中央名称数组替代。迁移源为 [019-employee-departments.sql](../../../schema/019-employee-departments.sql)，共享人员库仅执行一次，再部署两端代码。初始化不执行DDL；测试使用 `tests/test_multi_departments.py` 和 `experiment/multi-departments/verify_mysql.py`，后者创建并清理隔离MySQL测试库。

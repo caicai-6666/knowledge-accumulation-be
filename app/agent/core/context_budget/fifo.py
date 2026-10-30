@@ -53,11 +53,11 @@ async def measure_fifo(request, context, accepted, *, trajectory_budget, count_t
 
 
 def capacity_guidance(usage):
-    reason = ('近期轨迹可用容量已耗尽（100%）。' if usage.full else '近期轨迹使用量已达到80%整理提醒阈值。')
-    action = ('下一步将先自动整理完整历史任务，不要重放已经成功的操作。' if usage.full else
+    reason = (f'近期轨迹使用量为{usage.tokens}/{usage.budget} token，已达到95%自动整理阈值。' if usage.full else '近期轨迹使用量已达到80%整理提醒阈值。')
+    action = ('下一步将先自动整理完整历史任务，不要重放已经成功的操作。' if usage.full and usage.prefix_count else
               '暂停新的业务探索，优先将待整理历史中仍有效的关键内容保存到工作区。')
     action += (f'本次范围为当前历史中最早的{usage.prefix_count}个完整任务，不包含本轮任务。'
-               if usage.prefix_count else '当前没有可整理的完整历史任务；不能删除或摘要化本轮活动轨迹。')
+               if usage.prefix_count else '当前没有可整理的完整历史任务；不要反复调用 compact_context，不能删除或摘要化本轮活动轨迹。')
     return {**build_system_guidence_message(kind='context_capacity', reason=reason, required_action=action), 'source':'fifo'}
 
 

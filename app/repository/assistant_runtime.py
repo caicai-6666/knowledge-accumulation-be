@@ -17,6 +17,7 @@ from app.repository.question_tree import _row, _date, _dump, _decode
 from app.agent.assistant.tool.send_assistant_message import SendAssistantMessageArguments
 from app.agent.assistant.tool.finish_task import FinishAssistantTaskArguments
 from .assistant_reminder import MySQLReminderRepository
+from .assistant_portrait import AssistantPortraitRepository
 
 
 def task_node_id(task_id):
@@ -51,10 +52,13 @@ class MySQLAssistantRepository:
     def __init__(self,trees):
         self.trees=trees
         self.reminders=MySQLReminderRepository(trees)
+        self.portraits=AssistantPortraitRepository(trees)
 
     async def validate_schema(self):
         await self.reminders.validate_schema()
+        await self.portraits.validate_schema()
         async with self.trees._transaction() as cursor:
+            await cursor.execute('SELECT tree_id,id,content,summary,first_sequence FROM assistant_workspaces LIMIT 0')
             await cursor.execute('SELECT userid,tree_id,enabled,heartbeat_interval_seconds FROM assistants LIMIT 0')
             await cursor.execute('SELECT task_id,delivery_token,lease_expires_at FROM assistant_task_executions LIMIT 0')
             await cursor.execute('SELECT id,action_key,status,error_code FROM assistant_deliveries LIMIT 0')
@@ -104,6 +108,13 @@ class MySQLAssistantRepository:
             row=await cursor.fetchone()
             if row:
                 row=dict(row);row['enabled']=bool(row['enabled'])
+                if row['enabled']:
+                    # 用户工作循环初始化即恢复有效窗口，空闲等待队列时也保持驻留。
+                    from app.repository.assistant_memory import load_memory
+                    tree=await self.trees._owned_tree(cursor,row['tree_id'],userid)
+                    await load_memory(self.trees,cursor,tree)
+                else:
+                    self.trees.assistant_memory_cache.discard(userid,row['tree_id'])
                 return _row(Assistant,row)
             await cursor.execute("SELECT * FROM question_trees WHERE owner_userid=%s AND kind='assistant'",(userid,))
             rows=await cursor.fetchall()
@@ -114,6 +125,8 @@ class MySQLAssistantRepository:
                 tree=QuestionTree(owner_userid=userid,name='个人助理',kind='assistant')
                 await cursor.execute('INSERT INTO question_trees(id,owner_userid,name,kind,main_leaf_id,revision,created_at,updated_at) '
                     'VALUES(%s,%s,%s,%s,NULL,0,%s,%s)',(tree.id,userid,tree.name,tree.kind,_date(tree.created_at),_date(tree.updated_at)))
+                from app.repository.assistant_memory import create_memory
+                self.trees._stage_assistant_memory(cursor,await create_memory(cursor,tree))
             assistant=Assistant(userid=userid,tree_id=tree.id)
             await cursor.execute('INSERT INTO assistants(userid,tree_id,tree_kind,enabled,heartbeat_interval_seconds,created_at,updated_at) '
                 'VALUES(%s,%s,%s,1,-1,%s,%s)',(userid,tree.id,'assistant',_date(assistant.created_at),_date(assistant.updated_at)))
@@ -226,6 +239,7 @@ class MySQLAssistantRepository:
                     await self._insert_delivery(cursor,record,key=key,recipient=args.recipient_userid,
                                                 message=args.message,destination='assistant')
             await self.reminders.commit_actions(cursor,record,content)
+            await self.portraits.commit_actions(cursor,record,content)
             now=utc_now()
             changes={'node_id':node_id,'updated_at':now,'processing_status':'running'}
             if status=='complete':
@@ -271,14 +285,16 @@ class MySQLAssistantRepository:
 
     async def awaiting_ack(self,userid):
         async with self.trees._transaction() as cursor:
-            await cursor.execute("SELECT * FROM assistant_task_executions WHERE userid=%s AND processing_status='completed' "
+            await cursor.execute("SELECT * FROM assistant_task_executions WHERE userid=%s AND processing_status IN ('completed','failed') "
                 'AND acknowledged_at IS NULL ORDER BY received_at,task_id',(userid,))
             return [_task(row) for row in await cursor.fetchall()]
 
     async def acknowledged(self,task_id):
         record=(await self.get_task(task_id)).record
-        if record.processing_status!='completed':raise ValueError('不能确认未完成的助理任务')
-        if any(v.status!='sent' for v in await self.deliveries(task_id)):raise ValueError('不能确认尚未交付的任务')
+        if record.processing_status not in ('completed','failed'):raise ValueError('不能确认未结束的助理任务')
+        # 消费确认与业务成功分离：失败保留全部账本，未交付或结果不明的动作不再阻塞队列。
+        if record.processing_status=='completed' and any(v.status!='sent' for v in await self.deliveries(task_id)):
+            raise ValueError('不能确认尚未交付的任务')
         await self.update(task_id,acknowledged_at=record.acknowledged_at or utc_now())
         async with self.trees._transaction() as cursor:
             await cursor.execute('UPDATE assistant_task_executions SET delivery_token=NULL,lease_expires_at=NULL WHERE task_id=%s',(task_id,))

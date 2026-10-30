@@ -14,6 +14,8 @@ class ContextPath:
     summary: QuestionNode | None
     tasks: tuple[QuestionNode, ...]
     workspace_version_id: str | None
+    # 助理使用已提交压缩的有效摘要，覆盖范围独立于历史节点的物理存放位置。
+    summary_text: str | None = None
 
     @property
     def nodes(self) -> tuple[QuestionNode, ...]:

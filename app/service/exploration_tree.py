@@ -1,6 +1,5 @@
 """探索树打开、驻留与删除；数据库授权和事务仍为权威。"""
 
-from collections import OrderedDict
 from contextlib import asynccontextmanager
 import asyncio
 
@@ -58,8 +57,9 @@ class ExplorationTreeService:
         self._repository = repository
         self._deletions = QuestionTreeDeletionRepository(repository)
         self._files = upload_files if upload_files is not None else UploadFileStore()
-        self._capacity = max_loaded_trees
-        self._loaded = OrderedDict()
+        # 打开、注册与生成共用仓库的结构池，避免展示层持有另一份从未参与执行的树。
+        self._structures = repository.structure_cache
+        self._structures.resize(max_loaded_trees)
         self._closed = False
         self._operations = {}
         self.turns = None
@@ -92,25 +92,18 @@ class ExplorationTreeService:
             raise RuntimeError('探索树服务已关闭')
         key = (owner_userid, tree_id)
         try:
-            # 每次打开均重新检查数据库归属/用途并读取一致性快照，不用命中缓存绕过验证。
+            # 每次打开仍检查权威树行；结构同版本命中时复用，展示正文从当前事务读取。
             loaded = await self._repository.load_exploration_tree(tree_id, owner_userid)
             tree = loaded.snapshot.tree
             if tree.id != tree_id or tree.owner_userid != owner_userid or tree.kind != 'exploration':
                 raise QuestionTreeNotFound('问答树不存在')
             response = render_tree(loaded)
         except BaseException:
-            self._loaded.pop(key, None)
+            self._structures.discard(*key)
             raise
         if self._closed:
             raise RuntimeError('探索树服务已关闭')
-        existing = self._loaded.get(key)
-        # 同树操作已串行；仍防御性拒绝低版本结果覆盖已驻留版本。
-        if existing is None or existing[0].tree.revision <= tree.revision:
-            self._loaded[key] = (loaded.snapshot, response)
-        self._loaded.move_to_end(key)
-        while len(self._loaded) > self._capacity:
-            self._loaded.popitem(last=False)
-        return self._loaded[key][1]
+        return response
 
     async def delete_tree(self, tree_id: str, owner_userid: str) -> None:
         async with self._operation((owner_userid, tree_id)):
@@ -118,22 +111,18 @@ class ExplorationTreeService:
                 if self.turns is not None:
                     await self.turns.remove_tree(tree_id, owner_userid)
                 attachments = await self._deletions.delete(tree_id, owner_userid)
-                self._loaded.pop((owner_userid, tree_id), None)
+                self._structures.discard(owner_userid, tree_id)
                 for reference in attachments:
                     await self._files.delete(reference)
                 await self._deletions.finish(tree_id, owner_userid)
             finally:
                 # 提交回执不确定或文件清理失败也不得继续使用旧快照。
-                self._loaded.pop((owner_userid, tree_id), None)
+                self._structures.discard(owner_userid, tree_id)
 
     def get_loaded_snapshot(self, tree_id: str, owner_userid: str) -> QuestionTreeSnapshot | None:
         """内部结构索引访问；调用方仍须认证，后续写入必须重新检查数据库版本。"""
-        key = (owner_userid, tree_id)
-        value = self._loaded.get(key)
-        if value is not None:
-            self._loaded.move_to_end(key)
-        return value[0] if value else None
+        return self._structures.peek(owner_userid, tree_id)
 
     async def close(self):
         self._closed = True
-        self._loaded.clear()
+        self._structures.clear()

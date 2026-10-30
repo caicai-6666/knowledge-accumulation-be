@@ -2,7 +2,6 @@
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from pydantic import SecretStr
 from app.infrastructure.registry_file import RegistryFileError, validate_resource_id
 from ..tool.result import ToolPageUnavailable
 from .image_viewer import ImageFileViewer, FileViewError
@@ -15,11 +14,8 @@ class _RegistryReference:
 
 
 class RegistryFileViewer(ImageFileViewer):
-    def __init__(self, *, scope, client, access_token: SecretStr | None, cache, config=None, authorize=None):
-        if access_token is not None and not isinstance(access_token,SecretStr):
-            raise TypeError('用户凭据必须由宿主以SecretStr传入')
+    def __init__(self, *, scope, client, cache, config=None, authorize=None):
         self._client = client
-        self._token = access_token
         if authorize is not None and not callable(authorize):
             raise TypeError('本地文件鉴权必须是可调用适配器')
         self._authorize = authorize
@@ -32,7 +28,7 @@ class RegistryFileViewer(ImageFileViewer):
         file_id=validate_resource_id(file_id)
         if self._authorize is None:
             return None
-        record=await self._authorize(file_id,self._token)
+        record=await self._authorize(file_id)
         self._require_open()
         if record is None:
             return None  # 内部宿主若仅提供许可校验，保留通用动作提示。
@@ -44,12 +40,12 @@ class RegistryFileViewer(ImageFileViewer):
         self._require_open()
         file_id = validate_resource_id(file_id)
         if self._authorize is not None:
-            await self._authorize(file_id, self._token)
-        # 未装配本平台权威鉴权的内部宿主仍须每次 GET，不能退化为无条件缓存命中。
+            await self._authorize(file_id)
+        # 未装配本平台权威鉴权的内部宿主仍须每次远程鉴权下载，不能无条件命中缓存。
         return _RegistryReference(file_id)
 
     async def _read_remote(self, file_id):
-        content=await self._client.read_file(file_id,self._token)
+        content=await self._client.read_file(file_id,userid=self.scope[0])
         return await self._reference(file_id),content
 
     async def _source(self, file_id):
@@ -83,10 +79,4 @@ class RegistryFileViewer(ImageFileViewer):
             return await super().resolve_page(reference)
         except FileViewError:
             # 已打开页面仍须重新鉴权；失败只标记资料不可用，不能回放缓存图像。
-            raise ToolPageUnavailable('注册中心页面当前不可读取，请重新登录或核对访问权限后查看。') from None
-
-    async def aclose(self):
-        try:
-            await super().aclose()
-        finally:
-            self._token=None
+            raise ToolPageUnavailable('注册中心页面当前不可读取，请核对访问权限或稍后重试。') from None

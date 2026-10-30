@@ -66,7 +66,7 @@ def plain_name(value):
 
 
 def passport_list(values):
-    """通行证逐项展示为代码文本，保留原始顺序与空格，不让业务值变成 Markdown。"""
+    """通行证及来源平台标识展示为代码文本，保留原值，不让业务值变成 Markdown。"""
     if values is None:
         return '资料未提供'
     if not values:
@@ -145,6 +145,7 @@ class FileResultPool:
                 else:
                     lines.extend([f'{offset}. **文件名称**：{plain_name(row.name)}  ',f'   **文件 ID**：`{i}`  ',
                         f'   **来源平台代码**：{plain_name(row.platform)}  ',
+                        f'   **来源平台文件 ID**：{passport_list(None if row.source_id is None else [row.source_id])}  ',
                         f'   **通行证**：{passport_list(row.passport)}',''])
             lines.append('还有下一页。' if target<pages else '已到最后一页。')
             def commit():

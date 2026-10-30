@@ -1,9 +1,11 @@
 """增量规划 → 并行生成 → 全量验收；任一失败不产生部分摘要。"""
 import asyncio
 from copy import deepcopy
+from pydantic import ValidationError
 from app.infrastructure.tool_tag import tool_tag_section
 from ....context_budget import validate_count
-from ....json_codec import load_model_json, validate_model_payload, validate_model_json
+from ....json_codec import (load_model_json, validate_model_payload, validate_model_json,
+    ModelActionRejected, model_validation_feedback)
 from .schema import (SummaryTopic, FinishPlanningArguments, TopicGenerationOutput,
     TopicSummary, TopicMemory, planning_tools, generation_schema)
 from .prompt import build_topic_planning_prompt, TOPIC_GENERATION_PROMPT
@@ -20,7 +22,7 @@ async def checked_generate(messages, tools, generation, *, generate, counter, co
 
 def validate_topic(topic, tasks, previous):
     if not set(topic.task_ids) <= tasks.keys() or not set(topic.previous_topic_ids) <= previous.keys():
-        raise ValueError('主题只能引用实际提供的来源')
+        raise ModelActionRejected('主题引用了本次未提供的来源。', 'task_ids 和 previous_topic_ids 只能选择本次材料中的实际 ID，不自拟或借用其他主题来源。')
 
 
 async def plan_topics(tasks, previous, *, focus, generate, counter, generation, context_window,
@@ -38,9 +40,10 @@ async def plan_topics(tasks, previous, *, focus, generate, counter, generation, 
             [t.model_dump() for t in topics.values()])}
         response = await checked_generate(base+[state]+temporary, tools, generation,
             generate=generate, counter=counter, context_window=context_window)
+        argument_model=SummaryTopic
         try:
             if response.assistant_message.get('refusal') or response.finish_reason not in ('stop', 'tool_calls'):
-                raise ValueError('主题规划未完成生成')
+                raise ModelActionRejected('主题规划响应被拒绝或未完整生成，主题集合未修改。', '在允许范围内提交一个完整规划工具调用；不从未完成输出推断规划成功。')
             if not response.tool_calls and response.finish_reason == 'stop' and any(
                     isinstance(response.assistant_message.get(key), str) and response.assistant_message[key].strip()
                     for key in ('content', 'reasoning', 'reasoning_content')):
@@ -49,29 +52,33 @@ async def plan_topics(tasks, previous, *, focus, generate, counter, generation, 
                     temporary.append({'role': 'assistant', 'content': response.content})
                 temporary.append({'role': 'user', 'content': '主题集合未修改，规划尚未完成；准备好后用extract_topic提交主题，最终用finish_topic_planning结束。'})
                 continue
-            if len(response.tool_calls) != 1 or response.content not in ('', None):
-                raise ValueError('每次只提交一个主题工具')
+            if len(response.tool_calls) != 1:
+                raise ModelActionRejected('本轮未提交唯一的主题规划工具调用，主题集合未修改。', '每次只调用一个 extract_topic 或 finish_topic_planning，等待结果后再继续。')
             call = response.tool_calls[0]
             if call.name == 'extract_topic':
                 topic = validate_model_payload(SummaryTopic, load_model_json(call.arguments))
                 validate_topic(topic, tasks, previous)
                 if topic.topic_id not in topics and len(topics) >= 32:
-                    raise ValueError('主题数量超过32个')
+                    raise ModelActionRejected('已有32个主题，不能继续新增。', '合并重叠主题，或使用已有 topic_id 更新主题；规划足够时调用 finish_topic_planning。')
                 topics[topic.topic_id] = topic
                 errors = 0
                 temporary.clear()
             elif call.name == 'finish_topic_planning':
+                argument_model=FinishPlanningArguments
                 validate_model_payload(FinishPlanningArguments, load_model_json(call.arguments))
                 return list(topics.values())
             else:
-                raise ValueError('只能提交主题规划工具')
-        except (ValueError, TypeError):
+                raise ModelActionRejected('请求的工具不属于本次主题规划。', '提交 extract_topic 选择主题，或用 finish_topic_planning 结束规划。')
+        except (ValueError, TypeError) as error:
             errors += 1
             if errors >= max_errors:
                 raise ValueError('主题规划连续未通过验收') from None
             # 不回显无效参数、异常信息或伪造标识；完整原始响应由调用边界保存。
-            temporary.append({'role': 'user', 'content': '本次动作未接受。请只调用一个规划工具，按Schema提交完整字段；只引用已提供来源，不重复引用，每个主题至少一种来源，最多32个主题。'
-                + tool_tag_section(tool_call_template)})
+            if isinstance(error,ValidationError):
+                error=model_validation_feedback(error,argument_model)
+            reason=error.reason if isinstance(error,ModelActionRejected) else '本次主题规划未通过校验，主题集合未修改。'
+            action=error.required_action if isinstance(error,ModelActionRejected) else '按当前规划工具的字段说明选择合法动作，不添加未提供的来源。'
+            temporary.append({'role': 'user', 'content': reason+'\n'+action+tool_tag_section(tool_call_template)})
     raise ValueError('主题规划超过最大轮数')
 
 
@@ -87,15 +94,19 @@ async def generate_topic(topic, tasks, previous, *, generate, counter, generatio
             counter=counter, context_window=context_window, json_schema=generation_schema())
         try:
             if response.tool_calls or response.finish_reason != 'stop' or response.assistant_message.get('refusal'):
-                raise ValueError('主题总结必须提交完整JSON正文')
+                raise ModelActionRejected('本次总结没有提供完整且未被拒绝的 JSON 正文。', '本步骤只输出符合给定 Schema 的 summary JSON，不调用工具，不使用 Markdown 围栏；不绕过拒绝。')
             result = validate_model_json(TopicGenerationOutput, response.content).summary
             for item in result.current_memory + result.open_items:
                 if not set(item.task_ids) <= selected_tasks.keys():
-                    raise ValueError('摘要引用超出分配来源')
+                    raise ModelActionRejected('摘要条目的 task_ids 超出本主题提供的来源。', '仅保留本主题材料中实际提供的任务 ID，移除其他引用；依据不足时说明缺口，不添加事实。')
             summary = TopicSummary(topic_id=topic.topic_id, title=topic.title, **result.model_dump())
             return summary
-        except (ValueError, TypeError):
-            messages = base+[{'role': 'user', 'content': '摘要未通过验收。仅输出完整summary JSON及其current_memory/open_items；条目字段完整、引用限于所给任务且不重复，不添加事实。'}]
+        except (ValueError, TypeError) as error:
+            if isinstance(error,ValidationError):
+                error=model_validation_feedback(error,TopicGenerationOutput)
+            reason=error.reason if isinstance(error,ModelActionRejected) else '摘要结构未通过验收，本次结果未接受。'
+            action=error.required_action if isinstance(error,ModelActionRejected) else '只输出给定 Schema 要求的 summary JSON，依据不足时保留未决事项，不添加事实。'
+            messages = base+[{'role': 'user', 'content': reason+'\n'+action}]
     raise ValueError('主题总结连续未通过验收')
 
 

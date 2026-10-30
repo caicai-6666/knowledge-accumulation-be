@@ -21,12 +21,12 @@ async def run_retrieval(query, *, pool, search, generate, counter, generation, c
             raise ValueError('文件检索上下文超限')
         response=await generate(messages,tools,generation)
         valid=(response.finish_reason in ('stop','tool_calls') and not response.assistant_message.get('refusal')
-               and response.content in ('',None) and len(response.tool_calls)==1)
+               and len(response.tool_calls)==1)
         if valid:
             call=response.tool_calls[0]
             feedback,ranking,explanation=await execute(pool,search,call.name,call.arguments)
         else:
-            feedback={'status':'error','message':'每轮必须恰好调用一个提供的工具，不附加普通文本。'}
+            feedback={'status':'error','message':'每轮必须恰好提交一个完整且未被拒绝的原生工具调用。'}
         if audit is not None:
             await audit({'assistant_message':deepcopy(response.assistant_message),'feedback':deepcopy(feedback)})
         if feedback['status']=='error':

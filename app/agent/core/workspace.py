@@ -2,6 +2,8 @@
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from .json_codec import ModelActionRejected
+
 WorkspaceText = Annotated[str, StringConstraints(strict=True, pattern=r"\S")]
 WorkspaceKey = Annotated[str, StringConstraints(strict=True, pattern=r"^[a-z][a-z0-9_]*$")]
 
@@ -17,7 +19,7 @@ class WorkspaceTaskConstraints(WorkspaceObject):
     def validate_supplement_keys(self):
         # 局部更新接口以 task 定位主任务，补充键不能占用该保留名。
         if 'task' in self.supplements:
-            raise ValueError('用户补充不能使用保留键 task')
+            raise ModelActionRejected('用户补充不能使用保留键 task。', '补充要求通过 workspace_add 写入 /task_constraints/supplements；主任务通过 workspace_replace 修改 /task_constraints/task。')
         return self
 
 
@@ -30,7 +32,7 @@ class WorkspaceKnownInformation(WorkspaceObject):
     @model_validator(mode='after')
     def validate_source(self):
         if self.status == 'confirmed' and self.source is None:
-            raise ValueError('已确认信息必须保留来源')
+            raise ModelActionRejected('status 为 confirmed 的信息没有提供 source。', '有可靠依据时填写实际来源；尚未核验时根据证据使用 user_reported、unverified 或 conflicted，不编造来源。')
         return self
 
 
@@ -54,11 +56,12 @@ class WorkspacePayload(WorkspaceObject):
     @model_validator(mode='after')
     def validate_references(self):
         if self.explored_directions.keys() & self.remaining_directions.keys():
-            raise ValueError('同一方向 ID 不能同时存在于已探索与剩余规划中')
+            raise ModelActionRejected('同一方向同时存在于已探索和剩余规划中。', '用 workspace_add 向 /explored_directions 提交结果并指定剩余方向 ID，由工具完成转移，不手工重复创建。')
         for key, direction in self.explored_directions.items():
             ids = direction.information_ids
             if len(ids) != len(set(ids)) or any(ref not in self.known_information for ref in ids):
-                raise ValueError(f'explored_directions.{key}.information_ids 含重复或不存在的信息引用')
+                raise ModelActionRejected('已探索方向的 information_ids 含重复或不存在的引用。',
+                    '只引用最新 known_information 中实际存在的 ID，并去重；删除仍被引用的信息前先修正对应 information_ids。')
         return self
 
 

@@ -17,6 +17,7 @@ class RegisteredFile:
     platform: str
     level: int
     passport: tuple[str, ...] | None = None
+    source_id: str | None = None
 
 
 def decode_passports(value):
@@ -81,17 +82,17 @@ class RegisteredFileRepository:
                     if ids is not None:
                         clauses.append('id IN ('+','.join('%s' for _ in ids)+')')
                         params.extend(ids)
-                    await cursor.execute('SELECT id,name,abstract,source_platform,file_level,passport FROM resources WHERE '+
+                    await cursor.execute('SELECT id,name,abstract,source_platform,file_level,passport,source_id FROM resources WHERE '+
                         ' AND '.join(clauses)+' ORDER BY id', params)
                     rows = await cursor.fetchall()
                     result = []
                     for row in rows:
                         if (type(row['id']) is not int or row['id'] < 1 or type(row['file_level']) is not int
                             or row['source_platform'] not in permissions or permissions[row['source_platform']] < row['file_level']
-                            or any(row[k] is not None and not isinstance(row[k], str) for k in ('name','abstract'))):
+                            or any(row[k] is not None and not isinstance(row[k], str) for k in ('name','abstract','source_id'))):
                             raise ValueError('正式文件字段不合法')
                         result.append(RegisteredFile(str(row['id']),row['name'],row['abstract'],row['source_platform'],row['file_level'],
-                            decode_passports(row['passport'])))
+                            decode_passports(row['passport']), source_id=row['source_id']))
                     return tuple(result)
                 finally:
                     await connection.rollback()

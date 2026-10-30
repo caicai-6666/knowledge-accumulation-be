@@ -14,10 +14,12 @@ from app.model.question_memory import MemoryEmbeddingJob, QuestionNodeMemory, Se
 from app.model.node_persistence import NodeMessage
 from app.model.display_history import StoredDisplayHistory
 from app.model.question_tree import (
-    NodeContent, NodeWrite, QuestionNode, QuestionTree, QuestionTreeListItem, SummaryContent,
+    NodeContent, NodeWrite, QuestionNode, QuestionTree, QuestionTreeListItem, QuestionTreeListEntry, SummaryContent,
     TaskContent, TreeID, TreeKind, WorkspaceVersion, utc_now,
 )
 from app.service.question_tree import ContextPath, LoadedQuestionTree, QuestionTreeSnapshot
+from app.service.question_tree_cache import QuestionTreeCache
+from app.service.assistant_memory import AssistantMemoryCache
 
 _CONTENT = TypeAdapter(NodeContent)
 
@@ -70,6 +72,10 @@ class MySQLQuestionTreeRepository:
         self._pool = None
         self._lock = asyncio.Lock()
         self._closed = False
+        self.structure_cache = QuestionTreeCache()
+        self._snapshot_transactions = {}
+        self.assistant_memory_cache = AssistantMemoryCache()
+        self._assistant_transactions = {}
 
     async def _initialize(self):
         async with self._lock:
@@ -92,26 +98,75 @@ class MySQLQuestionTreeRepository:
         async with asyncio.timeout(self._settings.operation_timeout_seconds):
             async with self._pool.acquire() as connection:
                 await connection.begin()
+                pending = {}
+                assistant_pending = {}
+                assistant_epoch = self.assistant_memory_cache.epoch
+                epoch = self.structure_cache.epoch
+                cursor_id = None
                 try:
                     async with connection.cursor(DictCursor) as cursor:
+                        cursor_id = id(cursor)
+                        self._snapshot_transactions[cursor_id] = pending
+                        self._assistant_transactions[cursor_id] = assistant_pending
                         yield cursor
                     await connection.commit()
+                    # SQL 提交成功后才发布；事务内的新增节点、检查点与临时替代状态不可外泄。
+                    for snapshot in pending.values():
+                        self.structure_cache.publish(snapshot, epoch)
+                    for memory in assistant_pending.values():
+                        self.assistant_memory_cache.publish(memory, assistant_epoch)
                 except BaseException:
+                    for owner, tree_id in assistant_pending:
+                        self.assistant_memory_cache.discard(owner, tree_id)
+                    for owner, tree_id in pending:
+                        self.structure_cache.discard(owner, tree_id)
                     # 取消同样回滚；释放连接前不能留下半份节点、正文或工作区。
                     await connection.rollback()
                     raise
+                finally:
+                    self._snapshot_transactions.pop(cursor_id, None)
+                    self._assistant_transactions.pop(cursor_id, None)
 
     async def _owned_tree(self, cursor, tree_id, owner_userid, *, lock=False):
         await cursor.execute('SELECT * FROM question_trees WHERE id=%s AND owner_userid=%s'
                              + (' FOR UPDATE' if lock else ''), (tree_id, owner_userid))
         row = await cursor.fetchone()
         if row is None:
+            self.structure_cache.discard(owner_userid, tree_id)
+            self.assistant_memory_cache.discard(owner_userid, tree_id)
             raise QuestionTreeNotFound('问答树不存在')
         return _row(QuestionTree, row)
 
     async def _snapshot(self, cursor, tree):
+        if tree.kind == 'exploration':
+            pending = self._snapshot_transactions.get(id(cursor), {})
+            snapshot = pending.get((tree.owner_userid, tree.id))
+            if snapshot is None or snapshot.tree != tree:
+                snapshot = self.structure_cache.get(tree)
+            if snapshot is not None:
+                self._stage_snapshot(cursor, snapshot)
+                return snapshot
         await cursor.execute('SELECT * FROM question_nodes WHERE tree_id=%s ORDER BY sequence', (tree.id,))
-        return QuestionTreeSnapshot(tree, [_row(QuestionNode, row) for row in await cursor.fetchall()])
+        snapshot = QuestionTreeSnapshot(tree, [_row(QuestionNode, row) for row in await cursor.fetchall()])
+        self._stage_snapshot(cursor, snapshot)
+        return snapshot
+
+    def _stage_assistant_memory(self, cursor, memory):
+        pending = self._assistant_transactions.get(id(cursor))
+        if pending is not None:
+            pending[(memory.tree.owner_userid, memory.tree.id)] = memory
+
+    def _stage_snapshot(self, cursor, snapshot):
+        pending = self._snapshot_transactions.get(id(cursor))
+        if pending is not None and snapshot.tree.kind == 'exploration':
+            pending[(snapshot.tree.owner_userid, snapshot.tree.id)] = snapshot
+
+    def _update_snapshot(self, cursor, snapshot, tree, *nodes):
+        """用已校验的事务写入结果更新结构，不重新查询历史节点；旧快照保持不可变。"""
+        changed = {node.id: node for node in nodes}
+        updated = QuestionTreeSnapshot(tree, [changed.get(node.id, node) for node in snapshot.nodes])
+        self._stage_snapshot(cursor, updated)
+        return updated
 
     async def create_tree(self, owner_userid: str, name: str = '新的问答树', *,
                           kind: TreeKind = 'exploration') -> QuestionTree:
@@ -120,6 +175,11 @@ class MySQLQuestionTreeRepository:
             await cursor.execute('INSERT INTO question_trees '
                 '(id,owner_userid,name,kind,main_leaf_id,revision,created_at,updated_at) VALUES(%s,%s,%s,%s,NULL,0,%s,%s)',
                 (tree.id, tree.owner_userid, tree.name, tree.kind, _date(tree.created_at), _date(tree.updated_at)))
+            if tree.kind == 'assistant':
+                from app.repository.assistant_memory import create_memory
+                self._stage_assistant_memory(cursor, await create_memory(cursor, tree))
+            else:
+                self._stage_snapshot(cursor, QuestionTreeSnapshot(tree, ()))
         return tree
 
     async def list_trees(self, owner_userid: str, *, limit: int = 50, offset: int = 0,
@@ -135,13 +195,13 @@ class MySQLQuestionTreeRepository:
                 ' ORDER BY updated_at DESC,id DESC LIMIT %s OFFSET %s', args)
             return [_row(QuestionTree, row) for row in await cursor.fetchall()]
 
-    async def list_exploration_trees(self, owner_userid: str) -> list[QuestionTreeListItem]:
-        """只读当前用户的探索树名称；不加载节点、不截断为默认分页的前 50 项。"""
+    async def list_exploration_trees(self, owner_userid: str) -> list[QuestionTreeListEntry]:
+        """只读当前用户的探索树名称及更新时间；不加载节点、不截断为默认分页的前 50 项。"""
         async with self._transaction() as cursor:
             await cursor.execute(
-                'SELECT id,name FROM question_trees WHERE owner_userid=%s AND kind=%s '
+                'SELECT id,name,updated_at FROM question_trees WHERE owner_userid=%s AND kind=%s '
                 'ORDER BY updated_at DESC,id DESC', (owner_userid, 'exploration'))
-            return [QuestionTreeListItem.model_validate(row) for row in await cursor.fetchall()]
+            return [_row(QuestionTreeListEntry, row) for row in await cursor.fetchall()]
 
     async def rename_tree(self, tree_id: str, owner_userid: str, name: str, *, expected_revision: int) -> QuestionTree:
         async with self._transaction() as cursor:
@@ -151,6 +211,9 @@ class MySQLQuestionTreeRepository:
                 'revision': tree.revision + 1, 'updated_at': utc_now()})
             await cursor.execute('UPDATE question_trees SET name=%s,revision=%s,updated_at=%s WHERE id=%s',
                 (updated.name, updated.revision, _date(updated.updated_at), tree.id))
+            snapshot = self.structure_cache.get(tree)
+            if snapshot is not None:
+                self._update_snapshot(cursor, snapshot, updated)
             return updated
 
     async def rename_exploration_tree(self, tree_id: str, owner_userid: str, name: str) -> QuestionTreeListItem:
@@ -164,8 +227,13 @@ class MySQLQuestionTreeRepository:
                 raise QuestionTreeNotFound('问答树不存在')
             # 重复提交相同名称不改变活动时间或版本；并发改名以取得行锁的顺序生效。
             if tree.name != name:
+                now = utc_now()
                 await cursor.execute('UPDATE question_trees SET name=%s,revision=%s,updated_at=%s WHERE id=%s',
-                    (name, tree.revision + 1, _date(utc_now()), tree.id))
+                    (name, tree.revision + 1, _date(now), tree.id))
+                snapshot = self.structure_cache.get(tree)
+                if snapshot is not None:
+                    self._update_snapshot(cursor, snapshot, tree.model_copy(update={
+                        'name': name, 'revision': tree.revision + 1, 'updated_at': now}))
         return result
 
     @staticmethod
@@ -179,7 +247,7 @@ class MySQLQuestionTreeRepository:
             return await self._snapshot(cursor, tree)
 
     async def load_exploration_tree(self, tree_id: str, owner_userid: str) -> LoadedQuestionTree:
-        """完整打开本人探索树；四次批量读取共享 REPEATABLE READ 快照，无逐节点查询。"""
+        """完整打开本人探索树；复用同版本结构，正文与消息在同一事务批量读取。"""
         async with self._transaction() as cursor:
             tree = await self._owned_tree(cursor, tree_id, owner_userid)
             if tree.kind != 'exploration':
@@ -272,6 +340,8 @@ class MySQLQuestionTreeRepository:
         async with self._transaction() as cursor:
             tree = await self._owned_tree(cursor, tree_id, owner_userid, lock=True)
             self._revision(tree, expected_revision)
+            if tree.kind=='assistant':
+                raise ValueError('助理必须通过线性任务入口追加，不能保存历史工作区快照')
             return await self._append_path_locked(cursor, tree, writes,
                 advance_main=advance_main, workspaces=workspaces)
 
@@ -336,6 +406,7 @@ class MySQLQuestionTreeRepository:
                 (node.id, _dump(write.content.model_dump(mode='json'))))
         await cursor.execute('UPDATE question_trees SET main_leaf_id=%s,revision=%s,updated_at=%s WHERE id=%s',
             (updated.main_leaf_id, updated.revision, _date(updated.updated_at), tree_id))
+        self._stage_snapshot(cursor, candidate)
         return candidate
     async def finish_task(self, tree_id: str, owner_userid: str, node_id: str, *,
                           status: str, content: TaskContent, expected_revision: int,
@@ -347,6 +418,8 @@ class MySQLQuestionTreeRepository:
         async with self._transaction() as cursor:
             tree = await self._owned_tree(cursor, tree_id, owner_userid, lock=True)
             self._revision(tree, expected_revision)
+            if tree.kind=='assistant':
+                raise ValueError('助理必须通过节点检查点更新唯一工作区')
             snapshot = await self._snapshot(cursor, tree)
             node = snapshot.nodes_by_id.get(node_id)
             if node is None or node.kind != 'task' or node.status != 'generating' or status not in ('complete','cancelled','failed'):
@@ -363,8 +436,11 @@ class MySQLQuestionTreeRepository:
                 (_dump(content.model_dump(mode='json')), node_id))
             await cursor.execute('UPDATE question_nodes SET status=%s,workspace_version_id=%s,finished_at=%s WHERE id=%s',
                 (updated.status, updated.workspace_version_id, _date(updated.finished_at), node_id))
+            now = utc_now()
             await cursor.execute('UPDATE question_trees SET revision=revision+1,updated_at=%s WHERE id=%s',
-                (_date(utc_now()), tree_id))
+                (_date(now), tree_id))
+            self._update_snapshot(cursor, snapshot, tree.model_copy(update={
+                'revision': tree.revision + 1, 'updated_at': now}), updated)
             return updated
 
     async def load_context(self, tree_id: str, owner_userid: str, node_id: str
@@ -392,6 +468,8 @@ class MySQLQuestionTreeRepository:
     async def close(self):
         async with self._lock:
             self._closed = True
+            self.structure_cache.clear()
+            self.assistant_memory_cache.clear()
             if self._pool is not None:
                 self._pool.close()
                 await self._pool.wait_closed()

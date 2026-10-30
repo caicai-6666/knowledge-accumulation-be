@@ -7,7 +7,6 @@ import logging
 import time
 
 import pymupdf
-from pydantic import SecretStr
 from starlette.concurrency import run_in_threadpool
 
 from app.auth.model import AuthenticatedUser
@@ -18,6 +17,18 @@ from app.repository.question_tree import QuestionTreeConflict, QuestionTreeNotFo
 from app.schema.exploration_turn import TurnCreated, TurnInput, TurnMessage, TurnSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+def _root_error_type(error):
+    """仅保留异常链的类型用于诊断；包装隐藏的原始消息和请求资料仍不写日志。"""
+    seen = set()
+    for _ in range(16):
+        seen.add(id(error))
+        nested = error.__cause__ or error.__context__
+        if nested is None or id(nested) in seen:
+            break
+        error = nested
+    return type(error).__name__
 TERMINAL = frozenset({'completed', 'cancelled', 'superseded', 'failed', 'expired'})
 
 
@@ -410,9 +421,7 @@ class ExplorationTurnService:
         if cursor > turn.sequence or (turn.events and cursor < turn.events[0]['sequence'] - 1):
             raise ReplayUnavailable('事件游标不可回放，请先获取任务快照')
 
-    async def subscribe(self, tree_id, turn_id, user, after_sequence=0, *, access_token: SecretStr | None = None):
-        if access_token is not None and not isinstance(access_token,SecretStr):
-            raise TypeError('激活凭据必须使用SecretStr')
+    async def subscribe(self, tree_id, turn_id, user, after_sequence=0):
         async with self.tree_service.operation(tree_id, user.userid):
             await self._expire_pending(tree_id, user.userid)
             async with self._condition:
@@ -439,11 +448,11 @@ class ExplorationTurnService:
                     self._cursor(turn, after_sequence)
                     if revision != turn.revision:
                         raise QuestionTreeConflict('树已变化，请取消待激活任务并重新创建')
-                    # 首次订阅重新取得中央身份；Bearer只交给本轮生产者，不进入Turn、事件或数据库。
+                    # 首次订阅重新取得中央身份；后台只绑定可信用户，不保留网页登录凭据。
                     turn.user = user.model_copy(deep=True)
                     turn.activated, turn.started = utc_now(), time.monotonic()
                     await self._status(turn, 'processing')
-                    turn.worker = asyncio.create_task(self._run(turn, access_token=access_token))
+                    turn.worker = asyncio.create_task(self._run(turn))
 
         async def iterate():
             cursor = after_sequence
@@ -499,7 +508,7 @@ class ExplorationTurnService:
                 turn.superseded_by_turn_id = restored.node.superseded_by_node_id
             await self._status(turn, status)
 
-    async def _run(self, turn, *, access_token: SecretStr | None = None):
+    async def _run(self, turn):
         try:
             await run_in_threadpool(validate_pdfs, turn.uploads)
             if self._agent is None:
@@ -535,8 +544,7 @@ class ExplorationTurnService:
                 selected_node_id=request.selected_node_id, question=request.question,
                 advance_main=request.mode == 'main', expected_revision=turn.revision,
                 thinking_effort=request.thinking_effort, uploads=turn.uploads, attachments=turn.attachments,
-                publish=publish, publish_stream=publish_stream, publish_progress=progress, on_registered=registered, resume_registered=turn.registered,
-                **({'access_token':access_token} if access_token is not None else {}))
+                publish=publish, publish_stream=publish_stream, publish_progress=progress, on_registered=registered, resume_registered=turn.registered)
             async with self._condition:
                 turn.node_id, turn.summary_id = result.node_id, result.summary_id
             if getattr(getattr(result, 'result', None), 'delivery_error_type', None):
@@ -549,17 +557,14 @@ class ExplorationTurnService:
             await self._settle(turn, 'failed' if self._closed else 'cancelled')
             raise
         except Exception as error:
-            logger.warning('探索问答执行失败：error_type=%s', type(error).__name__)
+            logger.warning('探索问答执行失败：error_type=%s cause_type=%s',
+                           type(error).__name__, _root_error_type(error))
             async with self._condition:
                 if turn.status == 'processing':
                     turn.error = {'code': 'generation_failed', 'message': '问答未完成，请检查附件或稍后重试', 'retryable': True}
                     await self._event(turn, 'error', turn.error)
             # 提交回执或完成交付失败时回查 SQL；已保存答案不能被当成中断预览。
             await self._settle(turn, 'failed')
-
-        finally:
-            # 重连只订阅，不替换正在执行任务的凭据；终态立即释放生产者对token的引用。
-            access_token=None
 
     async def _wait_workers(self, workers):
         waiting = asyncio.gather(*workers, return_exceptions=True)

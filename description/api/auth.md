@@ -11,7 +11,7 @@
 
 ## 通用约定
 
-本机示例端口为 `24000`，生产地址由部署提供。响应媒体类型 `application/json`，成功与错误均含 `Cache-Control: no-store`。登录无需独立开关；中间件接入未配置时返回 `503 {"detail":"中间件接入未配置，用户认证暂不可用"}`。请求不合法统一 `422 {"detail":"请求参数不合法"}`，不回显 code、token 或非法字段名。
+以下请求示例使用 Compose 端口 `24000`；本地 `python -m app.main` / IDE 使用 `15000` 且增加 `/dev` 前缀，见[API 地址约定](readme.md)。生产地址由部署提供。响应媒体类型 `application/json`，成功与错误均含 `Cache-Control: no-store`。登录无需独立开关；中间件接入未配置时返回 `503 {"detail":"中间件接入未配置，用户认证暂不可用"}`。请求不合法统一 `422 {"detail":"请求参数不合法"}`，不回显 code、token 或非法字段名。
 
 Bearer 格式为唯一 `Authorization: Bearer <credential>`，scheme 大小写不敏感，凭据为 1 至 4096 个无空白可打印 ASCII 字符；重复头、错误 scheme 或额外空白返回 401。生产 code 登录不要求用户 Bearer；开发 login 使用固定登录凭据，me 使用换取的随机用户 token。
 
@@ -151,3 +151,10 @@ curl 'http://127.0.0.1:24000/knowledge-accumulation/api/auth/me' \
 知识后端使用自己的平台 Bearer 向中央 POST，body 精确为 `{"access_token":"用户token"}`；中央确认 userid/null 并续期。知识后端不从本地 token 映射、客户端 userid 或固定开发凭据推导身份，不执行 PUT、全表注册、钉钉登录或权限维护，也不获取维护写锁。
 
 中央失效或被新登录替换的旧 token 不能由 me 恢复；必须回到显式 login 重新交换。中央查询校验和故障规则见[会话规则](../architecture/system/user-auth.md#本地与中央会话规则)。
+
+
+---
+
+## 完整部门归属
+
+认证用户对象增加 `departments` 数组，每项为 `{id, name}`，包含全部一级部门。`department_id`、`department_name`保留旧版兼容投影，不代表主部门；展示完整归属应使用数组。数据库历史单部门会读取为单项数组，权限和中央登录协议保持不变。

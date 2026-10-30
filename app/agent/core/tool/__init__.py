@@ -8,6 +8,7 @@ from .external_expert import (AskExternalExpertArguments,ContinueExternalExpertA
 from .web_search import (SearchWebArguments,ViewWebSearchResultsArguments,WebSearchPool,WebSearchService,build_web_search_registrations)
 from .web_page import OpenWebPageArguments,WebPageViewer,build_open_web_page_registration
 from .progress import ToolProgress
+from .hooks import ToolHook,ToolHookContext
 from .result import (ToolExecution,ToolExecutionResult,ToolGuidance,ToolPageReference,
     OrdinaryToolContent,FoldableToolContent,ToolContent,ToolContentType)
 from .workspace import (ExplorationResult,WorkspaceAddArguments,WorkspaceReplaceArguments,WorkspaceDeleteArguments,
@@ -37,3 +38,5 @@ from .file_search import build_file_search_registration
 from .file_candidates import FileCandidateViewer, build_file_candidates_registration
 
 from .registry_file import ViewRegistryFileArguments, build_registry_file_registration
+
+__all__ += ['ToolHook', 'ToolHookContext']

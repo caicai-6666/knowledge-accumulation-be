@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from app.model.personnel import PlatformCode
+from app.model.personnel import PlatformCode, Department
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -12,7 +12,8 @@ class AuthenticatedUser(BaseModel):
 
     userid: str = Field(min_length=1, max_length=128, strict=True, description="可信的员工 userid；开发模式来自服务端配置。")
     name: str | None = Field(default=None, max_length=200, description="员工姓名；历史资料未知时为空。")
-    department_id: int | None = Field(default=None, ge=0, description="员工所属的顶级部门 ID；开发模拟部门默认使用 0。")
+    departments: list[Department] = Field(default_factory=list, description='完整一级部门列表；多部门并列归属，不代表主次。')
+    department_id: int | None = Field(default=None, ge=0, description="旧版兼容部门 ID，不代表唯一或主要部门；完整归属使用 departments。")
     department_name: str | None = Field(default=None, max_length=200, description="顶级部门名称。")
     avatar_url: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}\.webp$',
         description="头像文件名，不包含目录或接口路径；读取接口将在后续阶段接入，未设置时为空。")

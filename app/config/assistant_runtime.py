@@ -11,6 +11,7 @@ class AssistantRuntimeSettings(BaseModel):
     model_config=ConfigDict(extra='forbid',frozen=True,hide_input_in_errors=True)
     enabled: bool=False
     poll_seconds: float=Field(default=3,gt=0,allow_inf_nan=False)
+    model_retry_seconds: float=Field(default=30,gt=0,allow_inf_nan=False)
     inbound_poll_seconds: float=Field(default=3,gt=0,allow_inf_nan=False)
     inbound_retry_seconds: float=Field(default=30,gt=0,allow_inf_nan=False)
     inbound_batch_size: int=Field(default=100,gt=0)
@@ -23,6 +24,7 @@ class AssistantRuntimeSettings(BaseModel):
     directory_max_results: int=Field(default=1000,gt=0)
     max_concurrent_users: int=Field(default=4,gt=0)
     thinking_effort: Literal['low','medium','xhigh']='medium'
+    rendering_thinking_effort: Literal['low','medium','xhigh']='medium'
     publication_retry_window_seconds: float=Field(default=3600,gt=0,allow_inf_nan=False)
 
 

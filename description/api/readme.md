@@ -21,4 +21,6 @@
 | [获取探索任务快照](exploration.md#获取探索任务快照) | `GET` | `/knowledge-accumulation/api/exploration/trees/{tree_id}/turns/{turn_id}` |
 | [停止探索任务](exploration.md#停止探索任务) | `POST` | `/knowledge-accumulation/api/exploration/trees/{tree_id}/turns/{turn_id}/cancel` |
 
-接口字段、错误及调用示例见[用户认证 API](auth.md)，运行配置与会话设计见[登录与会话管理](../architecture/system/user-auth.md)。
+各接口字段、错误及示例见上表对应专题，运行配置与会话设计见[登录与会话管理](../architecture/system/user-auth.md)。
+
+文档请求示例使用 Compose 暴露端口 `24000` 和默认无 `/dev` 的业务前缀；容器内部端口为 `8000`。本地 `python -m app.main` / IDE 入口为 `http://127.0.0.1:15000/dev/knowledge-accumulation/api`，复制示例时需同时调整端口与前缀。`APP_PATH_PREFIX` 在路由导入时生效，变更后须重新加载进程，见[启动方式](../capability/infrastructure/middleware.md)。

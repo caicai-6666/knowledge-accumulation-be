@@ -4,7 +4,7 @@ from typing import Annotated, TYPE_CHECKING
 
 from pydantic import Field, StringConstraints, ValidationError, model_validator
 
-from ...json_codec import load_model_json, validate_model_payload
+from ...json_codec import ModelActionRejected, load_model_json, validate_model_payload
 from .schema import RetrievalModel
 from .session import RetrievalConditions, TaskEndStatus
 
@@ -62,6 +62,13 @@ class SetFinalOutputQueryArguments(RetrievalModel):
 class ExecuteQueryArguments(RetrievalModel):
     """使用当前已设置的条件执行查询。至少启用一个检索字段；成功包括无命中，成功即结束本次检索，不需要再次确认。"""
 
+    @model_validator(mode='before')
+    @classmethod
+    def ignore_unused_fields(cls, value):
+        # 与目录、时间工具一致：占位字段不参与查询，条件只能由条件工具设置。
+        # 原始响应由宿主保留私有审计；成功执行直接结束子循环，不追加调用历史。
+        return {} if isinstance(value, dict) else value
+
 
 _TOOL_MODELS = {
     'execute_query': ExecuteQueryArguments,
@@ -90,11 +97,16 @@ async def execute_memory_retrieval_tool(session: 'MemoryRetrievalSession', name:
     try:
         # 复用统一传输兼容层，例如把字符串形式的JSON数组转换回数组；不猜测正文。
         payload = load_model_json(arguments) if isinstance(arguments, str) else arguments
-        args = validate_model_payload(model, payload)
+        # 无参数调用只接受 JSON 对象；不将字符串顶层二次解码为对象。
+        args = model.model_validate(payload) if name == 'execute_query' else validate_model_payload(model, payload)
         if name == 'execute_query':
             result = await session.execute_query()
             return {'status':result.status, 'error_code':result.error_code, 'error':result.error}
         conditions = getattr(session, name)(**args.model_dump())
+    except ModelActionRejected as exc:
+        # 保留公共 JSON 校验提供的具体原因和修正动作，不能被下方 ValueError 泛化。
+        return {'status': 'error', 'error_code': 'invalid_arguments',
+                'message': exc.reason, 'required_action': exc.required_action}
     except ValidationError as exc:
         details = [{'field': '.'.join(map(str, item['loc'])) or 'arguments', 'message': item['msg']}
                    for item in exc.errors(include_url=False, include_input=False, include_context=False)]

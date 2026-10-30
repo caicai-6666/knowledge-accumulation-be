@@ -6,7 +6,7 @@
 
 平台注册采用“预配置白名单 + 平台登录”，没有动态创建平台的注册接口。本模块只维护平台会话，不维护管理员、不处理问答业务，也不将平台令牌作为用户登录凭据。另有启动自动执行的[用户全表注册协调](../application/startup-user-sync.md)复用本会话。
 
-外部契约以中间件的[平台 API](../../../../../知识沉淀中间件服务/middleware-service/description/api/platform.md)及[平台身份配置](../../../../../知识沉淀中间件服务/middleware-service/description/capability/application/platform-config.md)为准；上述链接依赖当前多项目目录布局。
+外部契约以中间件的[平台 API](../../../../middleware-service/description/api/platform.md)及[平台身份配置](../../../../middleware-service/description/capability/application/platform-config.md)为准；上述链接依赖当前多项目目录布局。
 
 ---
 
@@ -32,21 +32,21 @@ python -m pip install -r requirement.txt
 python -m app.main
 ```
 
-默认监听 `127.0.0.1:24000`，本地入口已开启热加载：保存 `app/` 下的 Python 文件后自动重启服务，包含工具及提示词代码。监视目录按入口文件绝对定位，不依赖 IDE 的工作目录；不监视 `data/`、测试和实验目录。现有未开启热加载的进程需要手动重启一次才能生效。
-
-热加载复用现有 Uvicorn，不需要安装额外依赖；`.env` 和 `assets/` 不在此监视范围，修改后仍需手动重启。自动重启会结束当前进程，正在执行的问答及 SSE 会受影响，随后重新执行应用启动生命周期。
+`python -m app.main` / IDE 入口默认监听 `127.0.0.1:15000`，并在导入路由前设置 `/dev` 前缀，业务基础路径为 `/dev/knowledge-accumulation/api`。当前本地入口为 `reload=False`，代码、提示词及配置修改后需要手动重启服务。若显式使用下方带 `--reload` 的命令，则监视 `app/`；`.env` 和 `assets/` 不在该监视范围，修改后仍需手动重启。自动重启会结束当前进程，正在执行的问答及 SSE 会受影响，随后重新执行应用启动生命周期。
 
 需要调整本地开发监听地址或端口时，在项目根目录执行：
 
 ```bash
-python -m uvicorn app.main:app --host 127.0.0.1 --port 24000 --reload --reload-dir app
+APP_PATH_PREFIX=/dev python -m uvicorn app.main:app --host 127.0.0.1 --port 15000 --reload --reload-dir app
 ```
 
-生产使用单 worker、不开启热加载的独立 CLI；Docker 沿用原生产命令：
+独立 ASGI 部署可显式指定 `24000`，使用单 worker、不开启热加载；此入口默认不带 `/dev`：
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 24000 --workers 1
 ```
+
+Docker 内监听 `8000`，Compose 默认映射到宿主 `24000`，见[Docker 部署](../application/docker.md)。
 
 生产环境应使用 HTTPS 访问中间件。密钥及令牌不进入前端或模型上下文。
 
@@ -83,7 +83,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 24000 --workers 1
 
 ## 验证
 
-用户会话 `POST /middleware-service/api/user/login-cache` 的响应现支持 `username`：有效登录返回当前用户名，无效登录返回 `null`。查询使用独立的严格 DTO，兼容旧版本省略该字段；类型错误、空名称或离线返回名称视为契约异常。`PUT` 仍使用不含用户名的原响应。用户名仅作展示资料，不替代可信 `userid`，不用于认定管理员或文件权限；本项目 `me` 仍读取人员数据库的完整身份。请求体依旧仅含用户 `access_token`，不新增资料写入。
+用户会话 `POST /middleware-service/api/user/login-cache` 的响应现支持 `username` 与 `departments`：有效登录返回当前用户名及部门名称数组（无部门为 []），无效登录两者均为 `null`。查询使用独立的严格 DTO，兼容旧版本省略这些字段；类型错误、空名称、重复部门或资料与登录状态不一致视为契约异常。`PUT` 仍使用不含展示资料的原响应。用户名仅作展示资料，不替代可信 `userid`，不用于认定管理员或文件权限；本项目 `me` 仍读取人员数据库的完整身份。请求体依旧仅含用户 `access_token`，不新增资料写入。
 
 [自动化测试](../../../tests/test_middleware.py)使用内存 HTTP Mock 和虚拟时钟，覆盖登录与无请求体心跳、响应校验、配置优先级及密钥保护、冲突与网络故障恢复、401 重登、过期判断、超时、禁用模式及 lifespan 清理。临时配置只写入 `tests/tmp/` 并清理，不读取真实 `.env` 或使用 `data/`。
 
@@ -93,3 +93,25 @@ python -m pip check
 ```
 
 此前平台接入阶段本机验证：12 项自动化测试通过；实际连接 `http://127.0.0.1:22000` 登录、心跳成功，返回有效期 90 秒、心跳间隔 30 秒；平台列表确认 `knowledge-accumulation` 的 `is_alive=true`。联调进程退出后已停止心跳，持续在线需要运行本应用。此次用户基础设施迁移仅做隔离测试，未重新连接共享中间件；结果见[全表注册验证](../application/startup-user-sync.md#验证与结果)。
+
+---
+
+## 接口契约核对
+
+2026-10-26 对照相邻 `middleware-service` 的实际路由、请求/响应模型和服务源码核对。本项目当前使用的 17 个方法与路径组合未发现不匹配；下表归纳已覆盖的接口，不表示其他中间件接口已接入。
+
+| 范围 | 已核对接口 | 关键结论 |
+| --- | --- | --- |
+| 平台与用户（7 项） | 平台 login、heartbeat、list、admins/full-table；用户 full-table、PUT/POST login-cache | 根前缀、Bearer 认证、全表维护角色与字段一致；心跳无请求体；用户全表发送 departments 名称数组；登录查询可返回 username/departments，写入响应不含这些字段。 |
+| 助理任务（5 项） | assistant/tasks 的 publish、pull、ack、status；resource/assistant-tasks/{file_id} | JSON 和 multipart 表单一致；空领取为 204；同平台重复 pull 续租；下载携带 file_extension；确认使用任务 ID 和交付凭证。 |
+| 平台 A2A（5 项） | requests/publish、replies/pull、replies/ack、direct-replies/pull、direct-replies/ack | 首次单平台请求也进入广播聚合；带历史响应 ID 的续聊进入单聊反馈流；领取携带 Idempotency-Key 和可选 renew_messages，不发送已移除的 limit 或 requests/ack。 |
+
+核对覆盖正常状态码、字段与认证位置，并阅读既有适配层的 401 令牌失效、409 冲突、网络结果不确定和同键重试逻辑。A2A 的关联、落盘后确认及响应缓冲继续见[A2A 专题](../../architecture/workflow/question-answering/platform-a2a.md)。
+
+新增[源码契约交叉测试](../../../tests/test_middleware_source_contract.py)：本项目真实 HTTP 客户端发出的请求，经隔离进程进入中间件真实 FastAPI 路由，保留请求校验、认证依赖、表单解析和响应序列化；平台会话解析及业务存储使用替身，附件使用内存字节，不启动应用生命周期、不读取真实配置、不登录共享平台、不写入 `data/`。3 项测试覆盖 22 次请求，包含离线登录查询、JSON/附件表单、空队列、A2A 不受理、广播、续聊和单聊反馈续租。
+
+测试要求相邻中间件源码及同级 `middleware-service` Conda 环境；不存在时明确跳过。执行 `python -m unittest tests.test_middleware_source_contract`。该验证可发现路由或序列化契约漂移，但不能代替实际部署版本、Redis 原子操作、数据库迁移和真实子平台收发的联调。
+
+本次验证结果：上述 3 项交叉测试及 22 次请求全部通过；全量 `unittest discover -s tests` 共 124 项，113 项通过、11 项独立数据库测试因未启用对应环境而跳过。修改模块编译、更新的文档引用和 `git diff --check` 检查通过。未连接共享中间件或真实子平台。
+
+本次同时修正历史说明：上游已支持 `not_applicable`；平台目录返回全部已配置平台而非 `show_in_list` 子集；更新失效的跨项目文档链接及当前入口的手动重启说明。未修改接入请求、权限数据、数据库结构或运行配置。

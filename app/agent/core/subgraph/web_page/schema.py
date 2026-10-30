@@ -18,23 +18,26 @@ class WebPageRequest(BaseModel):
 
 class WebPageResult(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, str_strip_whitespace=True)
-    status: Literal['success', 'error'] = Field(description='仅有通过校验的有效正文才返回 success。')
+    status: Literal['success', 'no_content', 'error'] = Field(description='success 为有效正文，no_content 为正常读取后未取得可用正文，error 为执行故障。')
     url: str = Field(description='原始请求地址。')
     final_url: str | None = Field(default=None, description='HTTP 重定向后的实际地址，未取得时为空。')
     fetched_at: str | None = Field(default=None, description='抓取时间，带时区的 ISO 8601 字符串，未抓取时为空。')
-    content: str | None = Field(default=None, description='成功时为直接保留的提取原文或精炼后的正文；失败时不得携带半成品。')
+    content: str | None = Field(default=None, description='仅 status=success 时提供提取原文或精炼正文；无正文及执行失败时为空。')
     images: tuple[WebImage, ...] = Field(default=(), exclude=True, repr=False,
         description='直接保留或精炼选中的真实图片，只在当前任务内存中保留，不进入回执或持久化。')
-    hint: str | None = Field(default=None, description='失败原因，或成功时正文不完整、访问限制等提示。')
-    error_code: str | None = Field(default=None, description='失败的机器可读原因；成功时为空。')
+    hint: str | None = Field(default=None, description='no_content 时必填友好的无正文原因；也用于执行失败或正文不完整等提示。')
+    error_code: str | None = Field(default=None, description='仅执行失败时提供机器可读原因；success/no_content 时为空。')
     failed_stage: Literal['fetch_html', 'extract_text', 'refine_content', 'preserve_original', 'finalize'] | None = Field(
-        default=None, description='失败阶段；成功时为空。')
+        default=None, description='仅执行失败时提供阶段；success/no_content 时为空。')
 
     @model_validator(mode='after')
     def validate_outcome(self):
         if self.status == 'success':
             if not self.content or self.error_code is not None or self.failed_stage is not None:
                 raise ValueError('成功结果必须包含正文且不得包含错误标记')
+        elif self.status == 'no_content':
+            if self.content is not None or self.images or not self.hint or self.error_code is not None or self.failed_stage is not None:
+                raise ValueError('无正文是正常结果，必须说明原因，不携带正文、图片或错误标记')
         elif self.content is not None or self.images or not self.error_code or not self.hint or not self.failed_stage:
             raise ValueError('失败结果必须包含原因和阶段，且不能返回正文')
         return self

@@ -28,6 +28,12 @@ class MemoryJournal:
     async def _save_generation(self,event):
         pass
 
+    async def record_payload(self,status,payload):
+        """执行后钩子的原生生成写入当前任务审计，转换正文仍经普通 commit 提交。"""
+        event=NodeGeneration(node_id=self.node_id,status=status,payload=payload).model_copy(deep=True)
+        self.generations.append(event)
+        await self._save_generation(event)
+
     async def record_expert(self, event):
         """完整 Responses 及提交状态保留在私有生成中，不作为主助手历史回传。"""
         response = deepcopy(event.get('response'))

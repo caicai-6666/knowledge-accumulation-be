@@ -14,11 +14,15 @@
 | --- | --- |
 | [包结构与导出](package-structure.md) | 提示词、工具、预算、渲染及子 Agent 的组织和依赖。 |
 | [助理与探索模式](agent-modes.md) | 模式工厂、专用工具扩展、个人背景注入及身份隔离。 |
+| [公司背景与默认指代](company-background.md) | 公司公开定位、材料研发理解、默认公司指代及资料来源边界。 |
 | [助理消费与交付](../../../capability/application/assistant-consumption.md) | 任务领取、消息渲染、条件最终回复、助理间发送及故障恢复。 |
+| [助理最终正文转换](assistant-message-rendering.md) | 单次生成、钉钉规则、JSON Schema、原生推理与交付恢复。 |
 | [助理定时任务](../../../capability/application/assistant-reminders.md) | 三个提醒工具、时间规则、到期生产和可靠入队。 |
 | [助理空闲心跳](../../../capability/application/assistant-heartbeat.md) | 空闲与间隔检查、稳定发布键、执行锁和停机清理。 |
-| [助理记忆加载](assistant-memory.md) | 最新末端至最近摘要的局部读取、线性追加与按需记忆检索。 |
+| [助理记忆加载](assistant-memory.md) | 持久化压缩窗口、当前工作区、线性追加与按需记忆检索。 |
+| [员工个人信息与助理私有画像](assistant-personal-context.md) | 员工事实背景、私有画像姓名全文检索、LRU 分页及逐条增删与事务恢复。 |
 | [核心循环](agent-core.md) | 输入、工具、校验、提交、输出、取消及故障。 |
+| [失败反馈审查与修复提示](error-feedback.md) | 校验、工具结果、system-guidence 的就近反馈、已修复项与宿主终止的剩余边界。 |
 | [上下文与工作区](context-management.md) | 最近摘要、分支恢复、token 预算与压缩。 |
 | [多轮工作区精简](workspace-compression.md) | 逐步编辑、容量反馈、保护路径和预留操作。 |
 | [主题发现与总结](topic-summary.md) | 增量主题规划、并行两区域总结、来源隔离与完整验收。 |
@@ -28,8 +32,9 @@
 | [工具注册、返回与折叠](tool-content-contract.md) | 返回类型声明、执行事实、页面解析、自动折叠及提交边界。 |
 | [网页搜索与正文读取](web-search.md) | 搜索、候选分页、正文精炼、LRU 与 SSE 动作提示。 |
 | [外部专家问答](external-expert.md) | 专业求助、连续追问、独立 Responses 客户端与私有原生审计。 |
-| [注册中心文件图像查看](registry-file-reading.md) | 携用户Bearer读取PDF、逐页原生图像、LRU及自动折叠。 |
+| [注册中心文件图像查看](registry-file-reading.md) | 通过平台认证和可信任务 userid 授权读取 PDF、逐页原生图像、LRU及自动折叠。 |
 | [注册中心文件查询](file-retrieval.md) | 名称/摘要组合检索、结果集AND/OR、可折叠分页。 |
+| [跨平台广播与续聊](platform-a2a.md) | A2A 工具、反馈接收、响应缓冲与私有账本。 |
 | [子管理平台查看](sub-management-platform.md) | 平台代码、功能、A2A职责、存活状态与可折叠目录。 |
 | [图像文件阅读](image-reading.md) | 单一图像工具、LRU 驻留、临时原生图片及提交边界。 |
 | [节点生命周期](node-lifecycle.md) | 停止、方向调整、失败、完成及迟到写入保护。 |
@@ -52,18 +57,19 @@
 ## 最小调用
 
 ```python
-from app.agent.core import AgentCore
+from app.agent.exploration import build_service
 from app.config.agent import load_agent_core_settings
 from app.config.mllm import load_mllm_settings
 from app.infrastructure.mllm import MLLMClient
 from app.repository.node_persistence import MySQLNodeRepository
-from app.service.question_agent import QuestionAgentService
 
 # trees 是已有 MySQLQuestionTreeRepository；user 是已认证身份。
 settings = load_mllm_settings()
 async with MLLMClient(settings) as client:
-    core = AgentCore(settings, client=client, options=load_agent_core_settings())
-    service = QuestionAgentService(MySQLNodeRepository(trees), core)
+    service = build_service(
+        MySQLNodeRepository(trees), settings,
+        client=client, options=load_agent_core_settings(),
+    )
     result = await service.generate(
         user=user, tree_id=tree_id, selected_node_id=selected_node_id,
         question="请根据已有资料说明当前结论。",
@@ -72,8 +78,8 @@ async with MLLMClient(settings) as client:
     )
 ```
 
-空树首次生成 `selected_node_id=None`。非空 `exploration` 树显式选择摘要或终态任务作为起点，非成功终态按生命周期规则过滤历史；`assistant` 树省略该参数，由服务端选择主干末端，不接受调用方选点。可用 `trees.create_tree(user.userid, kind='assistant')` 创建助理树，省略 `kind` 则创建探索树；两者共用底层结构。树的创建和访问控制由调用方及已有仓库负责，不从用户文本猜测树身份。
+以上示例使用探索模式工厂，包含必要工具注册。空树首次生成 `selected_node_id=None`。非空 `exploration` 树显式选择摘要或终态任务作为起点，非成功终态按生命周期规则过滤历史；`assistant` 树省略该参数，由服务端选择主干末端，不接受调用方选点。可用 `trees.create_tree(user.userid, kind='assistant')` 创建助理树，省略 `kind` 则创建探索树；两者共用底层结构。树的创建和访问控制由调用方及已有仓库负责，不从用户文本猜测树身份。
 
 核心能力可以单独用 `AgentCore.run(AgentInput(...), journal=MemoryJournal())` 在无数据库宿主运行。需要持久化时使用组合服务，不能把内存宿主的成功等同数据库提交成功。
 
-需要专属角色、工具或个人背景时，使用 `app.agent.assistant.build_service` / `app.agent.exploration.build_service`，装配和 loader 契约见[模式说明](agent-modes.md)，不在 Core 循环中增加模式判断。
+需要专属角色、工具或个人背景时，使用 `app.agent.assistant.build_service` / `app.agent.exploration.build_service`，装配和 loader 契约见[模式说明](agent-modes.md)，不在 Core 循环中增加模式判断。助理独立工厂的 `finish_hooks` 默认空；应用 `create_app` 默认装配正文转换钩子，独立宿主需显式传入，见[正文转换](assistant-message-rendering.md)。

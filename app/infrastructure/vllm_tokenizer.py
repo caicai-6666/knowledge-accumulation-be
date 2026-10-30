@@ -16,6 +16,10 @@ class TokenizationError(RuntimeError):
     """接口不可用或返回的 token 计数不可信。"""
 
 
+class TokenizationUnavailable(TokenizationError):
+    """分词服务连接、超时或临时限流故障；不包含参数、认证和响应格式错误。"""
+
+
 def build_tokenize_url(base_url: str) -> str:
     """移除末尾 OpenAI /v1，保留反向代理前缀，不直接拼成 /v1/tokenize。"""
     parts = urlsplit(str(base_url))
@@ -76,6 +80,8 @@ async def _count_tokens(payload, settings, *, transport=None):
                         logger.warning('vLLM 分词请求失败：attempt=%s/3 type=%s status=%s retry=%s',
                                        attempt, type(exc).__name__, status, transient and attempt < 3)
                         if not transient or attempt == 3:
+                            if transient:
+                                raise TokenizationUnavailable('模型分词服务暂时不可用') from None
                             raise
                         await asyncio.sleep(0.2 * attempt)
                 data = response.json()

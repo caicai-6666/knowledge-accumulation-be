@@ -49,6 +49,29 @@ def _ack(frame, code, data=None):
         'data': json.dumps({'response': None} if data is None else data, ensure_ascii=False)}
 
 
+def _message_shape(data):
+    """只记录固定字段是否存在和片段类型，禁止输出正文、身份、下载码或回调地址。"""
+    if not isinstance(data, dict):
+        return {'object': False}
+    known_types = {'text', 'picture', 'richText', 'file', 'audio', 'video', 'unknownMsgType'}
+    kind = data.get('msgtype')
+    shape = {'type': kind if isinstance(kind, str) and kind in known_types else 'other'}
+    content = data.get('content')
+    if isinstance(content, dict):
+        items = content.get('richText')
+        if isinstance(items, list):
+            shape['part_count'] = len(items)
+            # 限制日志体积；仅输出白名单字段的存在性，不回显未知键或用户值。
+            shape['parts'] = [dict(object=isinstance(item, dict), **(
+                {key: key in item for key in ('type', 'text', 'downloadCode', 'pictureDownloadCode', 'fileName')}
+                if isinstance(item, dict) else {})) for item in items[:10]]
+            for item, summary in zip(items[:10], shape['parts']):
+                if isinstance(item, dict) and 'text' in item:
+                    text = item['text']
+                    summary['text_state'] = ('blank' if not text.strip() else 'nonempty') if isinstance(text, str) else 'nonstring'
+    return shape
+
+
 class DingTalkRobotStream:
     def __init__(self, settings: DingTalkRobotSettings, receive: Callable[[RobotMessage], Awaitable[bool]],
                  *, client=None, connector=_DirectConnect):
@@ -71,6 +94,15 @@ class DingTalkRobotStream:
                 accepted = await self._receive(message)
             # None 或仅创建后台 task 都不代表已经可靠接收；接收器必须显式返回 True。
             return 200 if accepted is True else 500
+        except TimeoutError:
+            logger.warning('机器人接收失败：error_type=TimeoutError callback_timeout_seconds=%s',
+                           self.settings.callback_timeout_seconds)
+            return 500
+        except RobotUnavailable as error:
+            logger.warning('机器人接收失败：error_type=%s operation=%s status=%s reason=%s uncertain=%s download_host=%s download_scheme=%s',
+                           type(error).__name__, error.operation, error.status, error.reason, error.uncertain,
+                           error.download_host, error.download_scheme)
+            return 500
         except Exception as error:
             logger.warning('机器人接收失败：error_type=%s', type(error).__name__)
             return 500
@@ -87,8 +119,8 @@ class DingTalkRobotStream:
             return _ack(frame, 404), False
         try:
             message = parse_robot_message(data, self.settings)
-        except RobotMessageInvalid:
-            logger.warning('机器人消息格式校验失败')
+        except RobotMessageInvalid as error:
+            logger.warning('机器人消息格式校验失败：reason=%s shape=%s', error.reason, _message_shape(data))
             return _ack(frame, 500), False
         if message is None:
             # 群聊、其他企业或其他机器人明确不属于此消费者；确认忽略而不是发布任务。

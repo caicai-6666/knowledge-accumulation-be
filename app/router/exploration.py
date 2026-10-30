@@ -34,7 +34,7 @@ async def list_trees(request: Request, response: Response, user: AuthenticatedUs
         if turns is None:
             raise RuntimeError('探索任务服务未装配')
         running = await turns.running_tree_ids(user.userid)
-        result = [ExplorationTreeListItem(id=tree.id, name=tree.name,
+        result = [ExplorationTreeListItem(id=tree.id, name=tree.name, updated_at=tree.updated_at,
                     has_running_task=tree.id in running) for tree in trees]
     except Exception as error:
         logger.warning('探索问答树列表查询失败：error_type=%s', type(error).__name__)

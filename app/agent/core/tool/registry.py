@@ -1,15 +1,20 @@
 """唯一工具注册契约：Schema、兼容解析和预演处理器共同绑定。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 from types import MappingProxyType
 from collections.abc import Callable
 import re
 from inspect import isawaitable
-from pydantic import BaseModel
-from ..json_codec import load_model_json,validate_model_payload
+from contextvars import ContextVar
+from pydantic import BaseModel,ValidationError
+from ..json_codec import load_model_json,validate_model_payload,ModelActionRejected,model_validation_feedback
 from ..workspace import WorkspacePayload
 from .result import ToolExecution,ToolExecutionResult,ToolContentType,ToolPageReference
 from .progress import ToolProgress,DEFAULT_TOOL_PROGRESS
+from .hooks import ToolHook,ToolHookContext
+
+# 可信工具调用标识仅供外部操作幂等使用，不进入 Schema、工具结果或提示词。
+current_tool_call_id = ContextVar('current_tool_call_id', default=None)
 
 @dataclass(frozen=True)
 class RegisteredTool:
@@ -28,6 +33,13 @@ class RegisteredTool:
     output_kind: Literal["intermediate", "final"] | None = None
     # 输出仍须提交，只有通过此条件才交给宿主发送；条件不进入模型 Schema。
     deliver_output: Callable | None = None
+    hooks: tuple[ToolHook, ...] = ()
+
+    def __post_init__(self):
+        # 注册时复制容器，外部列表追加不会影响本工具，更不会影响其他工具。
+        object.__setattr__(self, 'hooks', tuple(self.hooks))
+        if any(not callable(hook) for hook in self.hooks):
+            raise TypeError('工具钩子必须可调用')
 
     def definition(self):
         return {'type':'function','function':{'name':self.name,'description':self.description,
@@ -120,17 +132,32 @@ class ToolRegistry:
 
     def prepare(self,name,raw,workspace):
         if name not in self.entries:
-            raise ValueError('工具未提供')
+            raise ModelActionRejected('请求的工具不在当前可用工具列表中，动作未执行。',
+                '从本轮实际提供的工具中选择名称并按其 Schema 调用；缺少能力时说明限制，不模拟调用成功。')
         entry=self.entries[name]
-        arguments=(entry.parser(raw) if entry.parser is not None else
-                   validate_model_payload(entry.arguments_model,load_model_json(raw)))
+        try:
+            arguments=(entry.parser(raw) if entry.parser is not None else
+                       validate_model_payload(entry.arguments_model,load_model_json(raw)))
+        except ValidationError as error:
+            raise model_validation_feedback(error,entry.arguments_model) from None
         if not isinstance(arguments,entry.arguments_model):
             raise TypeError('工具解析器返回类型与注册参数模型不一致')
-        candidate=entry.handler(name,raw,workspace.model_copy(deep=True),arguments)
+        try:
+            candidate=entry.handler(name,raw,workspace.model_copy(deep=True),arguments)
+        except ValidationError as error:
+            raise model_validation_feedback(error,WorkspacePayload) from None
         candidate=WorkspacePayload.model_validate(candidate.model_dump())
         return arguments,candidate
 
-    async def execute(self,name,arguments,*,publish_progress=None):
+    async def execute(self,name,arguments,*,publish_progress=None,call_id=None,hook_context=None):
+        token = current_tool_call_id.set(call_id)
+        try:
+            return await self._execute_with_progress(name, arguments, publish_progress=publish_progress,
+                hook_context=hook_context if hook_context is not None else ToolHookContext())
+        finally:
+            current_tool_call_id.reset(token)
+
+    async def _execute_with_progress(self,name,arguments,*,publish_progress=None,hook_context):
         entry=self.entries[name]
         progress=(entry.progress_factory(arguments.model_copy(deep=True))
                   if entry.progress_factory is not None else entry.progress)
@@ -142,12 +169,12 @@ class ToolRegistry:
         if publish_progress is not None:
             await publish_progress(progress)
             try:
-                return await self._execute(name,arguments)
+                return await self._execute(name,arguments,hook_context)
             finally:
                 await publish_progress(DEFAULT_TOOL_PROGRESS)
-        return await self._execute(name,arguments)
+        return await self._execute(name,arguments,hook_context)
 
-    async def _execute(self,name,arguments):
+    async def _execute(self,name,arguments,hook_context):
         """只在参数与状态验收后读取资料；结果提交前不能进入模型上下文。"""
         entry=self.entries[name]
         execution=ToolExecution(ToolExecutionResult(status='succeeded',tool_result={'status':'accepted'}))
@@ -156,12 +183,37 @@ class ToolRegistry:
             if isawaitable(result):
                 result=await result
             # 不再把任意 JSON 包装成 accepted；执行后的契约错误由宿主按结果不确定停止。
-            execution=(ToolExecution(result.result,result.after_commit) if isinstance(result,ToolExecution)
+            execution=(replace(result) if isinstance(result,ToolExecution)
                        else ToolExecution(ToolExecutionResult.model_validate(result)))
+        if entry.output_kind is not None and execution.result.status=='succeeded' and execution.output is None:
+            execution=replace(execution,output=arguments.content)
+        execution=self._validate_execution(entry,execution)
+        # 仅运行本注册项的钩子，逐个等待；失败/未知回执也可加工，但不能改写执行事实。
+        for hook in entry.hooks:
+            previous=execution
+            value=hook(arguments.model_copy(deep=True),replace(execution,
+                result=execution.result.model_copy(deep=True)),hook_context)
+            value=await value if isawaitable(value) else value
+            execution=self._validate_execution(entry,value)
+            if execution.result.status!=previous.result.status:
+                raise ValueError('工具钩子不能改写执行状态')
+            if execution.after_commit is not previous.after_commit:
+                raise ValueError('工具钩子不能替换或丢弃提交回调')
+        return execution
+
+    @staticmethod
+    def _validate_execution(entry,execution):
+        if not isinstance(execution,ToolExecution):
+            raise TypeError('工具钩子必须返回 ToolExecution')
+        execution=replace(execution)
         result=execution.result
         if result.status=='succeeded' and result.content.type not in entry.return_types:
             raise ValueError('工具实际返回类型不在注册声明中')
-        return ToolExecution(result.model_copy(deep=True),execution.after_commit)
+        if execution.output is not None and entry.output_kind is None:
+            raise ValueError('只有输出工具可以返回输出正文')
+        if entry.output_kind is not None and result.status=='succeeded' and execution.output is None:
+            raise ValueError('输出工具不能丢弃输出正文')
+        return replace(execution,result=result.model_copy(deep=True))
 
 
 def build_builtin_registrations():

@@ -44,7 +44,11 @@ class MySQLNodeRepository:
     async def _restore(self,cursor,tree,node_id):
         node=await self._node(cursor,tree.id,node_id)
         content=await self._content(cursor,node_id)
-        workspace=await self.trees._workspace(cursor,tree.id,node.workspace_version_id)
+        if tree.kind == 'assistant':
+            from app.repository.assistant_memory import current_workspace
+            workspace=await current_workspace(cursor,tree)
+        else:
+            workspace=await self.trees._workspace(cursor,tree.id,node.workspace_version_id)
         if workspace is None:
             raise ValueError('该节点缺少执行恢复快照，需显式迁移旧记录')
         await cursor.execute('SELECT * FROM question_node_messages WHERE node_id=%s ORDER BY sequence',(node_id,))
@@ -70,7 +74,8 @@ class MySQLNodeRepository:
 
     async def start_task(self,tree_id,owner_userid,*,node_id,question,parent_id=None,
                          expected_revision:int,advance_main:bool | None=None,
-                         summary:SummaryContent | None=None,summary_id=None,attachments=()) -> RestoredNode:
+                         summary:SummaryContent | None=None,summary_id=None,attachments=(),
+                         summary_workspace:WorkspaceVersion | None=None) -> RestoredNode:
         """调用方先生成稳定 node_id；首次问题、节点及快照在同一个事务落盘。"""
         content=TaskContent(question=question,attachments=attachments)
         if summary is not None:
@@ -79,8 +84,14 @@ class MySQLNodeRepository:
                 raise ValueError('任务前摘要必须绑定所选父节点和稳定摘要标识')
         elif summary_id is not None:
             raise ValueError('摘要标识必须与摘要内容同时提供')
+        if summary_workspace is not None:
+            summary_workspace=WorkspaceVersion.model_validate(summary_workspace.model_dump())
+            if summary is None or summary_workspace.tree_id!=tree_id:
+                raise ValueError('摘要工作区必须绑定本树的已验收摘要')
         async with self.trees._transaction() as cursor:
             tree=await self.trees._owned_tree(cursor,tree_id,owner_userid,lock=True)
+            if summary_workspace is not None and tree.kind!='assistant':
+                raise ValueError('该入口仅用于助理唯一工作区')
             await cursor.execute('SELECT id FROM question_nodes WHERE tree_id=%s AND id=%s',(tree_id,node_id))
             if await cursor.fetchone() is not None:
                 restored=await self._restore(cursor,tree,node_id)
@@ -94,17 +105,24 @@ class MySQLNodeRepository:
                         raise QuestionTreeConflict('重复摘要标识对应不同内容')
                 return restored
             self.trees._revision(tree,expected_revision)
-            return await self._start_locked(cursor,tree,node_id,content,parent_id,advance_main,summary,summary_id)
+            return await self._start_locked(cursor,tree,node_id,content,parent_id,advance_main,summary,summary_id,summary_workspace)
 
-    async def _start_locked(self,cursor,tree,node_id,content,parent_id,advance_main=None,summary=None,summary_id=None):
+    async def _start_locked(self,cursor,tree,node_id,content,parent_id,advance_main=None,summary=None,summary_id=None,summary_workspace=None):
         """调用方持树行锁；普通创建与用户替代复用同一份原子登记逻辑。"""
         tree_id=tree.id
         if tree.kind=='assistant':
             from app.repository.assistant_context import append_assistant_task
+            from app.repository.assistant_memory import load_memory, commit_memory
+            before=await load_memory(self.trees,cursor,tree)
             updated=await append_assistant_task(cursor,self.trees,tree,node_id,content,parent_id,
                                                 advance_main,summary,summary_id)
+            if summary_workspace is not None:
+                await cursor.execute('UPDATE assistant_workspaces SET id=%s,content=%s,created_at=%s,updated_at=%s WHERE tree_id=%s',
+                    (summary_workspace.id,_dump(summary_workspace.content),_date(summary_workspace.created_at),_date(utc_now()),tree_id))
             await self._insert_event(cursor,NodeMessage(id=node_id,node_id=node_id,kind='question',text=content.question,sequence=1))
-            return await self._restore(cursor,updated,node_id)
+            restored=await self._restore(cursor,updated,node_id)
+            await commit_memory(self.trees,cursor,before,restored,summary=summary)
+            return restored
         snapshot=await self.trees._snapshot(cursor,tree)
         parent=snapshot.nodes_by_id.get(parent_id)
         if parent_id is not None and parent is None:
@@ -154,13 +172,22 @@ class MySQLNodeRepository:
                 return existing
             if current.node.status!='generating' or replacement_id==node_id:
                 raise QuestionTreeConflict('只能替代正在执行的任务；已结束任务应创建普通新节点')
+            snapshot = await self.trees._snapshot(cursor, tree) if tree.kind == 'exploration' else None
             # 事务内临时关闭父节点，使共用构树校验允许追加；该中间状态不会对外可见。
             # 先插入新节点，再设置真实替代关系，满足同树外键与终态关联约束。
+            finished_at = utc_now()
             await cursor.execute("UPDATE question_nodes SET status='cancelled',finished_at=%s WHERE id=%s",
-                (_date(utc_now()),node_id))
+                (_date(finished_at),node_id))
+            if snapshot is not None:
+                self.trees._update_snapshot(cursor, snapshot, tree,
+                    current.node.model_copy(update={'status':'cancelled', 'finished_at':finished_at}))
             new=await self._start_locked(cursor,tree,replacement_id,content,node_id)
             await cursor.execute("UPDATE question_nodes SET status='superseded',superseded_by_node_id=%s WHERE id=%s",
                 (replacement_id,node_id))
+            if snapshot is not None:
+                appended = await self.trees._snapshot(cursor, new.tree)
+                self.trees._update_snapshot(cursor, appended, new.tree, current.node.model_copy(update={
+                    'status':'superseded', 'finished_at':finished_at, 'superseded_by_node_id':replacement_id}))
             return await self._restore(cursor,new.tree,replacement_id)
 
     async def append_terminal_generation(self,tree_id,owner_userid,node_id,generation):
@@ -189,10 +216,11 @@ class MySQLNodeRepository:
             if tree.kind=='assistant':
                 if selected_node_id is not None:
                     raise ValueError('助理不接受节点选择')
-                from app.repository.assistant_context import assistant_path
-                path=await assistant_path(cursor,tree)
-                if path is None:
-                    return tree,None,(),None,()
+                from app.repository.assistant_memory import load_memory
+                memory=await load_memory(self.trees,cursor,tree)
+                if memory.nodes and memory.nodes[-1].status=='generating':
+                    raise ValueError('助理当前任务尚未结束')
+                return tree,memory.path,memory.writes,memory.workspace,tuple(m for m in memory.messages if m.kind=='intermediate')
             else:
                 snapshot=await self.trees._snapshot(cursor,tree)
                 if selected_node_id is None:
@@ -327,7 +355,17 @@ class MySQLNodeRepository:
                 self.trees._revision(tree,expected_revision)
             if current.node.status!='generating':
                 raise QuestionTreeConflict('已结束节点拒绝迟到写入')
-            if changed_workspace:
+            snapshot = await self.trees._snapshot(cursor, tree) if tree.kind == 'exploration' else None
+            assistant_memory = None
+            if tree.kind == 'assistant':
+                from app.repository.assistant_memory import load_memory, commit_memory
+                assistant_memory = await load_memory(self.trees,cursor,tree)
+                if node_id != tree.main_leaf_id:
+                    raise QuestionTreeConflict('助理仅允许更新当前末端任务')
+            if changed_workspace and tree.kind == 'assistant':
+                await cursor.execute('UPDATE assistant_workspaces SET id=%s,content=%s,created_at=%s,updated_at=%s WHERE tree_id=%s',
+                    (workspace.id,_dump(workspace.content),_date(workspace.created_at),_date(utc_now()),tree_id))
+            elif changed_workspace:
                 await cursor.execute('SELECT id FROM question_workspaces WHERE id=%s',(workspace.id,))
                 if await cursor.fetchone() is not None:
                     raise QuestionTreeConflict('检查点必须使用新的工作区版本，不能回退旧版本')
@@ -345,7 +383,7 @@ class MySQLNodeRepository:
             status=terminal or current.node.status
             if (status=='complete')!=bool(final_messages):
                 raise ValueError('最终消息必须与完成终态共同提交')
-            version_id=workspace.id if changed_workspace else current.workspace.id
+            version_id=None if tree.kind=='assistant' else (workspace.id if changed_workspace else current.workspace.id)
             await cursor.execute('UPDATE question_node_contents SET content=%s WHERE node_id=%s',
                 (_dump(content.model_dump(mode='json')),node_id))
             now=utc_now()
@@ -355,7 +393,13 @@ class MySQLNodeRepository:
             tree=tree.model_copy(update={'revision':tree.revision+1,'updated_at':now})
             if self.commit_hook is not None:
                 await self.commit_hook(cursor,tree,node_id,content,status)
-            return await self._restore(cursor,tree,node_id)
+            restored = await self._restore(cursor,tree,node_id)
+            if snapshot is not None:
+                self.trees._update_snapshot(cursor, snapshot, tree, restored.node)
+            if assistant_memory is not None:
+                await commit_memory(self.trees,cursor,assistant_memory,restored,
+                    new_exchanges=exchanges[len(original):] if changed_exchanges else ())
+            return restored
 
     async def load_memory_source(self,tree_id,owner_userid,memory_id) -> NodeMessage:
         """记忆命中只按已认证用户和精确消息引用回查，不从其他节点猜测原文。"""

@@ -14,6 +14,16 @@ docker build -t knowledge-accumulation-be:dev .
 
 ---
 
+## 本地开发入口
+
+执行 `python -m app.main` 或在 IDE 中直接运行 `app/main.py`，监听 `127.0.0.1:15000`。入口在导入任何业务配置前设置 `APP_PATH_PREFIX=/dev`，关闭热重载时也使用相同前缀，业务 API 为 `/dev/knowledge-accumulation/api`；注册中心文件读取使用相同开发前缀，开发配置中的 `REGISTRY_BASE_URL` 应为 `http://127.0.0.1:16000`。
+
+修改启动入口后需要重新启动已有进程；内存中已注册的路由不会随文件修改自动改变。该前缀与认证方式独立，`APP_ENV=production` 使用钉钉登录时仍可沿用本地开发入口和 `/dev`。
+
+Docker/ASGI 默认不设置 `APP_PATH_PREFIX`，继续使用生产 API 路径和容器内部 `8000` 端口。开发网关和 Vite 必须保留 `/dev`，不能再剥除该前缀。
+
+---
+
 ## Compose 装配
 
 统一部署配置位于同级 [knowledge-accumulation-deploy](../../../../knowledge-accumulation-deploy/readme.md)，服务名 `knowledge-backend`，默认入口为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
@@ -32,6 +42,10 @@ docker build -t knowledge-accumulation-be:dev .
 
 中间件接入后会自动执行用户及管理员全表同步，启动前必须准备完整权威人员源，并停止旧的同身份运行实例。跨后端旧快照覆盖并发权限更新的边界仍需由部署侧保证。配置 `VLLM_EMBEDDING_BASE_URL` 后另会启动[记忆自动向量化](memory-embedding.md)，须预先准备问答表和向量服务；空地址不装配该任务。
 
+个人助理及平台 A2A 配置也从 `KNOWLEDGE_BACKEND_ENV_FILE` 读取，不在 deploy `.env` 或 Compose 环境中维护第二份值。部署模板已提示同步 `ASSISTANT_MODEL_RETRY_SECONDS=30`、`ASSISTANT_RENDERING_THINKING_EFFORT=medium` 及 A2A 响应缓冲、轮询、HTTP 超时和并发上限；已有开关、模型地址与自定义值保留。部署侧配置清单见[助理、转换钩子与平台协作](../../../../knowledge-accumulation-deploy/readme.md#助理转换钩子与平台协作)。
+
+启用助理时，[转换子智能体](../../architecture/workflow/question-answering/assistant-message-rendering.md)作为 `finish_task` 独立钩子自动装配，共用 `VLLM_MLLM_*`，要求模型服务支持 `/tokenize`、原生推理和 JSON Schema。转换正文在普通提交前替换，失败不会自动降级发送原文；无需新增容器、端口或 SQL 迁移。配置文件变更需重新创建/启动后端才会加载，镜像仍通过 `COPY app` 包含钩子实现。
+
 Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取。可准备仅部署用户和 GID `10001` 可读的独立配置副本（如权限 `0640`），将 `KNOWLEDGE_BACKEND_ENV_FILE` 指向该副本；不要公开配置内容或把权限 `0600` 且属于其他用户的文件直接视为容器可读。路径缺失时 Compose 拒绝自动创建同名目录。
 
 容器中的 `127.0.0.1` 指向容器自己。中间件位于宿主机时可使用 `host.docker.internal`，宿主服务须监听容器可达接口；MLLM/Embedding 地址也必须可从容器访问。`.env` 中既有本机地址不会自动转换。已有部署 `.env` 如果显式设置了旧 `KNOWLEDGE_ACCUMULATION_BASE_URL`，需要在实际部署时改为新服务地址，默认值不会覆盖已有配置。
@@ -43,6 +57,8 @@ Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取
 人员表由部署项目的 `003-personnel.sql`、`004-platform-admins.sql` 在新 MySQL 卷中创建。知识后端与 registry 必须查询同一权威人员表，不能各自初始化一套权限副本。
 
 探索问答运行前，新建且尚无问答表的数据库需依次执行本项目 `schema/` 中的 `001`、`002`、`004`、`006`、`007`、`008`、`009`、`010`。`003` MyVector 缓存和 `005` 全文索引按需单独部署，先执行 `003` 再执行 `005`，要求插件与维度配置匹配。完整字段与旧库迁移边界见[问答树存储](../../architecture/data/question-tree.md)和[节点落盘](../../architecture/data/node-persistence.md)。
+
+启用个人助理另需核对 `011`—`017` 的存储、入站和画像结构，以及人员多部门 `019`、部门索引 `020`、当前工作区 `021`；跨平台协作启用时另需 `018`。其中 `021` 升级必须停止旧助理写入、准备备份并显式运行迁移器，不能仅建表后直接启动；见[助理存储迁移](../../architecture/data/assistant-storage.md#迁移与验证)及[当前工作区迁移](../../architecture/workflow/question-answering/assistant-memory.md#显式迁移与部署)。这些是现有业务模块的部署前提，正文转换钩子本身不引入新表。
 
 镜像携带 `/workspace/schema/` 便于取出 SQL；迁移由部署人员显式执行，不对已有表盲目重复运行，非空旧树的路径类型还需按文档准备历史回填。Compose 的 MySQL 健康检查不检查这些业务表，HTTP 健康也不能替代结构检查。
 
@@ -63,3 +79,5 @@ Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取
 2026-10-22 已完成实际镜像构建及镜像内 `pip check`。使用合成配置验证 Compose 默认配置和自定义端口、数据库、代理地址覆盖；检查两后端同源数据库、独立数据卷、只读配置挂载与 MySQL 健康依赖。
 
 临时容器使用 `--network none`，数据显式挂载至宿主机 `tests/tmp/`，确认普通用户运行、运行依赖可导入、三个工具模板及十份 SQL 存在、实际配置和本地测试/实验数据不在镜像中。另验证挂载配置中的带引号 JSON 与 `$` 字符、数据目录可写、OpenAPI 健康以及 SIGTERM 后日志确认 `Application shutdown complete`（退出码 143）。临时容器和验证目录已清理，未连接真实数据库、中间件或模型，未启动部署项目的共享服务。
+
+2026-10-30 配置同步：在现有挂载后端配置中补齐 6 个缺失的助理/A2A 参数，保留所有已有配置值；同步 deploy 模板注释、Compose 挂载说明和升级前提。实际配置通过 `AssistantRuntimeSettings`、`PlatformA2ASettings` 加载校验，生产和开发 Compose 均通过 `config --quiet`；解析生产 Compose 验证只读挂载目标及无额外助理/A2A/模型环境覆盖。未执行镜像重建、服务重启、数据库迁移或模型联通验证。

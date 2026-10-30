@@ -52,7 +52,8 @@ def _lossless_animation(frames: list[Image.Image], durations: list, loop: int, i
         if frame.size != (width, height):
             raise ValueError('动画帧尺寸不一致，不能无损保存为完整画布')
         output = BytesIO()
-        frame.save(output, format='WEBP', lossless=True, quality=100, method=6, exact=True)
+        # method 只控制压缩计算量；保留无损及透明像素，避免首次机器人建档被高压缩耗时拖垮。
+        frame.save(output, format='WEBP', lossless=True, quality=100, method=4, exact=True)
         static = output.getvalue()
         image_chunks = []
         offset = 12
@@ -136,7 +137,8 @@ class AvatarStore:
                     encoded = _lossless_animation(frames, durations, loop, icc)
                 else:
                     output = BytesIO()
-                    options = dict(format='WEBP', lossless=True, quality=100, method=6, exact=True)
+                    # 适度压缩即可；method=6 对大头像可能耗时超过机器人整个回调预算。
+                    options = dict(format='WEBP', lossless=True, quality=100, method=4, exact=True)
                     if icc:
                         options['icc_profile'] = icc
                     frames[0].save(output, **options)

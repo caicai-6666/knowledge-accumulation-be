@@ -4,9 +4,9 @@ from app.agent.core.workspace import read_workspace
 from app.agent.core.native_messages import messages_from_exchanges
 
 
-def build_tree_context(writes,workspace,outputs,*,supplemental=''):
+def build_tree_context(writes,workspace,outputs,*,supplemental='',summary_text=None):
     history=[]
-    summary=None
+    summary=summary_text
     for write in writes:
         if write.node.kind=='summary':
             summary=write.content.text

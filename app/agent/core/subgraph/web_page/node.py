@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 def _error(stage, code, message):
     return {'error_code': code, 'failed_stage': stage, 'hint': message}
 
+
+def _no_content(message):
+    # 正确识别无正文属于正常业务结果，不能消耗主助手的调用纠错次数。
+    return {'has_content': False, 'refined_content': '', 'selected_images': (),
+            'hint': message, 'error_code': None, 'failed_stage': None}
+
 from app.config.mllm import load_mllm_settings
 from app.infrastructure.mllm import MLLMClient
 from ...json_codec import load_model_json, validate_model_payload
@@ -41,7 +47,7 @@ async def fetch_html(state: WebPageState, *, timeout_seconds=30, max_bytes=3 * 1
                     response.raise_for_status()
                     media = response.headers.get('content-type', '').split(';', 1)[0].strip().lower()
                     if media and media not in ('text/html', 'application/xhtml+xml'):
-                        return {**metadata, **_error('fetch_html', 'unsupported_content_type',
+                        return {**metadata, **_no_content(
                                 '链接未返回 HTML 网页，请选择网页正文链接。')}
                     chunks, size = [], 0
                     async for chunk in response.aiter_bytes():
@@ -52,11 +58,16 @@ async def fetch_html(state: WebPageState, *, timeout_seconds=30, max_bytes=3 * 1
                         chunks.append(chunk)
                     html = b''.join(chunks)
                     if not html.strip():
-                        return {**metadata, **_error('fetch_html', 'empty_response', '网页返回空内容，请选择其他来源。')}
+                        return {**metadata, **_no_content('该网页返回了空内容，暂时无法读取正文，请尝试其他来源。')}
                     return {**metadata, 'html': html, 'error_code': None, 'failed_stage': None, 'hint': None}
     except (TimeoutError, httpx.TimeoutException):
         return {**metadata, **_error('fetch_html', 'http_timeout', '网页读取超时，请稍后重试或选择其他来源。')}
     except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403, 404, 410, 451):
+            message = ('该网页需要登录、验证或访问授权，暂时无法读取正文，请尝试其他公开来源。'
+                       if exc.response.status_code in (401, 403, 451) else
+                       '该网页已不存在或链接已失效，暂时无法读取正文，请尝试其他来源。')
+            return {**metadata, **_no_content(message)}
         return {**metadata, **_error('fetch_html', 'http_status_error',
                 f'网页服务器返回 HTTP {exc.response.status_code}，未取得正文，请选择其他来源。')}
     except httpx.TooManyRedirects:
@@ -88,14 +99,14 @@ def _extract(html, url, max_images):
 async def extract_text(state: WebPageState, *, max_images=6) -> dict:
     """离线提取正文及访问限制线索；不将非空文本误判为有效业务内容。"""
     if not state.get('html'):
-        return _error('extract_text', 'empty_text', '页面没有可提取的正文，请选择其他来源。')
+        return _no_content('页面没有可提取的正文，请选择其他来源。')
     try:
         text, access_hint, candidates = await asyncio.to_thread(_extract, state['html'], state.get('final_url'), max_images)
     except Exception:
         logger.error('网页正文提取失败')
         return _error('extract_text', 'extraction_failed', '网页正文解析失败，请选择其他来源。')
     if (not text or not any(char.isalnum() for char in text)) and not candidates:
-        return {**_error('extract_text', 'empty_text', '页面没有可提取的正文，可能需要登录或动态加载，请选择其他来源。'),
+        return {**_no_content('页面没有可提取的正文，可能需要登录或动态加载，请选择其他来源。'),
                 'access_hint': access_hint}
     return {'extracted_text': text, 'access_hint': access_hint, 'image_candidates': candidates,
             'error_code': None, 'failed_stage': None, 'hint': None}
@@ -113,7 +124,7 @@ async def refine_content(state: WebPageState, *, settings=None, client=None, aud
     text = state.get('extracted_text', '')
     images = state.get('images', ())
     if not text.strip() and not images:
-        return _error('refine_content', 'empty_text', '没有可供精炼的网页正文。')
+        return _no_content('没有可供读取的网页正文，请尝试其他来源。')
     settings = settings or load_mllm_settings()
     records = audit if audit is not None else []
     # 提取器可能移除导航中的访问限制，独立保留真实原文线索供精炼判断。
@@ -158,8 +169,7 @@ async def refine_content(state: WebPageState, *, settings=None, client=None, aud
                 event.update(accepted=True, message_count_after_cleanup=len(messages),
                              validated_output=output.model_dump())
                 if output.type == 'no_content':
-                    return {**_error('refine_content', 'no_content', output.result),
-                            'has_content': False, 'refined_content': ''}
+                    return _no_content(output.result)
                 return {'has_content': True, 'refined_content': output.result,
                         'selected_images': tuple(image for number in selected for image in images if image.number == number),
                         'error_code': None, 'failed_stage': None, 'hint': None}
@@ -174,17 +184,21 @@ async def refine_content(state: WebPageState, *, settings=None, client=None, aud
 
 
 def route_after_stage(state: WebPageState) -> str:
-    """每阶段失败均交给统一收束节点，跳过余下提取步骤。"""
-    return 'finalize' if state.get('error_code') else 'continue'
+    """执行故障或明确无正文均提前收束，不继续处理不存在的正文。"""
+    return 'finalize' if state.get('error_code') or state.get('has_content') is False else 'continue'
 
 
 async def finalize(state: WebPageState) -> dict:
-    """仅发布处理成功的正文或明确错误，不泄露失败阶段的半成品。"""
+    """区分有效正文、正常无正文与执行故障，不泄露处理半成品。"""
     request = WebPageRequest.model_validate(state['request'])
     code, stage, hint = state.get('error_code'), state.get('failed_stage'), state.get('hint')
     content = (state.get('refined_content') or '').strip()
+    if not code and state.get('has_content') is False:
+        return {'result': WebPageResult(status='no_content', url=str(request.url),
+            final_url=state.get('final_url'), fetched_at=state.get('fetched_at'),
+            hint=hint or '本次未取得可用正文，请尝试其他来源，或向用户说明资料限制。')}
     if not code and (state.get('has_content') is not True or not content):
-        code, stage, hint = 'no_content', 'finalize', '网页未取得可用正文，请选择其他来源。'
+        code, stage, hint = 'invalid_processing_result', 'finalize', '网页处理结果不完整，请稍后重试或选择其他来源。'
     return {'result': WebPageResult(
         status='error' if code else 'success', url=str(request.url),
         final_url=state.get('final_url'), fetched_at=state.get('fetched_at'),

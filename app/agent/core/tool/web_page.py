@@ -9,13 +9,15 @@ import hmac
 import logging
 import re
 from typing import Annotated
+from urllib.parse import urldefrag
 import secrets
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 from .result import FoldableToolContent, ToolPageReference, ToolExecution
-from .result import ToolExecutionResult, ToolPageUnavailable
+from .result import ToolExecutionResult, ToolPageUnavailable, ToolGuidance
 from ..subgraph.web_page import build_web_page_subgraph, WebPageResult
+from ..prompt.guidance import build_system_guidence_message
 from .registry import RegisteredTool
 from .progress import ToolProgress
 
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenWebPageArguments(BaseModel):
-    """当你需要阅读搜索候选网页的正文和相关图片时，使用这个工具。首次提供来源标识和阅读需求，默认摘取相关原文，保留原语言及必要条件；可在focus中要求全文保留、不翻译，此时直接返回提取原文；要求局部筛选、摘要或翻译时按需求处理。返回第一页及选中图片；继续阅读同一需求时省略focus和page翻到下一页，重看图片指定page=1。修改focus会重新读取。成功返回不保证全文完整，需留意来源限制和遗漏；未读取的图片不能凭图注推断，搜索摘要不能当作已核实正文。"""
+    """当你需要阅读搜索候选网页的正文和相关图片时，使用这个工具。首次提供来源标识和阅读需求，默认摘取相关原文，保留原语言及必要条件；可在focus中要求全文保留、不翻译，此时直接返回提取原文；要求局部筛选、摘要或翻译时按需求处理。返回第一页及选中图片；继续阅读同一需求时省略focus和page翻到下一页，重看图片指定page=1。修改focus会重新读取。没有可用正文时正常返回独立的“网页读取提示”和 no_content，不生成正文页面；提示不是来源原文或事实证据，可换来源或向用户说明限制，不推断信息不存在。取得正文也不保证全文完整，需留意来源限制和遗漏；未读取的图片不能凭图注推断，搜索摘要不能当作已核实正文。"""
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     source_id: str = Field(min_length=1, description='网页搜索列表返回的完整source_id，原样复制，不能使用行号、结果集ID或自行编写URL代替。')
     focus: str | None = Field(default=None, min_length=1, max_length=4000, description='首次打开或原正文已不可读取时必填，1至4000字符。说明目标对象、阅读范围及必要的处理要求。普通查询默认保留相关原文及条件，不因中文提问自动翻译，例如“查看主商品的规格和退款限制，排除推荐商品”。需要全文时明确“保留全部正文、表格、代码、脚注及参考文献，保持原文，不翻译、不概括”；仅需摘要或翻译时明确范围与语言，例如“用中文概括申请条件，保留所有例外”。不要加入与阅读无关的指令。后续省略或null沿用该来源最近查看且仍可读取的需求；不同focus会重新读取和处理。全文原文直接使用提取正文，完整程度仍受来源可读性和正文提取质量限制，不能仅凭成功回执认定无遗漏。')
@@ -56,6 +58,21 @@ def _failure(code, message):
     return ToolExecutionResult(status='failed', tool_result={'code': code, 'message': message})
 
 
+def render_web_page_notice(source, result, count):
+    """把读取情况与网页正文显式分隔，限制说明不冒充来源证据。"""
+    reason = '\n'.join('> ' + line for line in result.hint.splitlines())
+    return '\n'.join([
+        '════════════ 网页读取提示 ════════════', '',
+        '结果：未获取到可用正文',
+        f'当前页面连续无正文：{count} 次',
+        '【注意】以下是读取情况说明，不是网页正文，不能作为来源内容引用。', '',
+        '网页：' + ' '.join(source.title.split()),
+        '链接：' + (result.final_url or result.url), '',
+        '原因说明（非正文）：', reason, '',
+        '下一步：可以尝试其他来源；若资料仍不足，请向用户说明限制，不推断相关信息不存在。', '',
+        '════════════ 提示结束 ════════════'])
+
+
 class WebPageViewer:
     def __init__(self, *, sources, settings, authorize, capacity=10, page_chars=3000, graph_factory=None):
         if type(capacity) is not int or capacity < 1 or type(page_chars) is not int or page_chars < 1:
@@ -64,6 +81,8 @@ class WebPageViewer:
         self.capacity, self.page_chars = capacity, page_chars
         self._graph_factory = graph_factory or build_web_page_subgraph
         self._items = OrderedDict()
+        # 计数按任务与页面绑定，切换关注点仍累计；不跨任务共享尝试状态。
+        self._no_content_counts = {}
         self._key = secrets.token_bytes(32)
         self._lock = asyncio.Lock()
         self.closed = False
@@ -75,6 +94,7 @@ class WebPageViewer:
     def close(self):
         self.closed = True
         self._items.clear()
+        self._no_content_counts.clear()
         self.audit.clear()
         self._key = secrets.token_bytes(32)
         self._active_scopes.clear()
@@ -92,6 +112,9 @@ class WebPageViewer:
             for key in list(self._items):
                 if self._items[key].task_scope == scope:
                     self._items.pop(key)
+            for key in list(self._no_content_counts):
+                if key[0] == scope:
+                    self._no_content_counts.pop(key)
             self._scope.reset(token)
 
     async def _check_access(self):
@@ -106,6 +129,7 @@ class WebPageViewer:
         async with self._lock:
             try:
                 await self._check_access()
+                scope = self._scope.get()
                 if page is not None and (type(page) is not int or page < 1):
                     return _failure('invalid_page', '页码必须为从1开始的整数。')
                 if focus is None:
@@ -132,6 +156,31 @@ class WebPageViewer:
                     result = WebPageResult.model_validate(output['result'])
                     if result.status == 'error':
                         return _failure(result.error_code, result.hint)
+                    if result.status == 'no_content':
+                        # 提示作为完整业务结果提交，不登记空页面，也不推进已有阅读位置。
+                        counter_key = (scope, urldefrag(result.final_url or result.url)[0])
+                        count = self._no_content_counts.get(counter_key, 0) + 1
+                        guidance = []
+                        if count >= 2:
+                            guidance.append(ToolGuidance(source='tool', message=build_system_guidence_message(
+                                kind='action_guidance',
+                                reason=f'同一页面已连续 {count} 次未取得可用正文。读取提示不是网页原文，也不是目标事实的证据。',
+                                required_action='根据读取提示决定下一步：若只是没有与当前关注点相关的内容，可在仍服务用户目标的前提下调整关注点，或查看其他页面；'
+                                    '若页面需要登录、验证或授权，优先换其他公开来源，不假定改变关注点就能解除限制。'
+                                    '同一页面更换关注点后仍无有效信息时，不要反复读取，应转向其他来源；资料仍不足时向用户说明缺口并正常收尾。'
+                                    '例如遇到验证码页面时换来源，而不是重复同一读取。')))
+                        notice = ToolExecutionResult(status='succeeded', tool_result={
+                            'status': 'no_content', 'has_content': False, 'source_id': source_id,
+                            'reason': result.hint, 'no_content_count': count,
+                            'message': render_web_page_notice(source, result, count)}, system_guidence=guidance)
+                        def commit_notice():
+                            # 未提交或任务结束后的迟到结果不能改变后续判断。
+                            if not self.closed and (scope is None or scope in self._active_scopes):
+                                self._no_content_counts[counter_key] = count
+                        if defer_commit:
+                            return ToolExecution(notice, after_commit=commit_notice)
+                        commit_notice()
+                        return notice
                     # 只分页最终文本，片段顺序不变，拼接可恢复完整结果。
                     content = result.content
                     pages = tuple(content[i:i+self.page_chars] for i in range(0, len(content), self.page_chars))
@@ -151,6 +200,7 @@ class WebPageViewer:
                     if not self.closed and self._items.get(key) is snapshot:
                         snapshot.page = target
                         self._items.move_to_end(key)
+                        self._no_content_counts.pop((scope, urldefrag(snapshot.result.final_url or snapshot.result.url)[0]), None)
                 locator, nonce = f'page:{target}', str(uuid4())
                 reference = ToolPageReference(resource_id=snapshot.resource_id, locator=locator,
                     display_id=nonce + '.' + self._sign(snapshot.resource_id, locator, nonce),

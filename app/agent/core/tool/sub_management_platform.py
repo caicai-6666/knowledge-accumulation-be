@@ -3,7 +3,8 @@ import asyncio
 import logging
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
+from ..json_codec import load_model_json
 from app.model.platform import MiddlewarePlatformInfo
 from .registry import RegisteredTool
 from .progress import ToolProgress
@@ -15,6 +16,18 @@ logger = logging.getLogger(__name__)
 class ListSubManagementPlatformsArguments(BaseModel):
     """当你需要了解有哪些子管理平台、各自功能、平台代码、A2A职责和存活状态时，使用这个工具。无需参数，每次查询最新目录，包含离线平台，返回可折叠的完整列表。后续文件查询需要平台代码时，原样使用列表中的代码；按职责判断可能的协作对象。目录不是文件访问或管理授权，存活只表示平台会话有效，不保证业务健康或A2A可用；仅在实际提供相应工具时才能查询文件或发起求助，不能把本工具当成A2A调用。"""
     model_config = ConfigDict(extra='forbid', frozen=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def ignore_unused_fields(cls, value):
+        # 此只读工具始终读取完整目录，没有参数语义；仅在此模型中丢弃对象字段。
+        # 不采信参数中的伪造结果，不修改原始生成；有效轨迹由空模型序列化为 {}。
+        return {} if isinstance(value, dict) else value
+
+
+def parse_directory_arguments(raw):
+    # 保留公共 JSON 语法、重复键与非有限数检查；不将字符串或数组转换成对象。
+    return ListSubManagementPlatformsArguments.model_validate(load_model_json(raw))
 
 
 def render_sub_management_platforms(platforms):
@@ -84,5 +97,5 @@ class SubManagementPlatformViewer:
 def build_sub_management_platform_registration(viewer):
     return RegisteredTool('list_sub_management_platforms', ListSubManagementPlatformsArguments.__doc__,
         ListSubManagementPlatformsArguments, lambda name, raw, workspace, args: workspace,
-        executor=viewer.execute, return_types=('ordinary','foldable'), page_resolver=viewer.resolve_page,
+        parser=parse_directory_arguments, executor=viewer.execute, return_types=('ordinary','foldable'), page_resolver=viewer.resolve_page,
         progress=ToolProgress(type='thinking', message='正在查看子管理平台'))

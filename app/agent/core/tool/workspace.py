@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal
 from uuid import uuid4
 from pydantic import BaseModel, Field, StringConstraints, model_validator
-from ..json_codec import load_model_json,normalize_model_json
+from ..json_codec import load_model_json,normalize_model_json,ModelActionRejected
 from ..workspace import (WorkspaceObject,WorkspaceText,WorkspaceKey,WorkspacePayload,
     WorkspaceKnownInformation,WorkspaceRemainingDirection,WorkspaceExploredDirection)
 
@@ -35,9 +35,9 @@ class WorkspaceAddArguments(WorkspaceObject):
         types = {'/task_constraints/supplements': str, '/known_information': WorkspaceKnownInformation,
                  '/remaining_directions': WorkspaceRemainingDirection, '/explored_directions': ExplorationResult}
         if not isinstance(self.value, types[self.path]):
-            raise ValueError('value 类型与新增目标容器不一致')
+            raise ModelActionRejected('value 类型与新增目标容器不一致。', '根据 path 提供对应内容：补充传文本，已知信息传 content/source/status，剩余方向传 plan，探索结果传 outcome/conclusion/information_ids。')
         if (self.path == '/explored_directions') != (self.direction_id is not None):
-            raise ValueError('direction_id 仅在新增已探索结果时必填，其他位置不得提供')
+            raise ModelActionRejected('direction_id 与新增容器不匹配。', '向 /explored_directions 新增时提供剩余方向的已有 ID；其他容器省略 direction_id 或设为 null。')
         return self
 
 
@@ -55,7 +55,7 @@ class WorkspaceEdit:
 def parse_workspace_tool_arguments(name: str, raw_arguments: str) -> BaseModel:
     """只解析真实工具调用参数；拒绝重复键与非标准数值，不降级解析普通文本。"""
     if name not in _MODELS:
-        raise ValueError('未知工作区工具')
+        raise ModelActionRejected('该工具不是工作区编辑工具。', '仅使用 workspace_add、workspace_replace 或 workspace_delete 编辑工作区。')
 
     decoded = load_model_json(raw_arguments)
     schema = _MODELS[name].model_json_schema()
@@ -95,7 +95,7 @@ def _locate(payload: dict, parts: list[str]):
     current = payload
     for part in parts:
         if not isinstance(current, dict) or part not in current:
-            raise ValueError('path 指向不存在的位置')
+            raise ModelActionRejected('path 指向的位置在最新工作区中不存在。', '从最新工作区复制已有路径；新增条目使用 workspace_add 指向容器，不自拟条目 ID。')
         current = current[part]
     return current
 
@@ -112,7 +112,7 @@ def prepare_workspace_edit(snapshot: WorkspacePayload, name: str, raw_arguments:
         if arguments.path == '/explored_directions':
             key = arguments.direction_id
             if key not in payload['remaining_directions']:
-                raise ValueError('direction_id 不在剩余规划中')
+                raise ModelActionRejected('direction_id 不属于当前剩余规划。', '从最新 remaining_directions 选择已有方向 ID；已经收束的方向不要再次收束。')
             direction = payload['remaining_directions'].pop(key)
             payload['explored_directions'][key] = {'plan': direction['plan'], **value}
             removed_path = f'/remaining_directions/{key}'
@@ -131,12 +131,12 @@ def prepare_workspace_edit(snapshot: WorkspacePayload, name: str, raw_arguments:
             allowed = entry or parts == ['task_constraints', 'task'] or (
                 len(parts) == 3 and parts[0] in _ENTRY_REGIONS)
             if not allowed:
-                raise ValueError('path 不是允许替换的字段或条目')
+                raise ModelActionRejected('path 不是允许替换的字段或完整条目。', '替换已有字段或条目，例如 /task_constraints/task 或 /known_information/已有ID；不要替换根、区域容器或数组下标。')
         elif not entry:
-            raise ValueError('path 不是允许删除的完整条目')
+            raise ModelActionRejected('path 不是允许删除的完整条目。', '只删除补充、已知信息、已探索或剩余方向的已有完整条目；不要删除根、容器或必填字段。')
         parent = _locate(payload, parts[:-1])
         if parts[-1] not in parent:
-            raise ValueError('path 指向不存在的位置')
+            raise ModelActionRejected('path 指向的位置在最新工作区中不存在。', '从最新工作区复制已有路径；新增条目使用 workspace_add 指向容器，不自拟条目 ID。')
         if isinstance(arguments, WorkspaceReplaceArguments):
             parent[parts[-1]] = arguments.model_dump()['value']
         else:

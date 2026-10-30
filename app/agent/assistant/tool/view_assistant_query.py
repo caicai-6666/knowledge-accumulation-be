@@ -11,11 +11,11 @@ from app.agent.core.tool.result import ToolPageUnavailable
 
 
 class ViewAssistantQueryArguments(WorkspaceObject):
-    """当你需要查看姓名检索结果、确认消息接收对象时，使用这个工具。展示指定页的 userid 和用户名；确认对象后，将 userid 用作 send_assistant_message 的 recipient_userid。
+    """当你需要查看助理目录或姓名、部门检索结果、确认消息接收对象时，使用这个工具。按用户分组展示指定页的 userid、用户名及全部所属一级部门；确认对象后，将 userid 用作 send_assistant_message 的 recipient_userid。
 
     使用 search_assistants 返回的查询 ID，并指定从 1 开始的页码。例如先查看第 1 页，仍未找到目标时查看第 2 页，也可以返回已读页。同名用户无法区分时向用户澄清，不随意选择。
 
-    查询失效时重新搜索，页码无效时按返回的总页数修正。目录只帮助确定对象，不表示对方在线或保证消息可送达。
+    多部门是并列归属，不代表主次、职位、主管或权限；未知部门不推断。可结合部门辨认同名对象，仍不明确时先澄清。查询失效时重新搜索，页码无效时按返回的总页数修正。目录只帮助确定对象，不表示对方在线或保证消息可送达。
     """
     query_id: str = Field(strict=True, min_length=1, max_length=128, description='本次任务中 search_assistants 返回的完整 query_id，必须原样使用；不能缩写、猜测或使用其他查询工具返回的标识。')
     page: int = Field(strict=True, ge=1, description='需要查看的页码，从 1 开始，不能超过查询返回的 total_pages；可以重复查看同一页。')
@@ -37,7 +37,7 @@ class AssistantQueryViewer:
                 'code':'assistant_query_unavailable', 'message':'查询已失效或页码无效，请检查页码或重新查询。'})
         resource, locator, nonce = 'assistant-query:'+args.query_id, f'page:{args.page}', str(uuid4())
         reference = ToolPageReference(resource_id=resource, locator=locator,
-            display_id=nonce+'.'+self._sign(resource, locator, nonce), media_type='table',
+            display_id=nonce+'.'+self._sign(resource, locator, nonce), media_type='text',
             description=f"助理查询结果，第{args.page}/{metadata['total_pages']}页")
         return ToolExecution(ToolExecutionResult(status='succeeded', tool_result=metadata,
             content=FoldableToolContent(pages=[reference])), after_commit=commit)
@@ -46,7 +46,7 @@ class AssistantQueryViewer:
         try:
             nonce, signature = reference.display_id.split('.', 1)
             prefix, number = reference.locator.split(':', 1)
-            if (reference.media_type != 'table' or not reference.resource_id.startswith('assistant-query:')
+            if (reference.media_type != 'text' or not reference.resource_id.startswith('assistant-query:')
                     or prefix != 'page' or not number.isdigit() or int(number) < 1
                     or not hmac.compare_digest(signature, self._sign(reference.resource_id, reference.locator, nonce))):
                 raise ValueError('无效页面引用')

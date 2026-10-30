@@ -4,7 +4,7 @@
 
 使用企业内部应用机器人作为个人助理的单聊入口和回复出口：Stream 接收消息，OpenAPI 发送完整回复及主动提醒。一个应用机器人服务多位员工，由企业员工 `userid` 定位各自唯一助理；助理数据结构见[助理任务与提醒存储](../../architecture/data/assistant-storage.md)。
 
-本阶段已提供配置、单聊消息规范化、异步 OpenAPI、Stream 生命周期和可靠接收器注入接口。OpenAPI 发送已供[助理消费者](../application/assistant-consumption.md)的交付服务使用，ASSISTANT_ENABLED 默认 false。**Stream 已挂到 FastAPI 启动流程，通过[可靠接收器](../application/assistant-inbound.md)整条校验、暂存并发布中间件任务；未进行真实钉钉收发。** 只有 ASSISTANT_ENABLED=true 才启动，单纯填写凭据不会启动 Stream。现有 H5 登录适配保持原有行为，机器人不会创建中央用户登录或修改权限。
+本阶段已提供配置、单聊消息规范化、异步 OpenAPI、Stream 生命周期和可靠接收器注入接口。OpenAPI 发送已供[助理消费者](../application/assistant-consumption.md)的交付服务使用，ASSISTANT_ENABLED 默认 false。**Stream 已挂到 FastAPI 启动流程，通过[可靠接收器](../application/assistant-inbound.md)整条校验、暂存并发布中间件任务；已有真实入站及助理执行记录，最终转换与交付的验证边界见[真实任务观察](#真实任务观察与验证边界)。** 只有 ASSISTANT_ENABLED=true 才启动，单纯填写凭据不会启动 Stream。现有 H5 登录适配保持原有行为，机器人不会创建中央用户登录或覆盖已有权限；未建档员工的首条有效消息会复用网页登录初始化服务，创建真实员工和初始等级 0 的文件权限。
 
 采用钉钉公开 [Stream 协议](https://open-dingtalk.github.io/developerpedia/docs/learn/stream/protocol/)及[官方 Python SDK](https://github.com/open-dingtalk/dingtalk-stream-sdk-python)核对帧格式；传输复用本项目 `httpx` 和已安装的 `websockets==16.1.1`，使用原生异步 I/O，统一代理、重定向和脱敏边界，不引入 SDK 中的同步 HTTP 便捷方法。机器人 OpenAPI 的请求与回执字段另核对官方 [alibabacloud-dingtalk 2.2.65](https://pypi.org/project/alibabacloud-dingtalk/2.2.65/) 的 `robot_1_0` 模型。
 
@@ -12,7 +12,7 @@
 
 ## 钉钉后台与配置
 
-后台创建或选择企业内部应用，开启机器人能力，接收方式选择 Stream，设置可见范围并发布；配置单聊发送和文件下载所需权限。可见范围内的用户通过机器人入口发起单聊。Stream 无需公网回调地址，但运行环境必须能访问钉钉 HTTPS/WSS 服务。参考[应用机器人](https://open-dingtalk.github.io/developerpedia/docs/learn/bot/appbot/overview/)和 [Stream 介绍](https://open-dingtalk.github.io/developerpedia/docs/learn/stream/overview/)。
+后台创建或选择企业内部应用，开启机器人能力，接收方式选择 Stream，设置可见范围并发布；配置单聊发送和文件下载所需权限；首次员工建档另需成员信息读权限及部门信息读取权限，通讯录授权范围须覆盖目标员工及所属部门。可见范围内的用户通过机器人入口发起单聊。Stream 无需公网回调地址，但运行环境必须能访问钉钉 HTTPS/WSS 服务。参考[应用机器人](https://open-dingtalk.github.io/developerpedia/docs/learn/bot/appbot/overview/)和 [Stream 介绍](https://open-dingtalk.github.io/developerpedia/docs/learn/stream/overview/)。
 
 [DingTalkRobotSettings](../../../app/config/dingtalk_robot.py)独立读取机器人配置，不加载开发模拟身份；环境变量优先于 `.env`，不进行变量插值。凭据允许暂时留空，真正构造客户端或 Stream 时在本地严格校验。
 
@@ -110,18 +110,37 @@ async def run_robot(receive):
 
 ## 附件与日志边界
 
-`download_file()` 使用 `robotCode + downloadCode` 调用 `/v1.0/robot/messageFiles/download` 获取 `downloadUrl`。只接受允许域名的 HTTPS 公网地址，DNS 结果经已有公开地址解析器校验后固定连接 IP，同时保留正确的 TLS SNI 和 Host；不跟随重定向，不使用环境代理，不向下载目标转发应用 token 或 Cookie。读取在总超时和字节上限内完成，空文件和超限文件失败。接口出处见[下载文件](https://open.dingtalk.com/document/orgapp/download-the-file-content-of-the-robot-receiving-message)。
+`download_file()` 使用 `robotCode + downloadCode` 调用 `/v1.0/robot/messageFiles/download` 获取 `downloadUrl`。仅通过 HTTPS 下载：钉钉返回 HTTP 时，只对已在允许列表内、默认 HTTP 端口的标准 OSS 桶域名（`<bucket>.oss-<region>.aliyuncs.com`）升级为 HTTPS，原始路径和签名查询字节保持不变；其他 HTTP 地址仍拒绝。OSS 标准桶域名支持 HTTPS，依据[阿里云官方说明](https://www.alibabacloud.com/help/en/oss/user-guide/access-oss-via-bucket-domain-name)。升级后仍只接受允许域名的 HTTPS 公网地址，DNS 结果经已有公开地址解析器校验后固定连接 IP，同时保留正确的 TLS SNI 和 Host；不跟随重定向，不使用环境代理，不向下载目标转发应用 token 或 Cookie。读取在总超时和字节上限内完成，空文件和超限文件失败。接口出处见[下载文件](https://open.dingtalk.com/document/orgapp/download-the-file-content-of-the-robot-receiving-message)。
 
 `downloadCode` 仅以 SecretStr 驻留当前规范化对象，常规序列化/日志不包含它；因此后续可靠接收器不能只保存 `model_dump()` 就确认附件已接收。必须在确认前取回文件并可靠交给中间件，或设计完整受保护的接收恢复流程。[业务接收器](../application/assistant-inbound.md)确认前完成可靠暂存；临时下载码不落库，也不使用用户原文件名作为磁盘路径。
 
 错误只向上返回稳定操作类别、可选 HTTP 状态和发送不确定标记，不回显上游正文、签名 URL 或凭据。WebSocket 底层日志关闭；HTTPX/httpcore 日志仅在本机器人请求的异步上下文内过滤，避免 INFO 日志泄漏临时下载链接，不影响其他模块 HTTP 日志。宿主也不得自行打印原始推送帧、下载码或 token。
 
+接收处理中的 `RobotUnavailable` 日志包含 `operation`、`status`、`reason` 和 `uncertain`。文件下载仍使用 `operation=download`，通过固定原因前缀区分 `download_url`（下载地址校验）、`download_dns`（解析与公网地址校验）、`download_http`（连接和响应状态）、`download_body`（正文读取）。HTTP 下载失败保留状态码；网络和解析错误仅记录异常类别，不记录异常原文或实际链接。地址校验另区分 `missing_url`、`scheme`、`missing_host`、`userinfo`、`fragment`、`port`、`host_not_allowed`；拒绝日志仅附带 `download_host` 和 `download_scheme`，不记录路径、签名查询或完整地址。应用 token 失败单独标记 `operation=token`。网络故障仍使 Stream 返回失败，不把暂时无法下载谎报为图片损坏或成功接收。
+
 ---
 
 ## 验证与下一步
+
+2026-10-26 下载诊断扩展：[故障与日志测试](../../../tests/test_robot_download_diagnostics.py)4 项通过，覆盖下载接口/文件 HTTP 状态、重定向拒绝、域名策略、DNS、公网地址限制、连接及读取超时、空文件、正常字节和 Stream 脱敏日志。机器人相关测试共 33 项通过，`git diff --check` 通过。另以当前配置实际获取应用 token 成功；没有发送消息、读取用户图片或保存 token，图片下载故障仍需真实重发后的具体阶段日志确认，不能据应用 token 成功推断附件下载权限或文件链接一定可用。
 
 [HTTP 与输入测试](../../../tests/test_dingtalk_robot.py)覆盖可信单聊、企业/机器人过滤、富文本顺序、附件引用、精确请求体、token 并发刷新、401、拒收名单、不确定发送、下载域名/DNS/大小与日志脱敏。[Stream 测试](../../../tests/test_dingtalk_stream.py)覆盖 ACK 时机、超时、重推、系统心跳、容量限制、断线重连及取消清理，并使用本机随机端口 WebSocket 验证真实收发帧。HTTP 均为 MockTransport；配置样本在 `tests/tmp/`，不用实际 `.env`、共享服务或真实附件。
 
 2026-10-24 验证：新增 36 项全部通过；完整 unittest 共 1141 项，969 项通过、172 项因未配置其他隔离数据库/插件环境而跳过。`pip check`、`git diff --check` 和本轮相关文档 91 个本地文件链接检查通过。没有调用真实钉钉、中间件或模型，也没有修改实际配置或业务数据。
 
-可靠接收、队列发布、助理执行和最终交付现已装配，入站隔离验证见[入站专题](../application/assistant-inbound.md)。部署启用前仍需独立核对应用可见范围、权限、企业用户映射、文件下载域名以及真实消息限额；当前测试不表示实际应用已发布或生产机器人已联通。
+可靠接收、队列发布、助理执行和最终交付现已装配，入站隔离验证见[入站专题](../application/assistant-inbound.md)。部署启用前仍需独立核对应用可见范围、权限、企业用户映射、文件下载域名以及真实消息限额；上述隔离测试本身不证明真实联通；后续真实运行记录单独列于下节。
+
+2026-10-26 地址校验细分：根据真实重发日志，失败发生在下载地址校验阶段，尚未进入 DNS 或图片读取；当前日志不足以区分域名与其他地址条件，不能据此放宽域名策略。新增地址拒绝分类及域名/协议诊断，2 项测试覆盖缺失地址、HTTP、非授权域名、用户信息、端口、片段与签名链接脱敏。机器人相关回归共 35 项通过，`git diff --check` 通过；实际地址校验失败原因仍待下一次重发日志确认。
+
+2026-10-26 实际故障定位与修复：用户重发日志确认钉钉返回 HTTP 的标准 OSS 桶下载地址，命中 `download_url:scheme`。已按上述规则升级为 HTTPS，保留域名允许列表、公网 DNS 校验、固定 IP、TLS SNI、拒绝重定向及大小限制。新增 2 项测试验证 HTTP/80 升级、签名路径和重复查询参数保真、请求头不携带应用凭证，以及伪造域名、非标准端口与配置排除继续拒绝。机器人相关回归共 37 项通过，`git diff --check` 通过。实际 OSS 域名的 HTTPS/TLS 探测成功，无签名根路径返回预期的 HTTP 403；未读取用户图片，真实带签名附件的完整收发仍待重发确认。
+
+
+---
+
+## 真实任务观察与验证边界
+
+2026-10-30（北京时间），James 的一条真实消息经 Stream 接收、发布中间件队列并被助理领取，主模型已完成检索并生成 `finish_task` 调用；正文转换阶段报 `MLLMUnavailableError`，任务记录为 failed 且无交付记录。该记录证明入站、队列和主生成链路实际运行过，不能证明正文转换或最终钉钉交付成功。
+
+同日 10:52:51+08:00 的诊断及复查观察到模型端口拒绝连接，无 HTTP 响应；这只是当时的服务状态，不表示后续持续不可用。历史转换错误已被统一封装，现有证据不足以断言其原因是 Schema、原生推理、OOM 或 300 秒请求超时。
+
+证据见[诊断分析](../../../experiment/assistant-rendering-diagnosis/20261030-james/analysis.md)、[任务审计投影](../../../experiment/assistant-rendering-diagnosis/20261030-james/task-evidence.json)和[合成探测结果](../../../experiment/assistant-rendering-diagnosis/20261030-james/probe-results.json)。实验产物依项目白名单规则不随部署副本分发。完整转换与交付验收需在依赖可用时单独完成，不以这次失败记录或早期隔离测试替代。

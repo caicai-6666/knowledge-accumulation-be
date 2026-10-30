@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from inspect import isawaitable
-from pydantic import TypeAdapter, SecretStr
+from pydantic import TypeAdapter
 from app.agent.core import AgentInput, AgentResult, ContextInjection, MemoryJournal, NodeJournal
 from app.agent.context import build_tree_context
 from app.agent.core.context_budget import budget,validate_count
@@ -23,11 +23,16 @@ from app.agent.core.tool.file_search import build_file_search_registration
 from app.agent.core.tool.file_candidates import FileCandidateViewer, build_file_candidates_registration
 from app.auth.model import AuthenticatedUser
 from app.infrastructure.mllm import MLLMClient
-from app.model.question_tree import SummaryContent, TreeID, TreeModel, new_tree_id
+from app.infrastructure.vllm_tokenizer import TokenizationUnavailable
+from app.model.question_tree import SummaryContent, TreeID, TreeModel, WorkspaceVersion, new_tree_id
 from app.model.question_file import UploadedFile
 from app.repository.question_tree import QuestionTreeConflict
 
 logger=logging.getLogger(__name__)
+
+
+class ModelPreparationUnavailable(RuntimeError):
+    """助理尚未登记节点或执行生成，模型服务临时不可用，可保留队列任务重试。"""
 
 
 class TreeAgentResult(TreeModel):
@@ -39,7 +44,8 @@ class TreeAgentResult(TreeModel):
 
 class QuestionAgentService:
     def __init__(self,nodes,core,*,context_builder=None,expected_tree_kind=None,tool_loader=None,file_service=None,file_cache=None,
-                 expert_settings=None,expert_client=None,web_search_service=None,web_graph_factory=None,memory_backend=None,platform_directory=None,file_retrieval=None,registry_files=None,registry_file_access=None,output_observer_factory=None):
+                 expert_settings=None,expert_client=None,web_search_service=None,web_graph_factory=None,memory_backend=None,platform_directory=None,file_retrieval=None,registry_files=None,registry_file_access=None,output_observer_factory=None,platform_a2a=None):
+        self.platform_a2a=platform_a2a
         self.output_observer_factory=output_observer_factory
         self.nodes=nodes
         self.core=core
@@ -66,7 +72,7 @@ class QuestionAgentService:
 
     async def generate(self,*,user:AuthenticatedUser,tree_id:str,question:str,selected_node_id=None,
                        context_injection:str='',attachments=(),uploads=(),thinking_effort='xhigh',publish=None,publish_progress=None,publish_stream=None,node_id=None,
-                       supersedes_node_id=None,advance_main=None,expected_revision=None,on_registered=None,resume_registered=False,access_token:SecretStr|None=None):
+                       supersedes_node_id=None,advance_main=None,expected_revision=None,on_registered=None,resume_registered=False):
         # 只有显式装配展示适配器的模式才接受流式订阅，验收发生在附件/节点写入之前。
         if publish_stream is not None and self.output_observer_factory is None:
             raise ValueError('当前问答模式未配置流式输出')
@@ -119,10 +125,10 @@ class QuestionAgentService:
                 async def authorize(file_id):return await self.nodes.find_file(tree_id,user.userid,file_id)
                 viewer=ImageFileViewer(scope=(user.userid,tree_id),read_file=read_file,authorize=authorize,cache=self.file_cache)
             if self.registry_files is not None:
-                async def authorize_registry_file(file_id, token):
-                    return await self.registry_file_access.authorize(file_id, token, expected_userid=user.userid)
+                async def authorize_registry_file(file_id):
+                    return await self.registry_file_access.authorize(file_id, userid=user.userid)
                 registry_viewer=RegistryFileViewer(scope=(user.userid,tree_id),client=self.registry_files,
-                    access_token=access_token,cache=self.file_cache,
+                    cache=self.file_cache,
                     authorize=authorize_registry_file if self.registry_file_access is not None else None)
             if self.memory_backend is not None:
                 memory_pool=MemoryQueryPool(lambda ids:self.memory_backend.read(tree_id,user.userid,node_id,ids),
@@ -151,7 +157,6 @@ class QuestionAgentService:
                     pass  # 其他终态先提交时不能覆盖；依赖不可用时也不能伪称已完成清理。
             raise
         finally:
-            access_token=None
             if registry_viewer is not None:await registry_viewer.aclose()
             if file_results is not None:file_results.close()
             if platform_viewer is not None:platform_viewer.close()
@@ -254,6 +259,10 @@ class QuestionAgentService:
                 build_file_candidates_registration(FileCandidateViewer(_file_results))])
         if _platform_viewer is not None:
             additional.append(build_sub_management_platform_registration(_platform_viewer))
+        if self.platform_a2a is not None:
+            from app.agent.core.tool.platform_a2a import build_platform_a2a_registrations
+            additional.extend(build_platform_a2a_registrations(self.platform_a2a,
+                userid=user.userid,tree_id=tree_id,node_id=node_id))
         if self.tool_loader is not None:
             loaded=self.tool_loader(user.model_copy(deep=True))
             loaded=await loaded if isawaitable(loaded) else loaded
@@ -262,7 +271,8 @@ class QuestionAgentService:
         if additional:core=core.with_registry(ToolRegistry([*core.registry.entries.values(),*additional]))
         # 统一使用一致性读取实际选定的起点；摘要、成功提交和失败留痕必须绑定同一节点。
         selected_node_id=path.nodes[-1].id if path is not None else None
-        context=build_tree_context(writes,workspace,outputs,supplemental=context_injection)
+        context=build_tree_context(writes,workspace,outputs,supplemental=context_injection,
+            summary_text=path.summary_text if path is not None else None)
         if self.context_builder is not None:
             enriched=self.context_builder(user.model_copy(deep=True),context.model_copy(deep=True))
             context=await enriched if isawaitable(enriched) else enriched
@@ -273,6 +283,7 @@ class QuestionAgentService:
         prepared=MemoryJournal(node_id)
         summary_content=None
         summary_id=None
+        preparing=True
         try:
             generation=core.generation(request.thinking_effort)
             tools=core.registry.definitions()
@@ -280,6 +291,7 @@ class QuestionAgentService:
             wb,tb=budget(core.settings.context_window_tokens,generation.max_completion_tokens,
                 core.options.management_reserve_tokens,fixed)
             usage=await core.fifo_usage(request,context,[],generation,tb)
+            preparing=False
             # 结构摘要覆盖到所选父节点；部分前缀交给Core保存精确覆盖检查点，不能假报整链已摘要。
             if (path is not None and _registered is None and usage.full
                     and usage.prefix_count==len(context.turns) and context.turns):
@@ -301,6 +313,11 @@ class QuestionAgentService:
                 request=request.model_copy(update={'context':ContextInjection(summary=result.summary,
                     workspace=result.workspace,supplemental=context.supplemental)})
         except BaseException as error:
+            if (tree.kind=='assistant' and _registered is None and preparing
+                    and isinstance(error,TokenizationUnavailable) and not prepared.generations):
+                # 此时尚未登记节点、生成摘要或执行工具，不能把依赖未就绪当作业务失败消费。
+                # 只允许明确的临时分词故障重试；认证、格式、容量和后续执行错误沿用终态策略。
+                raise ModelPreparationUnavailable('模型准备阶段暂时不可用，任务尚未执行') from error
             # 摘要失败仍保留本次提问及已生成的私有审计，不提交半份摘要或改变父节点。
             try:
                 async with asyncio.timeout(core.options.cleanup_timeout_seconds):
@@ -316,8 +333,12 @@ class QuestionAgentService:
             raise
         restored=await self.nodes.start_task(tree_id,user.userid,node_id=node_id,question=question,
             parent_id=selected_node_id,expected_revision=tree.revision,summary=summary_content,summary_id=summary_id,
-            attachments=attachments,advance_main=advance_main)
+            attachments=attachments,advance_main=advance_main,
+            **({'summary_workspace':WorkspaceVersion(tree_id=tree_id,content=request.context.workspace.model_dump(mode='json'))}
+               if tree.kind=='assistant' and summary_content is not None else {}))
         journal=NodeJournal(self.nodes,restored,cancellation_status=cancellation_status)
+        # 驱逐已在同事务提交；释放宿主准备阶段对旧窗口的引用，不延长整轮任务的驻留时间。
+        path=writes=workspace=outputs=context=None
         # 首次创建、预登记激活和恢复均以仓库返回的原始节点时间为准，不使用激活时钟。
         request=request.model_copy(update={'created_at':restored.node.created_at})
         # 原生摘要生成保存在新任务的私有记录中；摘要节点只有业务摘要，不混入工程数据。

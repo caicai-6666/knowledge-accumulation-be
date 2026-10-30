@@ -1,28 +1,44 @@
-"""姓名检索只发布查询引用；具体目录由独立工具分页查看。"""
+"""姓名、部门检索只发布查询引用；具体目录由独立工具分页查看。"""
 import logging
+from typing import Annotated
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field, TypeAdapter, field_validator
 from app.agent.core.query_pool import QueryResultPool
 from app.agent.core.workspace import WorkspaceObject
 from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult
 from app.model.personnel import EmployeeName
+from app.agent.assistant.rendering import employee_field, render_departments
 
 logger = logging.getLogger(__name__)
 
 
 class SearchAssistantsArguments(WorkspaceObject):
-    """当你需要按用户名寻找某个人的助理，以便向其求助、协作或发送消息时，使用这个工具。提供姓名关键词，获得查询 ID 和结果数量后，调用 view_assistant_query 查看具体用户；例如先搜索 Alice，再查看查询结果的第一页。
+    """当你需要浏览用户助理目录，或按姓名、所属一级部门寻找助理以便求助、协作或发送消息时，使用这个工具。获得查询 ID 和结果数量后，调用 view_assistant_query 查看具体用户。
 
-    可以使用完整用户名或姓名片段，结果优先展示完整姓名匹配，再按相关程度排列。结果过多时缩小关键词重新查询；没有匹配用户时不生成查询 ID，无需翻页。查询失败不代表用户不存在。
+    keyword 检索姓名，department 检索一级部门名称，两者均使用全文检索并补充字面包含匹配。任一参数省略、null、空字符串或纯空白时跳过该路；两者都为空时浏览全部用户助理，按用户名和用户标识稳定排序。例如空参数对象浏览全体；keyword="Alice" 只查姓名；department="研发部" 只查部门。
+
+    同时提供两个条件时，取两路结果的并集并按 userid 去重，采用等权排名融合，不直接相加全文分数。例如 keyword="Alice", department="研发部" 会保留姓名匹配或部门匹配的用户，不仅限于研发部的 Alice；若要求同时满足，须查看结果并核对。单路优先完整名称匹配，再按相关程度排序；多部门用户只出现一次，不因命中多个部门重复加分。融合排名不是相似度百分比，不保证错别字或同音匹配。
+
+    查看结果时可见用户名、userid 和全部所属一级部门，用于辨认同名用户。部门并列归属，无主次，也不表示额外权限。
+
+    结果超过数量上限时返回 truncated=true，此时只保留部分结果，可提供更具体的姓名或部门关键词重新查询；不能把截断结果当作完整目录。空结果不生成查询 ID，无需翻页。任一路查询失败时整次查询失败，不把另一部分当作完整结果，也不代表用户不存在。
     """
-    keyword: str = Field(strict=True, min_length=1, max_length=200, pattern=r'\S', description='要查找的用户名或姓名关键词，必填，1 至 200 个字符，不能全为空白。例如 Alice、Ali 或“张伟 李明”。英文不区分大小写，关键词不必连续出现；不支持自动纠正错别字，百分号和下划线不是通配符。')
+    keyword: Annotated[str, Field(strict=True, max_length=200)] | None = Field(
+        default=None, description='可选的用户名或姓名关键词，最多200字符；省略或 null、空串、纯空白跳过姓名检索，两参数均为空才浏览全体。仅检索姓名，例如 Alice、Ali 或“张伟 李明”；英文不区分大小写，不自动纠错，百分号和下划线按字面匹配。与 department 同时提供时采用并集排名融合，不是交集过滤。')
+    department: Annotated[str, Field(strict=True, max_length=200)] | None = Field(
+        default=None, description='可选的所属一级部门名称关键词，最多200字符，例如“研发部”或“产品”；全文检索并补充字面包含，不传部门ID。省略、null、空串、纯空白跳过部门检索；匹配任一所属一级部门即可召回该用户，结果展示全部所属部门。与 keyword 同时提供时取并集并融合排名，不表示只在该部门内查姓名。')
+
+    @field_validator('keyword', 'department')
+    @classmethod
+    def normalize_query(cls, value):
+        return (value.strip() or None) if value is not None else None
 
 
 async def render_assistants(rows, **metadata):
-    def cell(value):
-        return value.replace('\\', '\\\\').replace('|', '\\|').replace('\r', ' ').replace('\n', ' ')
-    return '\n'.join(['| userid | 用户名 |', '| --- | --- |',
-                      *(f'| {cell(row.userid)} | {cell(row.username)} |' for row in rows)])
+    groups = [f'【{employee_field(row.username)}的助理】\n用户ID：{employee_field(row.userid)}\n'
+              + render_departments(row.departments) for row in rows]
+    return '\n\n'.join(['════════════ 助理目录 ════════════', *groups,
+                         '════════════ 本页结束 ════════════'])
 
 
 def build_assistant_query_pool(*, capacity=10, page_size=10):
@@ -41,14 +57,15 @@ def build_search_assistants_registration(*, pool, employees, max_results=1000):
         try:
             # 单条 SQL 取得有序快照；多取一条判断截断，分页不再查询数据库。
             rows = TypeAdapter(list[EmployeeName]).validate_python(await employees.search_user_names(
-                args.keyword, limit=max_results + 1))
+                args.keyword, department=args.department, limit=max_results + 1))
             if len({row.userid for row in rows}) != len(rows) or len(rows) > max_results + 1:
                 raise ValueError('人员目录返回重复身份或超出查询数量')
             if pool.closed:
                 raise ValueError('查询已结束')
             if not rows:
                 return ToolExecutionResult(status='succeeded', tool_result={
-                    'total':0, 'total_pages':0, 'message':'没有匹配用户，未生成查询 ID，无需查看。'})
+                    'total':0, 'total_pages':0, 'message':('人员目录为空，未生成查询 ID，无需查看。' if args.keyword is None and args.department is None
+                        else '没有匹配用户，未生成查询 ID，无需查看。')})
             truncated = len(rows) > max_results
             rows = rows[:max_results]
             query_id, commit = pool.prepare(rows)
@@ -59,7 +76,7 @@ def build_search_assistants_registration(*, pool, employees, max_results=1000):
         return ToolExecution(ToolExecutionResult(status='succeeded', tool_result={
             'query_id':query_id, 'total':len(rows),
             'total_pages':(len(rows)+pool.page_size-1)//pool.page_size, 'truncated':truncated,
-            'message':'请用 view_assistant_query 查看；结果较多，可缩小关键词重新查询。' if truncated
+            'message':'请用 view_assistant_query 查看；结果较多，仅返回部分用户，请提供更具体的姓名或部门关键词重新查询。' if truncated
                       else '请用 view_assistant_query 指定查询 ID 和页码查看。'}), after_commit=commit)
 
     return RegisteredTool('search_assistants', SearchAssistantsArguments.__doc__, SearchAssistantsArguments,

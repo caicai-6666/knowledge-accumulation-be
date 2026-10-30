@@ -79,7 +79,8 @@ async def preserve_original(state: WebPageState, *, max_images=3) -> dict:
     """直接复制提取正文，不再让模型重写；图片按提取顺序沿用配置上限。"""
     text = state.get('extracted_text', '')
     if not text.strip() or not any(char.isalnum() for char in text):
-        return {'error_code': 'empty_text', 'failed_stage': 'preserve_original',
+        return {'has_content': False, 'refined_content': '', 'selected_images': (),
+                'error_code': None, 'failed_stage': None,
                 'hint': '页面没有可提取的正文，请选择其他来源。'}
     images = state.get('images', ())
     hints = []

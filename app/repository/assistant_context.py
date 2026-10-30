@@ -52,18 +52,17 @@ async def append_assistant_task(cursor, trees, tree, node_id, content, parent_id
     """调用者持树行锁并已检查 revision；普通追加只读末端，压缩时才读有效父链。"""
     if parent_id != tree.main_leaf_id or advance_main is False:
         raise ValueError('助理只能从最新主干末端继续')
-    if summary is not None:
-        path = await assistant_path(cursor, tree)
-        if path is None or summary.covered_from_id != path.nodes[0].id or summary.covered_to_id != parent_id:
-            raise ValueError('助理摘要必须覆盖当前有效上下文的完整前缀')
-        parent = path.nodes[-1]
-    else:
-        parent = await assistant_tail(cursor, tree)
-    version_id = parent.workspace_version_id if parent else None
-    if parent is not None and version_id is None:
-        raise ValueError('助理父节点缺少工作区快照')
-    workspace = None if version_id else WorkspaceVersion(tree_id=tree.id, content={})
-    version_id = version_id or workspace.id
+    from app.repository.assistant_memory import load_memory
+    memory=await load_memory(trees,cursor,tree)
+    path=memory.path
+    parent=memory.nodes[-1] if memory.nodes else None
+    if parent is not None and parent.status=='generating':
+        raise ValueError('助理当前任务尚未结束')
+    if summary is not None and (path is None or summary.covered_from_id!=path.nodes[0].id
+                                or summary.covered_to_id!=parent_id):
+        raise ValueError('助理摘要必须覆盖当前有效上下文的完整前缀')
+    # 节点不再携带工作区历史版本；唯一最新工作区由 assistant_workspaces 保存。
+    version_id=None
     sequence = parent.sequence + 1 if parent else 1
     writes = []
     if summary is not None:
@@ -72,9 +71,6 @@ async def append_assistant_task(cursor, trees, tree, node_id, content, parent_id
     writes.append(NodeWrite(node=QuestionNode(id=node_id, tree_id=tree.id,
         parent_id=summary_id if summary else parent_id, kind='task', status='generating', path_type='main',
         sequence=sequence + int(summary is not None), workspace_version_id=version_id), content=content))
-    if workspace:
-        await trees._insert_workspaces(cursor, tree.id, (workspace,))
-    await trees._workspace(cursor, tree.id, version_id)
     for write in writes:
         node = write.node
         await cursor.execute('INSERT INTO question_nodes '

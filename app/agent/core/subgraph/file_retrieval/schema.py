@@ -68,6 +68,6 @@ class FinishRetrieval(RetrievalModel):
 
 
 class ViewFileCandidatesArguments(RetrievalModel):
-    """分页查看文件检索的最终候选，每条包含文件ID、文件名称、来源平台代码和通行证列表。通行证是文件关联标识，不代表访问授权。省略页码时首次为第一页，随后下一页；指定页码可重看。候选不表示原文已核实。"""
+    """分页查看文件检索的最终候选，每条包含文件ID（注册中心ID）、文件名称、来源平台代码、来源平台文件ID和通行证列表。来源平台文件ID是文件在该来源平台内的唯一标识，与来源平台代码一起用于向该平台定位文件，例如向来源平台询问该文件的关联资料或已有风险标注；不能替代本地原文阅读工具需要的注册中心文件ID。未登记时显示“资料未提供”，不得猜测。通行证是文件关联标识，不代表访问授权。省略页码时首次为第一页，随后下一页；指定页码可重看。候选不表示原文已核实。"""
     result_id: str = Field(strict=True,min_length=1,description='search_files返回的完整最终结果集ID，不接受文件ID、其他任务引用或自行编造的标识。')
     page: int | None = Field(default=None,strict=True,ge=1,description='从1开始的页码；省略或null首次查看第一页，之后下一页。末页不循环，显式页码可以重看。')

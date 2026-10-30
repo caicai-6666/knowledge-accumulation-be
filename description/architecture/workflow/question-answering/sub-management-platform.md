@@ -10,7 +10,7 @@
 
 ## 工具与展示
 
-实现位于 [sub_management_platform.py](../../../../app/agent/core/tool/sub_management_platform.py)。工具无需参数，调用为 `list_sub_management_platforms({})`，拒绝任何额外字段；平台凭据始终由宿主提供。
+实现位于 [sub_management_platform.py](../../../../app/agent/core/tool/sub_management_platform.py)。工具无需参数，调用为 `list_sub_management_platforms({})`；对外 Schema 保持空属性及 `additionalProperties=false`。为兼容模型对无参数调用添加占位字段的情况，本工具局部将合法 JSON 对象规范化为 `{}` 后真实查询目录，所有多余字段均不参与筛选、结果生成或工作区更新。原始参数保存在私有生成审计中，后续有效上下文只保存空参数与真实结果。无法解析的 JSON、重复键、非有限数及非对象顶层仍拒绝；公共校验器不变。[当前时间工具](agent-core.md#当前时间工具)也采用此局部策略，不推广至有参数工具。目录查询失败仍反馈真实失败，不能伪装成功。平台凭据始终由宿主提供。
 
 非空结果返回 `foldable` 单页，页面逐个平台展示五项字段，功能说明及A2A职责作为独立Markdown正文块原样保留，不添加列表前缀或统一缩进；保留内部标题、列表、表格、引用及代码块，不截断、不额外让模型概括。示例为合成资料：
 
@@ -71,7 +71,7 @@
 
 ## 装配与失败边界
 
-[QuestionAgentService](../../../../app/service/question_agent.py) 接收 `platform_directory`，运行每个任务时创建查看器并注入注册项。助理和探索的 `build_service(..., platform_directory=...)` 均支持；不绑定目录的独立Core维持八项基础工具，调用方也可自行通过公共工具构造器注入。
+[QuestionAgentService](../../../../app/service/question_agent.py) 接收 `platform_directory`，运行每个任务时创建查看器并注入注册项。助理和探索的 `build_service(..., platform_directory=...)` 均支持；未注入可选工具时，助理工厂提供七项工具、探索工厂提供八项工具；独立 Core 由调用方显式提供模式注册表，调用方也可自行通过公共工具构造器注入。
 
 应用组合根在中间件启用时创建共用目录适配，开发与生产模式均可使用；生产员工首次初始化复用同一实例。探索服务首次激活时获取该依赖，不新建平台登录或心跳任务。关闭顺序先取消并等待探索任务，再关闭平台HTTP客户端和会话；启动资源准备失败时不启动探索清理任务。
 
@@ -86,3 +86,9 @@
 初始功能相关162项隔离回归全部通过；[实际渲染样例](../../../../experiment/sub-management-platform/20261023-isolated/display.md)和[验证报告](../../../../experiment/sub-management-platform/20261023-isolated/analysis.md)记录合成目录的真实工具输出，不代表共享中间件的当前目录。
 
 Markdown排版修正后，平台工具、网页Core和上下文渲染共42项隔离测试通过，新增标题、嵌套列表、表格、引用及代码块原样进入模型资料消息的验证。[更新后的展示样例](../../../../experiment/sub-management-platform/20261023-markdown/display.md)使用中间件实际公开说明，在线状态仅为演示值；[排版分析](../../../../experiment/sub-management-platform/20261023-markdown/analysis.md)记录检查范围和证据。
+
+无参数兼容回归见 `tests/test_parameterless_tool_recovery.py`：覆盖双模式规范化后真实执行、下一轮上下文及工作区无多余参数、私有审计保留原始输入、非对象与非法JSON拒绝、其他工具仍严格校验、离线平台保留及真实查询失败。仅使用内存替身。
+
+历史严格拒绝方案的实际模型失败见[诊断记录](../../../../experiment/diagnostics/20261027-164445-qa-assistant-validation/analysis.md)；后续采用上述工具内局部兼容方案，历史报告不改写。
+
+2026-10-27 局部兼容方案：专项4项及原生调用6项隔离测试通过；真实模型配合空目录替身的探索/助理复测均完成，各执行一次查询、零次拒绝。未验证真实中间件目录，未重启业务服务。见[兼容验证报告](../../../../experiment/diagnostics/platform-list-retest/20261027-172107/analysis.md)。

@@ -6,6 +6,8 @@
 
 存储基础设施提供 [011-assistant-storage.sql](../../../schema/011-assistant-storage.sql) 和 [assistant.py](../../../app/model/assistant.py) 中的持久化模型。不自动建表，不创建真实助理或提醒。另已提供[助理局部上下文读取](../workflow/question-answering/assistant-memory.md)和[中间件队列传输及单次消费编排](../../capability/infrastructure/assistant-queue.md)；绑定、执行账本、交付仓库及[后台消费与发送器](../../capability/application/assistant-consumption.md)已经实现，默认关闭；[提醒查看、创建、删除和调度器](../../capability/application/assistant-reminders.md)已接入，未开始消费真实中间件任务。
 
+另已接入[私有画像存储与增删事务](../workflow/question-answering/assistant-personal-context.md#同事务提交与恢复)：016 保存逐条偏好，017 提供私有数字序号与动作去重账本。助理启动会校验相关表；增删与节点检查点同事务提交，旧动作重放不会重复新增或复活已删除条目。需在启用消费者前完成迁移，应用不自动执行 DDL。
+
 中间件负责 `/middleware-service/api/assistant/tasks/` 下的发布、领取、租约、确认、优先级和短消息合并；本地不复制第二份待领取队列。提醒、用户消息、其他助理消息、心跳均进入同一棵树，由宿主从主干末端继续。助理模式不向用户提供选择节点或打断当前任务的入口。任务及用户片段保存 `source_assistant_id`，与接收方 userid、认证平台代码分开；assistant_message 必须具备来源助理。该字段保存在现有 input_payload JSON，不新增 SQL 列或迁移。来源校验和 finish_task 的显式通知选择规则统一见[队列契约](../../capability/infrastructure/assistant-queue.md#任务结束与消息发送)。
 
 ---
@@ -58,7 +60,7 @@
 
 `received` 可以保存部分文件映射，供失败后恢复；进入 `prepared`、`running`、`completed` 时，所有来源附件必须有唯一完整映射。`running` 和 `completed` 必须有节点，`completed/failed` 必须有结束时间，非终态不得记录 ack。
 
-011 的未确认任务唯一约束在 012 中改为活动执行唯一约束，已完成但等待重领确认的记录不阻塞新的高优先级任务。失败不会自动确认丢弃；已失败的任务需要受控核对，不自动重放模型执行。`finish_task`、交付成功和中间件 ack 是三个不同阶段，已经完成的模型回复不应因发送/ack 重试而重新生成。
+011 的未确认任务唯一约束在 012 中改为活动执行唯一约束，已完成但等待重领确认的记录不阻塞新的高优先级任务。失败任务自动确认消费并跳过，保留 failed、错误码及全部已有轨迹，不重放模型或发送动作；ack仅代表消费终结，不表示业务成功。失败任务的未交付记录不阻塞队列，继续保留供核对。`finish_task`、交付成功和中间件 ack 是三个不同阶段，已经完成的模型回复不应因发送/ack 重试而重新生成。
 
 任务 ID 唯一约束本身不是执行锁。现有消费者另通过 MySQL 独立连接的命名锁串行同用户，并续租中央任务；交付使用 attempt_count 原子抢占，完整边界见[消费与交付](../../capability/application/assistant-consumption.md)。不宣称外部机器人通知恰好一次。
 
@@ -149,6 +151,10 @@ Python 模型要求时间包含时区并转换为 UTC，SQL `DATETIME(6)` 存 UT
 
 ## 迁移与验证
 
+2026-10-26 已在本地容器 `phenosolar-knowledge-dev-mysql-1` 的 `registry` 库补齐 [015 员工任职资料](../../../schema/015-employee-work-profile.sql)、[016 画像表](../../../schema/016-assistant-portraits.sql)和 [017 画像动作](../../../schema/017-assistant-portrait-actions.sql)，`dev_schema_migrations` 已记录全部 17 份迁移及文件 SHA256。原有员工字段与原有业务表记录数保持不变，历史员工新增任职字段采用未知值，未调用钉钉补采。
+
+本地验证通过：`MySQLAssistantRepository.validate_schema()`、`RobotInboxRepository.validate_schema()`、画像索引、任职资料约束、姓名 ngram 查询及全部员工任职 JSON 校验；画像序列已初始化为 `id=1,next_key=1`。该状态仅对应上述本地数据库，不代表其他部署环境已迁移。助理运行开关仍关闭，未重启服务，也未执行真实钉钉消息收发。
+
 先完成既有问答业务迁移，再手动执行 011；启用消费者还需执行 [012 消费迁移](../../../schema/012-assistant-consumption.sql)，增加独立的 ack 凭证/租约列并调整活动执行唯一约束。不自动修改真实配置或数据。011 自身不依赖 MyVector 函数，检索插件按既有[部署说明](../../capability/infrastructure/myvector.md)独立准备。
 
 上线前先检查历史重复助理树：
@@ -166,3 +172,10 @@ GROUP BY owner_userid HAVING COUNT(*) > 1;
 实库测试只接受显式 `ASSISTANT_STORAGE_TEST_MYSQL_PORT` 的独立临时容器，固定使用测试库 `knowledge_assistant_test`，禁止默认 3306；会重建测试表，不得指向业务库。所有附件样本在 `tests/tmp/` 并自动清理，不读取实际 `.env`，不调用共享中间件或真实模型。
 
 2026-10-24 验证：新增 10 项数据契约及 10 项独立 MySQL 8.4 测试全部通过。完整 unittest 共 1105 项，943 项通过、162 项因其他隔离环境未配置而跳过。本次助理实库测试全部实际执行，未验证真实中间件消费、提醒调度或模型生成。
+
+
+---
+
+## 当前工作区与驻留窗口
+
+个人助理的最新工作区改为 `assistant_workspaces` 单行存储，节点不再绑定历史工作区版本。该行同时保存最新压缩摘要和未覆盖任务的读取下界，事务提交后更新跨任务驻留窗口。新版本启用前须执行 021 DDL 和显式迁移器，清理已有 assistant 历史工作区；exploration 不参与此迁移。完整契约与验证见[助理记忆驻留](../workflow/question-answering/assistant-memory.md)。

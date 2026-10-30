@@ -14,6 +14,8 @@
 
 ## 当前结构
 
+下列目录展示核心职责，未穷举全部文件和子图；检索、网页、专家等能力的完整入口见[工作流导航](readme.md)。
+
 ```text
 app/agent/core/
 ├── __init__.py                 # 稳定宿主接口
@@ -37,18 +39,22 @@ app/agent/core/
 ├── prompt/
 │   ├── __init__.py             # 固定顺序装配稳定前缀
 │   ├── role.py                 # 企业知识助手角色
+│   ├── company.py              # 公司背景与默认指代
+│   ├── platform_collaboration.py # 跨平台协作规则
 │   ├── interaction.py          # 单工具、用户输出和系统反馈规则
 │   ├── workspace.py            # 工作区定义与维护规则
 │   └── guidance.py             # 程序生成反馈的统一格式
 ├── tool/
 │   ├── __init__.py             # 工具公共入口
 │   ├── registry.py             # 注册契约与能力组合
+│   ├── hooks.py                # 每工具独立的执行后钩子协议
 │   ├── workspace.py            # 三个工作区工具
 │   ├── base/                   # 必须由业务模式继承实现的工具
 │   │   ├── __init__.py
 │   │   └── finish_task.py       # 最终输出契约，不提供默认实现
 │   ├── context.py              # 主助手整理工具
 │   ├── date_calculator.py      # 无状态日历日期运算
+│   ├── current_time.py         # 每次执行读取当前时间
 │   ├── sub_management_platform.py # 子管理平台五项信息与可折叠目录
 │   ├── image_viewer.py         # 唯一图像工具 view_image_file
 │   ├── external_expert.py      # 专家首次求助、追问、提示词与会话池
@@ -58,7 +64,8 @@ app/agent/core/
 │   └── result.py               # 统一执行状态、普通/折叠内容、提示与提交回调
 ├── context_budget/
 │   ├── __init__.py
-│   └── calculator.py           # 纯计数校验与预算计算
+│   ├── calculator.py           # 纯计数校验与预算计算
+│   └── fifo.py                 # 当前路径的动态预算与完整前缀选择
 ├── context_rendering/
 │   ├── __init__.py
 │   ├── block.py                # 自适应资料围栏与 YAML 元数据
@@ -80,6 +87,7 @@ app/agent/core/
         ├── workspace_compression/
         │   ├── __init__.py
         │   ├── runtime.py     # 多轮编辑、实际容量反馈和显式结束
+        │   ├── errors.py      # 整理错误的结构化传递
         │   └── pending.py     # 预演保护、预留ID与原操作应用
         └── topic_summary/
             ├── __init__.py
@@ -95,7 +103,7 @@ app/agent/core/
 
 ## 提示词分工
 
-[主提示词入口](../../../../app/agent/core/prompt/__init__.py)按角色定位、交互规则、工作区定义三个部分装配，整理子 Agent 的专用提示词留在自身包中，不混入主前缀。
+[主提示词入口](../../../../app/agent/core/prompt/__init__.py)按角色定位、公司背景、平台协作、交互规则、工作区定义五个部分装配，整理子 Agent 的专用提示词留在自身包中，不混入主前缀。
 
 role 改为企业知识助手；interaction 与 workspace 以参考项目的通用文本和结构为基础。已对齐日期计算与任务时间头，固定北京时间展示并按各任务时间解释相对日期；页面展示规则由公共渲染器按实际资料注入；容量部分按本项目实际整理流程说明，不承诺不存在的百分比回执或其他工具。工作区的通用业务结构和三个编辑工具规则继续沿用，合同示例仅是结构示例，不限制角色服务范围。
 
@@ -105,14 +113,14 @@ role 改为企业知识助手；interaction 与 workspace 以参考项目的通�
 
 ## 工具分工与依赖
 
-工具按实现责任分为两类，共享的 registry、result、progress 属于注册与运行机制，不属于业务工具：
+工具按实现责任分为两类，共享的 registry、hooks、result、progress 属于注册与运行机制，不属于业务工具：
 
 | 类别 | 位置与例子 | 使用方式 |
 | --- | --- | --- |
 | 可直接复用的具体实现 | `core/tool/` 下的工作区、上下文整理、时间、文件、网页、专家等能力模块 | 通过工厂注册；需要外部依赖的工具由宿主注入服务，不必按模式重写。 |
 | 必须由模式继承实现的契约 | [base/finish_task.py](../../../../app/agent/core/tool/base/finish_task.py) | Core 只定义参数基类及注册结构；模式继承 FinishTaskTool，明确自己的说明、参数扩展及交付条件。 |
 
-`FinishTaskTool` 是抽象类，不能直接实例化。`build_registry(finish_task=..., additional=...)` 必须显式接收该基类的具体实例。日期计算、当前时间、工作区和上下文整理由 `build_builtin_registrations()` 提供六个直接实现；随后加入模式最终输出，再加入可选工具。不能通过 additional 重名覆盖公共工具或最终输出。
+`FinishTaskTool` 是抽象类，不能直接实例化；其 `hooks=...` 由具体模式实例传入并转交自己的注册项。`build_registry(finish_task=..., additional=...)` 必须显式接收该基类的具体实例。日期计算、当前时间、工作区和上下文整理由 `build_builtin_registrations()` 提供六个直接实现；随后加入模式最终输出，再加入可选工具。不能通过 additional 重名覆盖公共工具或最终输出。
 
 探索使用 [ExplorationFinishTask](../../../../app/agent/exploration/tool/finish_task.py)，保持 content 正文与 SSE 交付；助理使用 [AssistantFinishTask](../../../../app/agent/assistant/tool/finish_task.py)，扩展必填 send_to_user，明确是否通知用户。新增模式必须自行实现，不能静默借用探索规则。
 
@@ -127,7 +135,7 @@ core = AgentCore(settings, registry=registry)
 
 直接构造 AgentCore 必须传入完整 ToolRegistry；构造、替换注册表以及执行入口均检查 finish_task 名称、final 输出类别与参数继承契约，缺失或不符合要求时在模型调用前失败。只用于独立执行某个工具或子图的 ToolRegistry 仍可没有最终输出，不强迫所有工具集合成为主循环。
 
-每项注册统一绑定名称、说明、参数模型、预演处理器、可选兼容解析器、异步读取执行器、返回类型声明及页面解析器，并递归检查实际 Schema 字段说明。读取结果由 journal 成功提交后才进入有效轨迹，具体边界见[工具扩展](agent-modes.md#工具扩展与提交边界)。
+每项注册统一绑定名称、说明、参数模型、预演处理器、可选兼容解析器、执行器、独立执行后钩子、返回类型声明及页面解析器，并递归检查实际 Schema 字段说明。执行器之后依次等待同步或异步钩子，最终结果由 journal 成功提交后才进入有效轨迹，具体边界见[工具扩展](agent-modes.md#工具扩展与提交边界)。
 
 注册表不按名称前缀猜测解析方式。工作区路径消歧解析器由工作区模块显式绑定；其他工具按自身参数模型处理。包入口导出的对象直接指向唯一实现，不保留另一套 `_MODELS` 或执行分派。
 
@@ -137,7 +145,7 @@ core = AgentCore(settings, registry=registry)
 
 ## 验证与范围
 
-[包契约测试](../../../../tests/test_agent_core_packages.py)使用[工具与整理协议快照](../../../../tests/fixtures/agent_core_contract.json)，验证工具名称、顺序、Schema 和压缩协议。工具说明按[工具撰写规范](../../../standard/prompt-engineering.md#25-工具参数描述)受控更新快照；2026-10-22 风格调整已确认去除 description 后的 8 个工具定义完全一致，参数结构和约束没有变化。动态消息按[当前渲染契约](context-rendering.md)验证，不沿用旧的整条 user 消息哈希。主提示词按用户后续指示更新，不使用旧 system_prompt 哈希要求其保持不变；测试另验三组件顺序、已提供工具和未接入能力边界。
+[包契约测试](../../../../tests/test_agent_core_packages.py)使用[工具与整理协议快照](../../../../tests/fixtures/agent_core_contract.json)，验证工具名称、顺序、Schema 和压缩协议。工具说明按[工具撰写规范](../../../standard/prompt-engineering.md#25-工具参数描述)受控更新快照；2026-10-22 风格调整已确认去除 description 后的 8 个工具定义完全一致，参数结构和约束没有变化。动态消息按[当前渲染契约](context-rendering.md)验证，不沿用旧的整条 user 消息哈希。主提示词按用户后续指示更新，不使用旧 system_prompt 哈希要求其保持不变；该阶段测试另验当时三组件顺序、已提供工具和未接入能力边界。
 
 另覆盖每个公共导出的对象身份、按能力注册而非名称前缀分派、Schema 描述、反馈转义、模板插值以及全新解释器的无副作用导入。原有核心和隔离 MySQL/MyVector 回归继续运行。真实模型使用合成问题验证直接回答、工作区及用户输出、整理后继续，结果见[本轮实验](../../../../experiment/agent-core/20261021-package-prompts/analysis.md)。
 

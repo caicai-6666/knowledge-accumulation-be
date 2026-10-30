@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from time import monotonic
 from weakref import WeakValueDictionary
 
 from app.auth.error import AuthUnavailable
@@ -9,6 +10,7 @@ from app.auth.model import AuthenticatedUser
 from app.infrastructure.avatar import AvatarStore, avatar_response_filename
 from app.infrastructure.dingtalk import DingTalkClient
 from app.model.dingtalk import DingTalkDepartment
+from app.model.personnel import EmployeeWorkProfile
 from app.repository.employee import MySQLEmployeeRepository
 from app.service.platform_directory import PlatformDirectoryService
 
@@ -26,7 +28,7 @@ class EmployeeOnboardingService:
         self._timeout_seconds = timeout_seconds
         self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
-    async def _top_department(self, department_ids: list[int]) -> DingTalkDepartment:
+    async def _top_departments(self, department_ids: list[int]) -> list[DingTalkDepartment]:
         cache = {}
         top_departments = {}
         for department_id in dict.fromkeys(department_ids):
@@ -34,6 +36,7 @@ class EmployeeOnboardingService:
             current = department_id
             for _ in range(32):
                 if current in visited:
+                    logger.warning('员工部门归属无法确定：reason=department_cycle')
                     raise AuthUnavailable('钉钉部门层级存在循环，无法确认顶级部门')
                 visited.add(current)
                 if current not in cache:
@@ -43,16 +46,19 @@ class EmployeeOnboardingService:
                     top_departments[department.dept_id] = department
                     break
                 if department.parent_id == 0:
+                    logger.warning('员工部门归属无法确定：reason=department_disconnected')
                     raise AuthUnavailable('钉钉部门层级未连接到企业根部门')
                 current = department.parent_id
             else:
+                logger.warning('员工部门归属无法确定：reason=department_depth_limit')
                 raise AuthUnavailable('钉钉部门层级超出限制')
         # 根部门代表企业本身；同时返回实际部门时，以根部门下的一级部门为准。
         if len(top_departments) > 1:
             top_departments.pop(1, None)
-        if len(top_departments) != 1:
-            raise AuthUnavailable('员工归属多个顶级部门，尚无法确定唯一部门')
-        return next(iter(top_departments.values()))
+        if not top_departments:
+            logger.warning('员工部门归属无法确定：reason=top_department_count count=%s', len(top_departments))
+            raise AuthUnavailable('员工没有可用的顶级部门')
+        return [top_departments[key] for key in sorted(top_departments)]
 
     async def _zero_permissions(self) -> dict[str, int]:
         platforms = await self._platforms.list_platforms()
@@ -83,24 +89,37 @@ class EmployeeOnboardingService:
             self._locks[userid] = lock
         async with lock:
             relative_url = None
+            started = monotonic()
+            stage = 'existing_user'
             try:
                 # 同进程并发免登只执行一次外部资料读取；跨进程仍由 MySQL 主键保护。
                 existing = await self._employees.find_by_userid(userid)
                 if existing is not None:
                     return existing
+                stage = 'employee_profile'
                 profile = await self._client.get_employee(userid)
                 if profile.userid != userid:
                     raise AuthUnavailable('员工资料与钉钉免登身份不一致')
-                department = await self._top_department(profile.dept_id_list)
+                stage = 'department'
+                departments = await self._top_departments(profile.dept_id_list)
+                stage = 'platform_permissions'
                 permissions = await self._zero_permissions()
+                # 直属主管取员工资料中的 userid，不以当前部门的负责人推断汇报关系。
+                work_profile = EmployeeWorkProfile(manager_userid=profile.manager_userid, title=profile.title)
                 if profile.avatar:
+                    stage = 'avatar'
                     relative_url = await self._avatars.save_from_url(profile.avatar)
+                stage = 'employee_commit'
                 user = await self._employees.initialize_employee(userid=userid, name=profile.name,
-                    department=department, avatar_url=relative_url, platform_permissions=permissions)
+                    departments=departments, avatar_url=relative_url, platform_permissions=permissions,
+                    work_profile=work_profile)
                 if relative_url is not None:
+                    stage = 'avatar_cleanup'
                     await self._cleanup_attempt(userid, relative_url, known_user=user)
                 return user
             except BaseException as error:
+                logger.warning('员工首次初始化未完成：stage=%s error_type=%s elapsed_seconds=%.3f',
+                               stage, type(error).__name__, monotonic() - started)
                 if relative_url is not None:
                     await asyncio.shield(self._cleanup_attempt(userid, relative_url))
                 if isinstance(error, (AuthUnavailable, asyncio.CancelledError)):

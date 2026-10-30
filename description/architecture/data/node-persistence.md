@@ -10,14 +10,14 @@
 
 ## 存储结构
 
-手动执行 [004-node-persistence.sql](../../../schema/004-node-persistence.sql)，依赖既有 `001` 问答树和 `002` 记忆迁移；当前模型还要求 `006`、`007` 类型字段和 `008` 生命周期字段，迁移及历史分支回填前提见[问答树结构](question-tree.md#mysql-数据结构)。`003` MyVector 缓存按需部署。应用不自动迁移真实数据库。
+手动执行 [004-node-persistence.sql](../../../schema/004-node-persistence.sql)，依赖既有 `001` 问答树和 `002` 记忆迁移；当前模型还要求 `006`、`007` 类型字段和 `008` 生命周期字段，迁移及历史分支回填前提见[问答树结构](question-tree.md#mysql-数据结构)。`003` MyVector 缓存按需部署。助理还依赖[当前工作区与压缩边界迁移](../workflow/question-answering/assistant-memory.md)。应用不自动迁移真实数据库。
 
 | 表 | 内容 |
 | --- | --- |
 | `question_node_messages` | 不可变消息 ID、所属节点、question/intermediate/final、completed/interrupted、正文、节点内事件序号、时间。 |
 | `question_node_generations` | 不可变生成 ID、所属节点、complete/failed/cancelled、完整 JSON payload、事件序号、时间。 |
 
-两表共用节点内连续事件序号，树行锁保证分配串行，恢复时检查跨表重复及缺口。新增后共七张业务表，MyVector 另有一张可重建缓存。
+两表共用节点内连续事件序号，树行锁保证分配串行，恢复时检查跨表重复及缺口。这两张事件表之外，当前还有工作区、助理、提醒、画像等业务表；各模块迁移独立维护，MyVector 为可重建缓存。
 
 生成 payload 保留完整 `assistant_message`、`raw_response`、`raw_chunks`、`usage`、`finish_reason` 和脱敏 `error_type`，包含服务返回的原生推理，不使用轮数窗口或长度截断。失败、纠错及取消生成也可以独立提交。`complete` 仅表示一次完整模型响应，不代表工具动作已被业务接受。
 
@@ -29,7 +29,7 @@
 
 仓库复用 `MySQLQuestionTreeRepository` 的连接池和事务，统一关闭原仓库即可；每次调用必须传入上游已认证的 `owner_userid`。
 
-宿主可注入 `commit_hook(cursor, tree, node_id, content, status)`，在节点检查点或终态写入后、同一事务提交前执行附加 SQL。回调失败与节点一起回滚；回调不得进行网络交付。当前用于[助理交付账本](../../capability/application/assistant-consumption.md#处理与一致性)，将已接受发送动作与节点原子保存，提交后才调用机器人或中间件。
+宿主可注入 `commit_hook(cursor, tree, node_id, content, status)`，在节点检查点或终态写入后、同一事务提交前执行附加 SQL。回调失败与节点一起回滚；回调不得进行网络交付。这是 SQL 事务扩展点，与 Core 注册项的[工具执行后钩子](../workflow/question-answering/agent-core.md#工具执行后钩子)不同：后者在工具执行后、进入节点提交前处理结果，每个工具独立注册。当前用于[助理交付账本](../../capability/application/assistant-consumption.md#处理与一致性)，将已接受发送动作与节点原子保存，提交后才调用机器人或中间件。
 
 | 方法 | 使用方式 |
 | --- | --- |
@@ -40,9 +40,11 @@
 | `load_memory_source` | 由 memory_id 校验用户、节点及来源类型后读取不可变原文。 |
 | `find_file` | 按用户和树归属，从任务正文查出 UUID 对应的附件类型；磁盘读取由[文件服务](question-file.md)负责。 |
 
-根任务创建空 JSON 工作区版本；子任务继承所选父节点的实际版本。内容变化创建新版本，不修改旧快照，不从树的最新叶子取代历史父节点状态。Agent 入口会将空对象转为规范四区域工作区并校验其他快照，见[上下文与工作区](../workflow/question-answering/context-management.md)。
+exploration 根任务创建空 JSON 工作区版本；子任务继承所选父节点的实际版本。内容变化创建新版本，不修改旧快照，不从树的最新叶子取代历史父节点状态。Agent 入口会将空对象转为规范四区域工作区并校验其他快照，见[上下文与工作区](../workflow/question-answering/context-management.md)。
 
-探索 `start_task` 与底层 `append_path` 共用持锁追加路径，自动保存任务及可选摘要的 `path_type`；检查点、终态提交和稳定 ID 重放保留已有归属。`load_node` 返回包含树 `kind` 和节点 `path_type` 的恢复结果。助理 `load_agent_context` 沿最新主干末端回溯至最近摘要即停止，`start_task` 也走局部线性追加，不构建完整树；两个入口均拒绝选择旧节点或创建分支，详见[助理记忆加载](../workflow/question-answering/assistant-memory.md)。通用树仓库仍提供完整结构读取，不代表助理生成应调用这些入口。
+个人助理仅在 `assistant_workspaces` 保留一条最新工作区，节点不再绑定历史版本；压缩摘要和保留边界与工作区同事务更新，提交后同步驻留窗口。任务内压缩按实际覆盖前缀驱逐，任务前压缩也在登记新任务时保存整理后的工作区。迁移与读取语义见[助理记忆驻留](../workflow/question-answering/assistant-memory.md)。
+
+探索 `start_task` 与底层 `append_path` 共用持锁追加路径，自动保存任务及可选摘要的 `path_type`；检查点、终态提交和稳定 ID 重放保留已有归属。`load_node` 返回包含树 `kind` 和节点 `path_type` 的恢复结果。助理 `load_agent_context` 优先复用压缩后的驻留窗口，冷启动按持久化覆盖下界读取，`start_task` 走局部线性追加，不构建完整树；两个入口均拒绝选择旧节点或创建分支，详见[助理记忆加载](../workflow/question-answering/assistant-memory.md)。通用树仓库仍提供完整结构读取，不代表助理生成应调用这些入口。
 
 每个公开消息与其 pending 记忆在同一事务登记，`source_id` 等于消息 ID；提问 ID 等于节点 ID。输出必须是完整消息，不把流式碎片登记为最终消息。[自动向量化](../../capability/application/memory-embedding.md)在节点终态后异步读取完整消息并加工，不延长节点提交事务。记忆检索子 Agent 的原生生成以 `memory_retrieval` 用途写入当前节点私有生成记录，文件检索子智能体的原生生成及执行反馈使用`file_retrieval`用途；公开候选来源不读取这些记录。
 
@@ -73,6 +75,8 @@ Agent Core 进一步通过 `load_agent_context` 一致性读取公开路径，�
 树用途与路径类型适配阶段的验证见问答树专项结果：当时完整 351 项通过，包含新结构下的实际 MySQL 加载与落盘、确定性模型替身驱动的 Agent 运行；该数量为历史记录。当前生命周期控制的验证见[最新状态专项结果](../workflow/question-answering/node-lifecycle.md#验证)，真实业务库和运行配置未改动。
 
 网页精炼子图使用 `purpose=web_page_refinement` 保存完整原生响应与每次校验结果，失败/取消记录同样保留；不新增 SQL 列，公开输出隔离和详情见[网页工具专题](../workflow/question-answering/web-search.md)。
+
+助理最终正文转换使用 `purpose=assistant_message_rendering`，工具执行后钩子通过当前 journal 保存完整原生响应、推理和失败/取消记录；生成完成不代表格式验收通过。全部钩子通过后，转换后的 `finish_task.content` 与公开答案经原有提交路径一起保存，后续上下文和交付读取该正文；无需修改问答树结构、仓库接口或 SQL 列。详见[转换审计与恢复](../workflow/question-answering/assistant-message-rendering.md#私有审计与交付恢复)。
 
 
 ---

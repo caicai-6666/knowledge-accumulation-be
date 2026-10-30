@@ -1,6 +1,7 @@
 """钉钉企业内部 H5 免登；应用凭证仅在服务端使用。"""
 
 import asyncio
+import logging
 from time import monotonic
 
 import httpx
@@ -9,6 +10,9 @@ from pydantic import BaseModel, Field, SecretStr
 from app.auth.error import AuthUnavailable, InvalidCredentials
 from app.config.auth import AuthSettings
 from app.model.dingtalk import DingTalkDepartment, DingTalkEmployee
+
+
+logger = logging.getLogger(__name__)
 
 
 class _ApplicationToken(BaseModel):
@@ -76,6 +80,7 @@ class DingTalkClient:
                 raise ValueError('部门详情与请求不一致')
             return department
         except (ValueError, TypeError):
+            logger.warning('钉钉部门查询失败：reason=invalid_department_response department_id=%s', department_id)
             raise AuthUnavailable('钉钉部门资料响应异常') from None
 
     async def _legacy_call(self, path: str, body: dict, *, code_exchange: bool = False) -> dict:
@@ -93,8 +98,12 @@ class DingTalkClient:
                     if not isinstance(payload.get('result'), dict):
                         raise ValueError('钉钉业务响应缺少结果对象')
                     return payload['result']
-            except (httpx.HTTPError, ValueError, TypeError):
+            except (httpx.HTTPError, ValueError, TypeError) as error:
+                # 只记录固定接口路径和异常类型，HTTP异常原文可能含 access_token。
+                logger.warning('钉钉接口请求失败：endpoint=%s error_type=%s', path, type(error).__name__)
                 raise AuthUnavailable("钉钉免登服务暂不可用") from None
+            # 保留数值错误码用于排查权限、限流等问题，不输出上游 errmsg 或员工资料。
+            logger.warning('钉钉接口业务失败：endpoint=%s errcode=%s', path, error_code)
             if error_code in (40014, 42001, 88):
                 # 应用 token 过期时只重试一次，不把服务端凭证失败归为用户凭据错误。
                 async with self._lock:

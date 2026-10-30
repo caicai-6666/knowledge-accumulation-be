@@ -84,7 +84,7 @@ class MiddlewareClient:
         response.raise_for_status()
         if response.status_code != 200:
             raise ValueError('用户登录操作必须返回 200')
-        # 查询返回 username，写入响应不含该字段；保持各自严格的额外字段校验。
+        # 查询返回 username/departments，写入响应不含这些字段；各自保持严格校验。
         response_model = MiddlewareUserLoginQueryStatus if method == 'POST' else MiddlewareUserLoginStatus
         result = response_model.model_validate(response.json())
         if method == 'PUT' and (result.userid != userid or not result.is_logged_in):
@@ -114,7 +114,7 @@ class MiddlewareClient:
         response = await self._http.post(
             'middleware-service/api/user/full-table',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'},
-            # 明确选用专用 DTO，防止员工资料扩展时把头像、部门或管理身份带入中间件。
+            # 专用 DTO 只发送身份、部门名称及文件权限，不夹带头像、部门 ID 或管理身份。
             json={'users': [user.model_dump() for user in users]},
         )
         response.raise_for_status()

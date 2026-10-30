@@ -77,8 +77,13 @@ class ToolExecution:
     """宿主内部信封；回调不属于可序列化结果，也不进入模型上下文。"""
     result: ToolExecutionResult
     after_commit: Callable[[], None | Awaitable[None]] | None = None
+    # 输出工具的权威正文；执行后钩子可替换，宿主在提交前同步到已接受参数。
+    output: str | None = None
 
     def __post_init__(self):
         object.__setattr__(self, 'result', ToolExecutionResult.model_validate(self.result))
         if self.after_commit is not None and (not callable(self.after_commit) or self.result.status != 'succeeded'):
             raise ValueError('只有成功执行才能附带提交回调')
+        if self.output is not None and (not isinstance(self.output, str) or not self.output.strip()
+                                        or self.result.status != 'succeeded'):
+            raise ValueError('只有成功执行才能返回非空输出正文')

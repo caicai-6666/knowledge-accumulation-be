@@ -10,7 +10,7 @@
 
 ## 树、节点与摘要语义
 
-树按用途分为 `assistant`（个人 AI 助理）和 `exploration`（复杂任务探索）。`assistant` 是探索模式的简化使用方式，两者共用树、节点、摘要、工作区和记忆存储，SQL 不另加禁止分支的拓扑约束。助理生成及节点仓库的助理入口只允许从最新主干末端继续，采用[最近摘要边界的局部加载与追加](../workflow/question-answering/assistant-memory.md)，拒绝节点选择或分支；通用树仓库不承担助理宿主规则。探索模式允许选择历史节点继续。当前 HTTP 仅开放 exploration。
+树按用途分为 `assistant`（个人 AI 助理）和 `exploration`（复杂任务探索）。`assistant` 是探索模式的简化使用方式，两者共用树、节点、摘要、工作区和记忆存储，SQL 不另加禁止分支的拓扑约束。助理生成及节点仓库的助理入口只允许从最新主干末端继续，采用[压缩窗口驻留与单份工作区](../workflow/question-answering/assistant-memory.md)，拒绝节点选择或分支；通用追加/结束入口拒绝助理写入，助理必须使用专用线性任务和检查点接口。探索模式允许选择历史节点继续。当前 HTTP 仅开放 exploration。
 
 每棵树属于一个用户；每个任务节点表示一轮用户问题及执行记录。摘要是独立的内部节点，不是覆盖前一个任务的标签。所有节点只有一个父节点，父链决定上下文，不按创建时间、主干或分支标识推测继承关系。
 
@@ -55,7 +55,7 @@ S1 → C → D
 | --- | --- | --- |
 | `kind` | `ENUM('assistant','exploration') NOT NULL DEFAULT 'exploration'` | `assistant` 为个人助理，`exploration` 为复杂任务探索；已有树默认归为探索类型。 |
 
-新增索引 `(owner_userid, kind, updated_at, id)`，仓库已支持按用户、用途列树；原有按用户列树的索引保留。类型字段只表达用途，不改变最近摘要回溯、快照继承或分支存储规则。后续 [011 助理存储迁移](../../../schema/011-assistant-storage.sql)另加仅作用于 assistant 树的用户唯一索引及助理绑定外键，落实每位用户至多一棵助理树；探索树数量不变。迁移前须核查历史重复树，完整约束和当前实现范围见[助理存储](assistant-storage.md)。
+新增索引 `(owner_userid, kind, updated_at, id)`，仓库已支持按用户、用途列树；原有按用户列树的索引保留。类型字段表达用途；探索保留选点、快照继承与分支规则，助理由专用服务和仓库强制线性追加，使用[当前工作区与压缩窗口](../workflow/question-answering/assistant-memory.md)。后续 [011 助理存储迁移](../../../schema/011-assistant-storage.sql)另加仅作用于 assistant 树的用户唯一索引及助理绑定外键，落实每位用户至多一棵助理树；探索树数量不变。迁移前须核查历史重复树，完整约束和当前实现范围见[助理存储](assistant-storage.md)。
 
 [007-question-node-path-type.sql](../../../schema/007-question-node-path-type.sql)为节点表补充路径类型，不新增表或索引；全树读取仍使用现有树内序号索引。
 
@@ -92,11 +92,13 @@ ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大�
 底层 `load_tree()` 只读取树与节点结构，不加载正文。`load_context()` 在同一个 REPEATABLE READ 事务内读取结构、批量获取选中路径正文及对应工作区，避免结构和正文来自不同提交。`load_exploration_tree()` 在同一事务内批量加载本人探索树的完整结构、全部节点正文与公开消息；树类型不是 exploration 时拒绝，不读取原生生成、向量或工作区正文。公开展示过程另存 `question_node_contents.display_history`，随打开事务读取，字段与迁移边界见[探索任务展示恢复](../workflow/question-answering/exploration-session.md#sse-与恢复)。完整前端响应见[打开问答树](../../api/exploration.md#打开问答树)，不以最近摘要路径代替完整历史。
 
 
-[ExplorationTreeService](../../../app/service/exploration_tree.py)由应用生命周期装配，驻留键为 `(owner_userid, tree_id)`，同时保存 `QuestionTreeSnapshot` 的父子索引与完整公开响应。每次 HTTP 打开均重新查库，不以缓存命中跳过认证、归属或类型检查。所有读取、校验和响应投影成功后才发布到内存；失败或取消移除该键的旧快照，不返回旧数据。同一 `(owner_userid, tree_id)` 的打开与删除共用进程内操作锁，防止晚到打开结果重新驻留已删除树；不同树互不阻塞，等待取消后清理锁引用。驻留发布仍检查 revision，避免版本倒退。
+[ExplorationTreeService](../../../app/service/exploration_tree.py)与节点执行仓库共用 [QuestionTreeCache](../../../app/service/question_tree_cache.py)，驻留键为 `(owner_userid, tree_id)`，只保留已构建的树结构和节点索引，不另存展示响应副本。打开、注册/激活时的节点选择、上下文加载和节点追加均通过同一仓库取得这份结构。每次读取先在事务内查询权威树行，确认归属、用途及版本；同版本命中时直接返回同一个 `QuestionTreeSnapshot`，不重读全部节点或重建索引。正文、公开消息及所选工作区仍按各入口需要查询，模型注入范围保持最近摘要和其后的所选父链。
 
-驻留采用进程内 LRU，默认最多 32 棵，构造参数 `max_loaded_trees` 可由装配方指定；本轮不新增环境变量。容量淘汰只释放内存，不删除 SQL 或附件，再次打开会完整加载。停机清空驻留，晚到的加载结果不能重新填充；多进程各自保存快照，不宣称跨实例共享缓存。
+驻留采用进程内 LRU，默认最多 32 棵，由打开服务构造参数 `max_loaded_trees` 设置共享池容量；不新增环境变量。缓存缺失、淘汰或权威版本不一致时，才读取全体节点并构建结构。打开失败、删除及停机释放驻留；淘汰仅释放内存，不删除 SQL 或附件。多进程各自维护缓存，通过读权威树行发现其他实例的版本变更，不宣称跨实例共享内存。
 
-内部 `get_loaded_snapshot(tree_id, owner_userid)` 可取得已打开树的结构索引。缓存表示打开时的一致性快照，后续改名、生成等写入不会自动改写这份快照，重新打开可刷新；当前生成入口仍按原方式从数据库加载上下文，后续写入必须重新验证数据库版本，不能把缓存作为权威状态。完整正文读取、拓扑校验与前端投影均按节点/消息数量线性处理；响应为平铺节点数组，可处理深树。
+创建、追加任务/摘要、检查点、终态、停止、替代和改名均根据本事务写入结果生成新的不可变结构快照，不重读历史节点；构建新版本的索引仍为 O(N)，旧读者持有的快照不被原地修改。事务内暂存结构仅对本事务可见，SQL 提交确认后才发布到共享池；回滚、取消或提交回执不确定时丢弃暂存并撤销相关驻留。较早读事务的迟到发布不能覆盖更高 revision，删除/清理前开始的事务不能重新驻留旧树。替代任务的临时取消状态不进入共享池。私有审计追加和 SSE 展示记录不改变模型结构版本，继续按原规则落库。
+
+内部 `get_loaded_snapshot(tree_id, owner_userid)` 返回该共享池中的当前驻留结构，不独立提供授权或跨进程新鲜度保证；业务执行必须通过上述带权威树行校验的仓库入口。同一用户树的打开与删除仍共用进程内操作锁。完整展示正文读取、拓扑校验与前端投影按节点/消息数量线性处理，响应保持平铺节点数组。
 
 创建模式与节点类型分开：推进模式生成 main 主干节点，仅允许延续当前主干末尾；探索模式生成 branch 分支节点，可从任意已结束的主干或分支任务继续，不改变主干末尾。已有追加事务从父链推导 path_type，忽略调用方伪造的标签，并拒绝从分支节点推进主干。接口不增加派生的“可开启分支”字段。
 
@@ -110,11 +112,11 @@ ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大�
 | --- | --- |
 | `create_tree(owner_userid, name, kind=...)` | 创建空树，默认名称为“新的问答树”，默认用途 `exploration`。 |
 | `list_trees(owner_userid, limit, offset, kind=None)` | 按活动时间和 ID 降序读取本人树；可筛选用途，默认不筛选；默认 50 条，最大 200 条。 |
-| `list_exploration_trees(owner_userid)` | 按活动时间和 ID 降序读取本人全部 exploration 树的 `id/name`，SQL 排除 assistant，不加载节点或工作区。供[探索列表接口](../../api/exploration.md#获取问答树列表)使用。 |
+| `list_exploration_trees(owner_userid)` | 按活动时间和 ID 降序读取本人全部 exploration 树的 `id/name/updated_at`（带时区的 UTC 时间），SQL 排除 assistant，不加载节点或工作区。供[探索列表接口](../../api/exploration.md#获取问答树列表)使用。 |
 | `rename_exploration_tree(tree_id, owner_userid, name)` | 供[探索树改名接口](../../api/exploration.md#修改问答树名称)使用；同事务行锁校验归属和用途，修改名称时递增版本、更新活动时间，同名不写入。 |
 | `rename_tree(..., expected_revision)` | 校验归属与版本后改名，更新 revision。 |
-| `load_exploration_tree(tree_id, owner_userid)` | 同一事务读取本人 exploration 的全部结构、正文与公开消息，校验缺失正文及摘要范围，返回 LoadedQuestionTree。 |
-| `load_tree(tree_id, owner_userid)` | 读取本人树结构，返回已校验内存快照。 |
+| `load_exploration_tree(tree_id, owner_userid)` | 同一事务校验本人 exploration，复用同版本结构并读取全部正文与公开消息，校验缺失正文及摘要范围，返回 LoadedQuestionTree。 |
+| `load_tree(tree_id, owner_userid)` | 校验本人树行，探索树复用同版本驻留结构，未命中时构建快照。 |
 | `append_path(..., expected_revision, advance_main, workspaces)` | 追加连续节点路径，支持“摘要→任务”同事务提交；创建新版本时一并写入。 |
 | `finish_task(..., expected_revision, status, content, workspace)` | 将生成中任务一次转换为完成、取消或失败，可提交新的工作区版本。 |
 | `load_context(tree_id, owner_userid, node_id)` | 返回路径、该路径正文和所选节点工作区，尚不组装模型消息。 |
@@ -124,7 +126,7 @@ ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大�
 
 写入先锁定树行，再校验 `expected_revision`，冲突抛出 `QuestionTreeConflict`，不自动重放。sequence 在树内递增，但不决定上下文；首条路径建立主干，后续仅在 `advance_main=True` 且从原主干末尾延伸时更新主干指针，并将该批节点设为 `main`。其他追加设为 `branch`，不会修改原后继、归属、正文、摘要或工作区版本。`start_task` 默认按父节点是否为主干末端选择是否推进，分支后续仍属于分支；摘要和任务接受同一次路径归属计算。
 
-节点未指定新工作区时继承直接父节点的版本；指定版本只能是父节点版本或本次提交的新版本，不能借用另一分支的现有工作区。生成中任务结束时可创建新版本；禁止修改原问题或重新结束终态任务。活动任务逐工具检查点与用户取消投影见节点落盘及生命周期；崩溃后自动恢复仍未实现。
+探索节点未指定新工作区时继承直接父节点的版本；指定版本只能是父节点版本或本次提交的新版本，不能借用另一分支的现有工作区。生成中任务结束时可创建新版本；禁止修改原问题或重新结束终态任务。活动任务逐工具检查点与用户取消投影见节点落盘及生命周期；崩溃后自动恢复仍未实现。
 
 节点、正文、工作区、主干指针与 revision 的变更在同一个事务提交。数据库故障、超时和取消均向上传播并尝试回滚；提交回执丢失仍可能存在结果不确定性，调用方应重新读取，不盲目重试。任务附件 UUID 与类型随正文保存，见[附件登记与定位](question-file.md)。整树级 HTTP 删除及探索任务 PDF 上传已接入，不改动人员权限。
 
@@ -172,6 +174,8 @@ ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大�
 ---
 
 ## 验证方式
+
+2026-10-27 驻留结构复用验证见 [共享缓存测试](../../../tests/test_exploration_structure_cache.py)：显式启用 `RUN_ISOLATED_TREE_CACHE_MYSQL=1`，共 7 项通过（2 项缓存单元、5 项随机临时 MySQL 库集成），临时库在结束后删除。测试先清空缓存并打开一棵树，记录一次全节点查询，再禁止该 SQL；随后重复打开、校验选择、加载上下文、追加任务、检查点、终态、摘要及分支均成功，全节点查询仍为一次，同版本结构通过对象身份断言确认复用。另覆盖替代/取消/失败、改名、事务暂存不可见、回滚和取消、旧读事务晚返回、跨实例版本失配、归属、LRU 与删除。常规回归在新增最后一项取消测试前执行：210 项中 194 项通过、16 项跳过；新增测试后单独重跑上述 7 项全部通过。`git diff --check` 通过。验证未调用真实模型，未修改业务数据库或重启服务；不代表实际用户请求的性能测量。
 
 打开接口与内存驻留测试见[完整树打开测试](../../../tests/test_exploration_open.py)，覆盖完整分支历史、公开投影、认证隔离、并发版本防倒退、LRU 与停机清理、2500 层树序列化。
 

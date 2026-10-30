@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import json
 import logging
+import re
 from time import monotonic
 from urllib.parse import urlencode
 
@@ -44,10 +45,15 @@ class _RobotHTTPClient(httpx.AsyncClient):
 
 
 class RobotUnavailable(RuntimeError):
-    def __init__(self, operation: str, *, status: int | None = None, uncertain: bool = False):
+    def __init__(self, operation: str, *, status: int | None = None, uncertain: bool = False,
+                 reason: str | None = None, download_host: str | None = None,
+                 download_scheme: str | None = None):
         super().__init__('钉钉机器人操作失败')
         self.operation = operation
         self.status = status
+        self.reason = reason
+        self.download_host = download_host
+        self.download_scheme = download_scheme
         # 发送超时/异常响应不能证明钉钉没有收到；交付层须保留不确定状态，不自动再次发送。
         self.uncertain = uncertain
 
@@ -127,8 +133,8 @@ class DingTalkRobotClient:
                 return result
         except RobotUnavailable:
             raise
-        except (httpx.HTTPError, ValueError, TypeError, TimeoutError):
-            raise RobotUnavailable(operation, uncertain=operation == 'send') from None
+        except (httpx.HTTPError, ValueError, TypeError, TimeoutError) as error:
+            raise RobotUnavailable(operation, uncertain=operation == 'send', reason=type(error).__name__) from None
 
     async def _application_token(self):
         self._check_open()
@@ -211,24 +217,53 @@ class DingTalkRobotClient:
         payload = await self._authenticated_post('/v1.0/robot/messageFiles/download', {
             'robotCode': self.settings.robot_code, 'downloadCode': code,
         }, operation='download')
+        stage = 'download_url'
         try:
-            url = httpx.URL(_nonempty(payload.get('downloadUrl')))
-            if (url.scheme != 'https' or not url.host or url.userinfo or url.fragment
-                    or url.port not in (None, 443) or not any(url.host == host or url.host.endswith('.' + host)
-                        for host in self.settings.download_allowed_hosts)):
-                raise ValueError('下载地址不合法')
+            value = payload.get('downloadUrl')
+            if not isinstance(value, str) or not value.strip():
+                raise RobotUnavailable('download', reason='download_url:missing_url')
+            url = httpx.URL(value)
+            # 钉钉可能返回 HTTP 的 OSS 签名地址；OSS 标准桶域名支持 HTTPS。
+            # 只升级已在允许列表内的标准 OSS 桶域名，不发 HTTP、不跟重定向、不改签名路径和查询。
+            if (url.scheme == 'http' and url.port in (None, 80) and url.host
+                    and re.fullmatch(r'[a-z0-9][a-z0-9-]*\.oss-[a-z0-9-]+\.aliyuncs\.com', url.host)
+                    and any(url.host == host or url.host.endswith('.' + host)
+                            for host in self.settings.download_allowed_hosts)):
+                url = url.copy_with(scheme='https', port=None)
+            failure = None
+            if url.scheme != 'https':
+                failure = 'scheme'
+            elif not url.host:
+                failure = 'missing_host'
+            elif url.userinfo:
+                failure = 'userinfo'
+            elif url.fragment:
+                failure = 'fragment'
+            elif url.port not in (None, 443):
+                failure = 'port'
+            elif not any(url.host == host or url.host.endswith('.' + host)
+                         for host in self.settings.download_allowed_hosts):
+                failure = 'host_not_allowed'
+            if failure:
+                # 只附带域名和常见协议，不保留路径、查询、片段、用户信息或完整下载链接。
+                raise RobotUnavailable('download', reason=f'download_url:{failure}',
+                    download_host=url.host or None,
+                    download_scheme=url.scheme if url.scheme in ('http', 'https') else 'other')
             async with asyncio.timeout(self.settings.timeout_seconds):
+                stage = 'download_dns'
                 address = await self._resolver(url.host, 443)
                 # 与既有公开资源下载一致，连接固定到校验后的公网 IP，保留 TLS 域名校验。
                 import ipaddress
                 ip = ipaddress.ip_address(address)
                 if not ip.is_global or ip.is_multicast:
                     raise ValueError('下载地址不是公网地址')
+                stage = 'download_http'
                 async with self._files.stream('GET', url.copy_with(host=str(ip)),
                         headers={'Host': url.host, 'Accept-Encoding': 'identity', 'Cookie': ''},
                         extensions={'sni_hostname': url.host}) as response:
                     if response.status_code != 200:
-                        raise ValueError('下载响应异常')
+                        raise RobotUnavailable('download', status=response.status_code, reason=f'{stage}:http_status')
+                    stage = 'download_body'
                     declared = response.headers.get('content-length')
                     if declared is not None and not declared.isdecimal():
                         raise ValueError('文件大小响应非法')
@@ -242,5 +277,6 @@ class DingTalkRobotClient:
                     if not content:
                         raise RobotAttachmentInvalid()
                     return bytes(content)
-        except (ValueError, TypeError, OSError, TimeoutError, httpx.HTTPError, httpx.InvalidURL):
-            raise RobotUnavailable('download') from None
+        except (ValueError, TypeError, OSError, TimeoutError, httpx.HTTPError, httpx.InvalidURL) as error:
+            # 阶段和异常类别可诊断域名策略、DNS、TLS、响应状态及超时；不保存签名链接或异常原文。
+            raise RobotUnavailable('download', reason=f'{stage}:{type(error).__name__}') from None

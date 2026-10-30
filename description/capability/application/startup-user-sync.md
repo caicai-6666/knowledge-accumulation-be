@@ -31,12 +31,12 @@
 出站请求为 `POST /middleware-service/api/user/full-table`，使用本项目平台 Bearer，精确 body：
 
 ```json
-{"users":[{"userid":"employee-a","username":"员工甲","permissions":{"registry":0}}]}
+{"users":[{"userid":"employee-a","username":"员工甲","permissions":{"registry":0},"departments":["综合管理部","总经办"]}]}
 ```
 
-映射只取[权威员工现有字段](../../architecture/data/personnel.md#中间件资料映射)，用户资料 DTO 不发送部门、头像、管理员关系或用户 token，不重新生成已有员工等级。成功响应 `200 {"count":1}` 中 count 必须为严格整数且等于提交数量。
+映射只取[权威员工现有字段](../../architecture/data/personnel.md#中间件资料映射)，用户资料 DTO 显式发送完整部门名称列表，不发送部门 ID、头像、管理员关系或用户 token，不重新生成已有员工等级。成功响应 `200 {"count":1}` 中 count 必须为严格整数且等于提交数量。
 
-本协调器不调用登录缓存接口；**full-table 可能删除遗漏用户及其登录缓存**。它不发送用户心跳、不周期发布、不在关闭时清空中央表。PUT 只由显式认证服务在登记后执行。外部参考见中间件[用户 API](../../../../../知识沉淀中间件服务/middleware-service/description/api/user.md)，最终职责以用户划分为准。
+本协调器不调用登录缓存接口；**full-table 可能删除遗漏用户及其登录缓存**。它不发送用户心跳、不周期发布、不在关闭时清空中央表。PUT 只由显式认证服务在登记后执行。外部参考见相邻中间件项目的 `description/api/user.md`，最终职责以用户划分为准。
 
 ---
 
@@ -65,6 +65,8 @@
 ---
 
 ## 验证与结果
+
+2026-10-29 多部门契约：新增[部门同步测试](../../../tests/test_user_sync_departments.py)，验证完整列表优先、同名去重、旧单部门和模拟身份回退、空列表、出站字段隔离、启动与缺失用户补登记的实际 HTTP 请求体，以及新版登录查询响应。另以[相邻中间件真实路由](../../../tests/test_middleware_source_contract.py)验证多部门注册与登录查询；存储、身份会话使用替身，不启动生命周期或发布共享全表。
 
 [同步测试](../../../tests/test_user_sync.py)保留字段映射、精确 DTO/count、token 等待、失败重试、401 与清理覆盖；[注册测试](../../../tests/test_user_registration.py)新增前台登记、批次复用、权威权限保留、缺失/冲突拒绝及外部覆盖风险刻画。[维护并发测试](../../../tests/test_user_maintenance.py)保留共享锁交错、普通 token 查询不取锁、超时与取消测试。
 

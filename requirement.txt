@@ -20,6 +20,8 @@ python-dotenv==1.2.4
 uvicorn==0.54.0
 # 头像无损 WebP 编码
 Pillow==13.0.0
+# 苹果 HEIC/HEIF 图片解码，接入机器人附件的 Pillow 转换流程。
+pillow-heif==1.8.1
 # 用户附件逐页查看，沿用参考项目已安装验证的版本。
 PyMuPDF==1.28.2
 # 沿用 registry 验证的 LlamaIndex 向量库协议及 vLLM Embedding 适配。

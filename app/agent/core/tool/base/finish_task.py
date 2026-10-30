@@ -12,6 +12,9 @@ class FinishTaskTool(ABC):
     arguments_model = OutputArguments
     deliver_output = None
 
+    def __init__(self, *, hooks=()):
+        self.hooks = tuple(hooks)
+
     @property
     @abstractmethod
     def description(self) -> str:
@@ -25,5 +28,5 @@ class FinishTaskTool(ABC):
         return RegisteredTool(
             'finish_task', self.description, self.arguments_model,
             lambda name, raw, workspace, arguments: workspace,
-            output_kind='final', deliver_output=self.deliver_output,
+            output_kind='final', deliver_output=self.deliver_output, hooks=self.hooks,
         )

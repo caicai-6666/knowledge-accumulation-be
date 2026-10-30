@@ -24,7 +24,7 @@ class DisplayEvent(TreeModel):
         TypeAdapter(TreeID).validate_python(self.data['turn_id'])
         if self.event == 'task.progress':
             message = self.data.get('message')
-            if (self.data.get('type') not in ('thinking', 'online-search', 'external-expert', 'local-search')
+            if (self.data.get('type') not in ('thinking', 'online-search', 'external-expert', 'local-search', 'a2a', 'boardcast')
                     or not isinstance(message, str) or not message.startswith('正在')
                     or not message[2:].strip() or len(message) > 2000):
                 raise ValueError('展示动作不合法')

@@ -1,4 +1,4 @@
-"""首次打开网页的串行提取图；所有业务失败均进入唯一尾部节点。"""
+"""首次打开网页的串行提取图；正文、无正文与故障均进入统一收束节点。"""
 from functools import partial
 from langgraph.graph import START, END, StateGraph
 from .routing import select_processing, route_processing, preserve_original

@@ -2,6 +2,7 @@
 from typing import Literal
 from pydantic import Field, model_validator
 from ....workspace import WorkspaceObject, WorkspaceText
+from ....json_codec import ModelActionRejected
 from ....tool import check_descriptions
 
 
@@ -15,10 +16,10 @@ class SummaryTopic(WorkspaceObject):
     @model_validator(mode='after')
     def validate_sources(self):
         if not self.task_ids and not self.previous_topic_ids:
-            raise ValueError('主题至少需要一种有效来源')
+            raise ModelActionRejected('主题没有引用任何来源。', 'task_ids 或 previous_topic_ids 至少提供一种本次实际存在的来源；没有值得保留的来源时不要创建该主题。')
         for values in (self.task_ids, self.previous_topic_ids):
             if len(values) != len(set(values)):
-                raise ValueError('主题引用不得重复')
+                raise ModelActionRejected('主题来源列表包含重复引用。', '分别对 task_ids 和 previous_topic_ids 去重，每个来源在同一列表中只保留一次。')
         return self
 
 
@@ -34,7 +35,7 @@ class SummaryItem(WorkspaceObject):
     @model_validator(mode='after')
     def unique_references(self):
         if len(self.task_ids) != len(set(self.task_ids)):
-            raise ValueError('摘要引用不得重复')
+            raise ModelActionRejected('摘要条目的 task_ids 包含重复引用。', '对该条目的 task_ids 去重，只保留实际支持本条内容的本主题来源。')
         return self
 
 

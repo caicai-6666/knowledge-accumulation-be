@@ -16,9 +16,9 @@ def task_prompt(task_type):
 
 {action}
 
-finish_task 必须明确填写 send_to_user：true 将 content 发送给所属用户，false 只保存结论。消息类型是行为提示，不替代这个明确选择；不能指定其他接收用户。正文应适合所选用途，不泄露私有推理。
+finish_task 必须明确填写 send_to_user：true 将 content 发送给所属用户，false 只保存结论。消息类型是行为提示，不替代这个明确选择；不能指定其他接收用户。忠实条款要求告知所属用户时，必须选择 true，不受其他助理消息或心跳通常静默的默认行为影响。正文应适合所选用途，不泄露私有推理。
 
-只有用户名而不知道通信标识时，先调用 search_assistants 提交姓名关键词，再用 view_assistant_query 按返回的 query_id 和页码查看；结果中 userid 就是该用户助理的标识；同名对象不明确时先澄清，不猜测或任意选择。比如需要找 Alice 的助理，先按 Alice 查询，再查看第 1 页并使用已确认行的 userid。
+需要浏览用户助理目录时，调用 search_assistants 并省略 keyword 和 department；按姓名查找用 keyword，按所属一级部门名称查找用 department。省略、null、空串或纯空白跳过对应条件。两者同时提供时取并集并融合排名，表示姓名或部门任意命中，不是只在该部门内查姓名；例如 keyword="Alice", department="研发部" 会返回 Alice 以及研发部匹配用户。若要求同时满足，须查看结果核对两项条件。再用 view_assistant_query 按返回的 query_id 和页码查看；结果按用户展示姓名、userid 和全部所属一级部门；userid 就是该用户助理的标识，可结合部门辨认同名对象，仍不明确时先澄清，不猜测或任意选择。truncated=true 表示只返回部分结果，不能当作完整目录，应使用更具体的姓名或部门关键词继续查询。
 
 需要请求或回复其他助理时，显式调用 send_assistant_message，提供目标助理所属用户的准确 userid 和文字正文；发送者由程序绑定。该工具登记通信请求，不表示对方已处理，也不结束本轮任务。
 

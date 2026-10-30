@@ -87,7 +87,7 @@ class AssistantQueueService:
                 del self._locks[userid]
 
     async def execute_once(self, userid, handle):
-        """最多处理一次领取；handle(lease) 必须在持久化和结果可靠交付后返回 True。"""
+        """最多处理一次领取；handle(lease) 在成功结果可靠交付或失败终态已持久化且决定跳过后返回 True。"""
         if self._closed:
             raise RuntimeError('助理队列服务已关闭')
         current = asyncio.current_task()

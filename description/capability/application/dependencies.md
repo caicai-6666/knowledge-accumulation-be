@@ -18,6 +18,7 @@
 | `python-dotenv` | 加载项目根目录 `.env`。 | `dotenv_values` |
 | `uvicorn` | 启动 FastAPI ASGI 服务。 | `python -m uvicorn` |
 | `Pillow` | 头像内容校验和无损 WebP 编码。 | `from PIL import Image` |
+| `pillow-heif==1.8.1` | 机器人 HEIC/HEIF 图片解码，接入现有 Pillow 到 PDF 转换流程。 | `register_heif_opener` |
 | `PyMuPDF==1.28.2` | Core 图像附件的真实格式检查、按页 PNG 渲染及 LRU 文档模型。 | `import pymupdf` |
 | `llama-index-core` | MyVector 向量库协议、节点及异步检索。 | `VectorStoreIndex`、`BasePydanticVectorStore` |
 | `llama-index-embeddings-openai-like` | 沿用 registry 验证的 vLLM 自定义模型异步 Embedding 适配。 | `OpenAILikeEmbedding` |
@@ -28,7 +29,13 @@
 
 ## 安装与检查
 
-本机使用已有的 Conda 环境 `knowledge-accumulation-be`。在项目根目录执行：
+首次安装时创建 Python 3.12 环境：
+
+```bash
+conda create -n knowledge-accumulation-be python=3.12 pip -y
+```
+
+本机 Conda 安装在 `/Users/caicai/miniconda3`，项目环境名为 `knowledge-accumulation-be`。若当前终端提示找不到 `conda`，先执行 `source /Users/caicai/miniconda3/etc/profile.d/conda.sh`，再在项目根目录执行：
 
 ```bash
 conda activate knowledge-accumulation-be
@@ -48,6 +55,14 @@ python -m pip check
 因此在 `requirement.txt` 显式固定 `cryptography==50.0.2`，已安装至本项目 Conda 环境。无需更换数据库认证插件或绕过驱动错误；服务端仍保持原有认证配置。若某个解释器进程在安装前已经导入 asyncmy，它可能保留依赖不可用的模块状态，补验应使用新解释器进程，不需要重启共享服务。
 
 [RSA 认证依赖测试](../../../tests/test_mysql_auth.py)在内存生成临时密钥，实际执行驱动 `sha2_rsa_encrypt` 并解密验证协议载荷，不 Mock 加密函数、不连接数据库、不写密钥文件。此前 RSA 修复阶段完整 87 项测试及 `pip check` 通过，该历史验证保留。最终职责下注册/登录回归见[当前验证记录](../../architecture/system/user-auth.md#验证与切换前提)。协作方随后报告独立临时 MySQL 8.4 中的默认 SHA-2 认证握手及人员仓库补验通过，来源与范围见[隔离实库补验](../infrastructure/user-infrastructure.md#协作方隔离-mysql-84-实库补验)。本地 RSA 单测本身不替代实库验证，两者均不代表生产联通。
+
+---
+
+## HEIC / HEIF 解码
+
+机器人入站使用 `pillow-heif==1.8.1` 为 Pillow 注册 HEIF 解码器，复用已有 PDF 转换；具体格式和边界见[机器人入站](assistant-inbound.md#文件与队列)。按[官方安装说明](https://pillow-heif.readthedocs.io/en/stable/installation.html)优先使用预编译 wheel，不依赖系统外部转换命令；无适用 wheel 的平台需自行准备 libheif 等构建依赖。Dockerfile 仍通过 `requirement.txt` 安装，已有后端镜像需重建。
+
+2026-10-26 已在本机 Python 3.12 / macOS arm64 Conda 环境安装预编译包，并通过真实 HEVC 编解码、相关 17 项测试及 `pip check`。本次未重建 Linux 后端镜像，未验证真实钉钉或 iPhone 原片。
 
 ---
 

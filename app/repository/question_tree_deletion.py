@@ -14,6 +14,13 @@ class QuestionTreeDeletionRepository:
         self.trees = trees
 
     async def delete(self, tree_id, owner_userid) -> tuple[AttachmentReference, ...]:
+        try:
+            return await self._delete(tree_id, owner_userid)
+        finally:
+            # 包含提交回执不确定和直接仓库调用；此前读事务也不能迟到发布旧树。
+            self.trees.structure_cache.discard(owner_userid, tree_id)
+
+    async def _delete(self, tree_id, owner_userid) -> tuple[AttachmentReference, ...]:
         async with self.trees._transaction() as cursor:
             # 同一接口可在进程重启后继续清理；清单的归属不能由客户端指定或推断。
             await cursor.execute('SELECT attachments FROM question_tree_deletions '

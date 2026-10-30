@@ -1,7 +1,9 @@
 """读取执行时的系统时钟，统一返回北京时间，不改写任务创建时间。"""
 from datetime import datetime, timedelta, timezone
+from pydantic import model_validator
 
 from ..workspace import WorkspaceObject
+from ..json_codec import load_model_json
 from .progress import ToolProgress
 from .result import ToolExecutionResult
 
@@ -15,6 +17,18 @@ class GetCurrentTimeArguments(WorkspaceObject):
 
     每次调用重新读取时钟，旧回执只代表当时的时间。结果依赖服务端系统时钟，不证明业务事件发生时间，也不替换历史任务的时间基准。需要日期加减时，将有依据的时间交给 calculate_date。
     """
+
+    @model_validator(mode='before')
+    @classmethod
+    def ignore_unused_fields(cls, value):
+        # 与平台目录工具一致：多余字段没有业务语义，不能影响时钟或伪造返回结果。
+        # 原始参数仍留在私有审计，已接受的调用由空模型序列化为 {}。
+        return {} if isinstance(value, dict) else value
+
+
+def parse_current_time_arguments(raw):
+    # 先保留公共 JSON 语法、重复键和非有限数检查，再丢弃对象中的多余字段。
+    return GetCurrentTimeArguments.model_validate(load_model_json(raw))
 
 
 async def execute_current_time(arguments: GetCurrentTimeArguments):
@@ -34,5 +48,5 @@ def build_current_time_registration():
         return workspace
 
     return RegisteredTool('get_current_time', GetCurrentTimeArguments.__doc__,
-        GetCurrentTimeArguments, prepare, executor=execute_current_time,
+        GetCurrentTimeArguments, prepare, parser=parse_current_time_arguments, executor=execute_current_time,
         progress=ToolProgress(type='thinking', message='正在获取当前时间'))

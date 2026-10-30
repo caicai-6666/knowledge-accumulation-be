@@ -1,6 +1,8 @@
 """使用 LlamaIndex 异步调用 vLLM embedding，供索引与检索复用。"""
 
 import math
+import asyncio
+import socket
 
 import httpx
 from llama_index.embeddings.openai_like import OpenAILikeEmbedding
@@ -107,6 +109,40 @@ class EmbeddingService:
         if any(not text.strip() for text in texts):
             raise ValueError("待生成向量的文本不能为空")
         return await self.model.aget_text_embedding_batch(texts)
+
+    async def diagnose_connection(self) -> dict:
+        """同进程对照系统套接字与事件循环连接；不发送 HTTP 或用户正文。"""
+        host = self.settings.base_url.host
+        port = self.settings.base_url.port or (443 if self.settings.base_url.scheme == 'https' else 80)
+        result = {}
+
+        def connect_socket():
+            with socket.create_connection((host, port), timeout=3):
+                pass
+
+        async def connect_async():
+            _, writer = await asyncio.open_connection(host, port)
+            try:
+                writer.close()
+                await writer.wait_closed()
+            finally:
+                writer.close()
+
+        for name, operation in (
+            ('socket', lambda: asyncio.to_thread(connect_socket)),
+            ('async_socket', connect_async),
+        ):
+            try:
+                await asyncio.wait_for(operation(), timeout=4)
+                result[name] = 'connected'
+                result[name + '_errno'] = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                result[name] = type(error).__name__
+                code = getattr(error, 'errno', None)
+                result[name + '_errno'] = code if type(code) is int else None
+        return result
 
     async def close(self) -> None:
         await self._http.aclose()

@@ -36,12 +36,12 @@ async def run_memory_retrieval(request, *, search, generate, counter, generation
         except Exception:
             return failure('model_unavailable','记忆检索模型暂时不可用，请稍后重试。')
         valid = (response.finish_reason in ('stop','tool_calls') and not response.assistant_message.get('refusal')
-            and response.content in ('',None) and len(response.tool_calls) == 1)
+            and len(response.tool_calls) == 1)
         if valid:
             call = response.tool_calls[0]
             feedback = await execute_memory_retrieval_tool(session, call.name, call.arguments)
         else:
-            feedback = {'status':'error','message':'请提交恰好一个完整的实际工具调用，不追加普通文本。'}
+            feedback = {'status':'error','message':'请提交恰好一个完整且未被拒绝的原生工具调用。'}
         if feedback['status'] == 'error':
             if feedback.get('error_code') in ('query_execution_failed','query_busy'):
                 return failure(feedback['error_code'], feedback['error'])

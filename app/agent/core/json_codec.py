@@ -3,9 +3,54 @@ import json
 from math import isfinite
 from typing import Any, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 Model = TypeVar('Model', bound=BaseModel)
+
+
+class ModelActionRejected(ValueError):
+    """仅传递校验位置提供的安全反馈；此类不维护业务提示文案。"""
+
+    def __init__(self, reason: str, required_action: str):
+        super().__init__(reason)
+        self.reason = reason
+        self.required_action = required_action
+
+
+def model_validation_feedback(error: ValidationError, model: type[BaseModel]) -> ModelActionRejected:
+    """按可信 Schema 格式化字段约束，不带原始输入、任意键名或异常消息。"""
+    issues = error.errors(include_input=False, include_url=False)
+    for issue in issues:
+        specific = issue.get('ctx', {}).get('error')
+        if isinstance(specific, ModelActionRejected):
+            return specific
+    root = model.model_json_schema()
+    details = []
+    for issue in issues[:5]:
+        schema, path = root, []
+        for part in issue['loc']:
+            while '$ref' in schema:
+                schema = root['$defs'][schema['$ref'].rsplit('/', 1)[1]]
+            if isinstance(part, str) and part in schema.get('properties', {}):
+                path.append(part)
+                schema = schema['properties'][part]
+            elif isinstance(part, int) and schema.get('type') == 'array':
+                path.append('[]')
+                schema = schema.get('items', {})
+            else:
+                break
+        rule = {'missing': '缺少必填字段', 'extra_forbidden': '包含未定义字段',
+                'string_type': '需要字符串', 'int_type': '需要整数',
+                'bool_type': '需要布尔值', 'dict_type': '需要对象',
+                'list_type': '需要数组', 'literal_error': '不在允许值中'}.get(issue['type'], '不符合字段约束')
+        # 所有值来自代码中的 Schema；不读取 issue.msg、input 或任意 ctx 文本。
+        constraints = {key: schema[key] for key in ('type', 'enum', 'const', 'minimum',
+            'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength',
+            'minItems', 'maxItems', 'pattern') if key in schema}
+        details.append(('.'.join(path) or '参数对象')+'：'+rule+'；'+
+                       schema.get('description', '')+' '+render_json(constraints))
+    return ModelActionRejected('参数校验未通过：'+'；'.join(details),
+        '按上述字段说明和当前 Schema 补全或修正参数，移除未定义字段；不要编造缺失事实。')
 
 
 def load_model_json(raw: str) -> Any:
@@ -14,20 +59,23 @@ def load_model_json(raw: str) -> Any:
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError('模型 JSON 包含重复字段')
+                raise ModelActionRejected('JSON 对象包含重复字段。', '每个对象字段只保留一次，重新提交完整 JSON；不要追加第二份同名字段。')
             result[key] = value
         return result
 
     def invalid(value):
-        raise ValueError('模型 JSON 不允许非标准数值')
+        raise ModelActionRejected('JSON 包含 NaN 或 Infinity 等非标准数值。', '使用有限 JSON 数字；只有 Schema 允许空值时才可使用 null。')
 
     def finite_float(value):
         number = float(value)
         if not isfinite(number):
-            raise ValueError('模型 JSON 数值超出有限范围')
+            raise ModelActionRejected('JSON 数字超出有限范围。', '改用可表示的有限数值，不能使用无穷大或超大指数绕过范围约束。')
         return number
 
-    return json.loads(raw, object_pairs_hook=unique, parse_constant=invalid, parse_float=finite_float)
+    try:
+        return json.loads(raw, object_pairs_hook=unique, parse_constant=invalid, parse_float=finite_float)
+    except json.JSONDecodeError:
+        raise ModelActionRejected('JSON 语法不完整或不合法。', '提交完整合法的 JSON，使用双引号，不带 Markdown 围栏、注释或尾随逗号。') from None
 
 
 def normalize_model_json(value: Any, schema: dict, *, root: dict | None = None, depth: int = 0) -> Any:
@@ -37,7 +85,7 @@ def normalize_model_json(value: Any, schema: dict, *, root: dict | None = None, 
     返回新容器，不改写原始响应或私有审计。最终合法性仍由原校验器负责。
     """
     if depth > 64:
-        raise ValueError('模型 JSON 嵌套超过兼容转换上限')
+        raise ModelActionRejected('JSON 嵌套过深。', '简化参数层级，按 Schema 提交必要结构，较长内容分次处理。')
     root = schema if root is None else root
     if '$ref' in schema:
         ref = schema['$ref']

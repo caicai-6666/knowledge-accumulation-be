@@ -33,6 +33,12 @@ class QuestionTreeListItem(TreeModel):
     name: str = Field(strict=True, min_length=1, max_length=200, description='问答树名称。')
 
 
+class QuestionTreeListEntry(QuestionTreeListItem):
+    """树列表的活动信息；创建与改名仍使用最小响应。"""
+
+    updated_at: AwareDatetime = Field(description='问答树最后一次持久化更新的 UTC 时间，与列表排序使用同一字段。')
+
+
 class QuestionTree(TreeModel):
     id: TreeID = Field(default_factory=new_tree_id)
     owner_userid: str = Field(strict=True, min_length=1, max_length=128)

@@ -33,7 +33,7 @@ class NodeMessage(TreeModel):
 
 class GenerationPayload(TreeModel):
     # 工程用途只存在私有审计中，不能拼入模型消息。
-    purpose: Literal['main','history_summary','context_compaction','workspace_compaction','external_expert','web_page_refinement','memory_retrieval','file_retrieval'] = 'main'
+    purpose: Literal['main','history_summary','context_compaction','workspace_compaction','external_expert','web_page_refinement','memory_retrieval','file_retrieval','assistant_message_rendering'] = 'main'
     assistant_message: dict[str, JsonValue] | None = None
     raw_response: dict[str, JsonValue] | None = None
     raw_chunks: list[dict[str, JsonValue]] = Field(default_factory=list)

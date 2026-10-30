@@ -4,7 +4,19 @@
 
 个人助理是复杂任务探索的简化使用方式，两者共用 Agent Core、工作区、预算、压缩、问答树和节点持久化。业务差异放在模式包内，Core 不判断 `assistant` / `exploration`。
 
-当前已实现模式提示词、工具组合、上下文资料契约与内部服务工厂；默认提供七个[基本工具](agent-core.md#必要工具)。助理工厂可注入已有 `memory_backend`，复用祖先记忆检索及查看；[定时任务工具](../../../capability/application/assistant-reminders.md)已实现；个人资料和外部日程系统尚未接入。助理生成使用[最近摘要边界的局部上下文](assistant-memory.md)。模式装配本身不新增 HTTP 或 SSE。另已准备[助理、任务与提醒存储](../../data/assistant-storage.md)及[队列单次消费基础设施](../../../capability/infrastructure/assistant-queue.md)，[助理消费与交付](../../../capability/application/assistant-consumption.md)已实现，默认关闭；提醒调度和[空闲心跳调度](../../../capability/application/assistant-heartbeat.md)均已接入。
+当前已实现模式提示词、工具组合、上下文资料契约与内部服务工厂；助理默认提供七个[基本工具](agent-core.md#必要工具)，探索另加 emit_progress，共八个；可选工具由宿主注入。助理工厂可注入已有 `memory_backend`，复用祖先记忆检索及查看；[定时任务工具](../../../capability/application/assistant-reminders.md)已实现；[员工事实背景与私有画像提示词](assistant-personal-context.md)已接入，画像查询、分页及逐条增删均已接入，外部日程系统尚未接入。助理生成使用[持久化压缩窗口与当前工作区](assistant-memory.md)。模式装配本身不新增 HTTP 或 SSE。另已准备[助理、任务与提醒存储](../../data/assistant-storage.md)及[队列单次消费基础设施](../../../capability/infrastructure/assistant-queue.md)，[助理消费与交付](../../../capability/application/assistant-consumption.md)已实现，默认关闭；提醒调度和[空闲心跳调度](../../../capability/application/assistant-heartbeat.md)均已接入。
+
+---
+
+## 探索角色：知更
+
+exploration 的对话身份为“知更”，日常昵称“小知”，定位是有好奇心、有判断力、有耐心的探索伙伴。身份与行为统一维护在 [role.py](../../../../app/agent/exploration/prompt/role.py) 的 `EXPLORATION_ROLE_PROMPT`，沿现有模式工厂组合进 Core 的系统提示词，不新增提示词模块，也不改变个人助理身份。
+
+角色通过五项实际行为体现：解释线索为什么值得追查；给出有依据且可修正的判断；区分事实、推断与未知；尊重用户转换方向并基于可见历史接回线索；温和克制、不机械夸奖或靠头衔和篇幅制造权威感。提示词保留任务目标、输入来源、输出方式、证据不足和能力限制，以及有条件的表达示例，避免模型照搬示例中的材料事实。
+
+中途和最终输出继续遵守 `emit_progress` / `finish_task` 的既有契约。该修改只定义模型角色，不修改前端组件的显示名称；本项目未提供独立的探索角色显示名称配置。提示词在 Core 创建时装配，已运行的服务需重新加载后采用新角色。
+
+2026-10-28 使用实际 Core 配合模型替身验证：发往客户端的 system 消息包含“知更”“小知”和五项行为；个人助理的系统提示词未注入该角色，最终输出调用正常。未进行真实模型风格效果评测，未重启服务。
 
 ---
 
@@ -18,16 +30,23 @@ app/agent/
 │   ├── __init__.py               # 显式导出工厂及资料契约
 │   ├── factory.py                # 助理 Core 与持久化服务装配
 │   ├── context.py                # 个人背景、偏好、相关记忆的本轮注入
+│   ├── rendering.py              # 四类任务的上下文展示
+│   ├── message_rendering/        # 单次正文转换子智能体及工具钩子
 │   ├── prompt/
 │   │   ├── __init__.py           # 组合通用交互、工作区和助理角色
 │   │   ├── role.py               # 个人工作辅助规则
+│   │   ├── personal_information.py # 员工事实背景使用规则
+│   │   ├── portrait.py           # 助理私有画像维护规则
 │   │   └── task.py               # 四类来源任务与通知选择
 │   └── tool/
 │       ├── __init__.py           # 基本工具与助理工具组合入口
 │       ├── finish_task.py        # 继承最终输出契约，增加条件通知
 │       ├── send_assistant_message.py # 独立助理间文字通信工具
-│       ├── search_assistants.py   # 按姓名关键词建立独立查询结果集
+│       ├── search_assistants.py   # 浏览全部或按姓名、部门建立独立查询结果集
 │       ├── view_assistant_query.py # 按查询 ID 和页码查看 userid/用户名
+│       ├── portrait_contract.py  # 画像参数和事务契约
+│       ├── portrait_query.py     # 画像检索与分页
+│       ├── portrait_mutation.py  # 画像逐条新增与删除
 │       └── reminder.py           # 当前助理的查看、创建、删除提醒
 └── exploration/
     ├── __init__.py
@@ -46,7 +65,7 @@ app/agent/
         └── finish_task.py        # 继承最终输出契约，交付探索最终答复
 ```
 
-未来实际实现资料或记忆工具时，在对应 `tool/` 下按业务能力增加模块，由 `build_registrations()` 导出；助理的普通扩展集合仍为空，两个模式分别继承 Core 抽象最终输出契约，并在组合点显式传入具体实例；助理扩展 send_to_user；消费宿主按任务注入 search_assistants、view_assistant_query、send_assistant_message 及三个提醒工具，探索返回 `emit_progress` 注册项。跨模式复用的业务能力确定后再抽取，数据库和外部服务访问仍放在现有 repository / infrastructure / service 中，模型工具只是适配入口。
+未来实际实现资料或记忆工具时，在对应 `tool/` 下按业务能力增加模块，由 `build_registrations()` 导出；助理的普通扩展集合仍为空，两个模式分别继承 Core 抽象最终输出契约，并在组合点显式传入具体实例；助理扩展 send_to_user；消费宿主按任务注入 search_assistants、view_assistant_query、send_assistant_message、三个提醒工具及画像查询和增删工具，探索返回 `emit_progress` 注册项。跨模式复用的业务能力确定后再抽取，数据库和外部服务访问仍放在现有 repository / infrastructure / service 中，模型工具只是适配入口。
 
 导入上述包不加载 `.env`，不创建 HTTP 客户端、数据库连接或后台任务。模式工厂在未传 options 时读取[文件与页面运行配置](image-reading.md#运行配置)，构造 Core 不立即打开连接；如启用 [tool-tag](../../../capability/infrastructure/tool-tag.md)，仅此时加载所选静态格式文件，两模式复用同一加载规则。外部传入的模型客户端由宿主管理，自建客户端沿用 Core 的关闭规则。
 
@@ -54,12 +73,16 @@ app/agent/
 
 ## 工厂与调用
 
+个人助理提示词不规定面向钉钉的正文排版，不限制 Markdown 标题、表格、加粗或链接等表达形式。`finish_task` 执行后、提交前通过其独立注册的钩子完成转换；渠道适配由[单次转换子智能体](assistant-message-rendering.md)承担，通过[正文渲染钩子](../../../capability/application/assistant-consumption.md#最终正文渲染钩子)调用，默认启用 medium 原生推理与 JSON Schema 正文输出。转换结果替代已接受 `finish_task.content`，经普通提交同步写入答案和后续上下文；钉钉使用现有 Markdown 消息接口。
+
 两个模式均导出：
 
 | 接口 | 行为 |
 | --- | --- |
 | `build_core(settings, client=..., counter=..., options=..., tools=...)` | 返回配置了该模式角色及工具集合的通用 Core，适合内存宿主。 |
 | `build_service(nodes, settings, ..., tools=..., tool_loader=...)` | 返回复用现有节点仓库的 QuestionAgentService，绑定对应树用途。 |
+
+助理 `build_core` / `build_service` 另接收 `finish_hooks=()`，只绑定该实例的 finish_task；独立工厂默认不添加转换器，应用入口默认装配转换钩子，见[正文转换](assistant-message-rendering.md)。
 
 两种模式的 `build_service` 均可通过 `platform_directory` 注入只读平台目录，按任务装配[子管理平台查看工具](sub-management-platform.md)。助理 `build_service` 另接收 `context_loader`。两类 loader 均接受本次可信 `AuthenticatedUser` 的深拷贝，支持同步返回或异步返回：
 
@@ -90,9 +113,13 @@ result = await service.generate(
 
 ## 上下文与提示词
 
-共用 `build_tree_context` 只投影当前父链的摘要、公开问答、中途输出及对应工作区，不加载其他分支或原生推理。模式构建器在该结果上附加资料，不另造树加载机制。
+探索和个人助理统一通过 Core 注入[公司背景与默认指代](company-background.md)，无明确其他指代时将“公司”理解为现象创新（深圳）科技有限公司；公开介绍不替代内部实时资料。
+
+共用 `build_tree_context` 只投影当前父链的摘要、公开问答、中途输出及对应工作区，不加载其他分支或原生推理。探索恢复选中快照；助理使用专用持久化压缩窗口和当前工作区加载路径，之后仍复用公开投影。模式构建器在该结果上附加资料。
 
 AssistantContext 分为 `profile`、`preferences`、`relevant_memories`；每个 ContextMaterial 包含 `content`、`source`、`status`，默认 `unverified`。它们不包含权限覆盖字段，用户陈述不能自动变成已确认事实。
+
+消费宿主每轮通过 `AssistantEmployeeContextLoader`提供当前员工最小事实背景，系统提示词另明确每个助理独立记录所属用户本人及其他用户助理的偏好，以 userid 统一关联目标、逐条保存，不为其他员工另建画像；画像查询、可折叠分页及检查点同事务增删已接入。加载来源、对象区分和候选契约统一见[个人信息与画像](assistant-personal-context.md)。
 
 个人资料与内部调用方的当前资料通过 `ContextInjection.supplemental` 保存，主循环在“上下文资料”文本分区作为普通 user 数据展示，保留来源和确认状态，不提升为 system/tool 指令；不自动登记记忆，也不自动修改权威工作区。空个人资料保持原始输入不变。任务前摘要完成后仍保留本轮个人资料，不因重建 ContextInjection 丢失。该内部扩展点不是探索 HTTP 的额外用户输入字段。
 
@@ -106,7 +133,7 @@ Core 接收有效 `system_prompt`、ToolRegistry 及可选请求提示工厂。�
 
 RegisteredTool 仍绑定名称、描述、参数模型、纯预演 handler 和可选 parser，新增可选 `executor(arguments)`。handler 只在工作区副本上预演，不访问外部系统或修改共享状态；executor 在参数、状态和候选工作区验收后读取资料，支持异步返回。
 
-所有实际参数 Schema 的属性说明继续递归校验。执行器统一返回 `ToolExecutionResult`，不再接受任意 JSON 作为成功结果；`ToolExecution` 只用于携带提交后的本地回调。注册必须声明返回内容类别，可折叠工具还需绑定页面解析器，完整定义见[公共工具契约](tool-content-contract.md)。普通读取可返回：
+所有实际参数 Schema 的属性说明继续递归校验。执行器统一返回 `ToolExecutionResult`，不再接受任意 JSON 作为成功结果；`ToolExecution` 携带提交后的本地回调，并允许成功输出工具通过 `output` 提供最终正文。每个注册项的独立 `hooks` 在执行后、提交前顺序运行，详见[钩子契约](agent-core.md#工具执行后钩子)。注册必须声明返回内容类别，可折叠工具还需绑定页面解析器，完整定义见[公共工具契约](tool-content-contract.md)。普通读取可返回：
 
 ```python
 ToolExecutionResult(status='succeeded', tool_result={
@@ -116,7 +143,7 @@ ToolExecutionResult(status='succeeded', tool_result={
 
 结果随 assistant/tool 对及工作区成功提交后进入下一轮上下文。`failed` 反馈只存在于连续纠错轨迹；成功后整段清除。`unknown`、异常、取消、非法结果或提交失败停止，不伪造成功或自动重放。原始生成完整保存在私有记录中。
 
-当前 executor 入口用于资料读取。外部写操作与本地节点事务不具备原子保证，本轮不接入此类动作；后续若需要维护外部业务状态，应先明确幂等与提交结果不确定时的处理契约。
+executor 可封装资料读取、发送、提醒和画像操作；外部写操作与本地节点事务不自动具备原子保证。当前发送通过交付账本与 after_commit 推进，画像和提醒按各自事务契约提交；扩展副作用必须明确幂等与提交结果不确定时的处理。
 
 ---
 
@@ -140,7 +167,7 @@ ToolExecutionResult(status='succeeded', tool_result={
 
 ## 注册中心原件依赖
 
-两种模式的`build_service(..., registry_files=...)`注入共享下载客户端，任务执行时通过`access_token=SecretStr(...)`传入已认证用户的Bearer。查看器按本轮绑定，PDF模型与上传附件共用LRU，任务结束清理凭据；详见[注册中心文件图像查看](registry-file-reading.md)。
+两种模式的`build_service(..., registry_files=...)`注入共享下载客户端，客户端读取共享平台会话，`registry_file_access` 负责使用前的 SQL 权限校验；任务执行时绑定可信 userid，不依赖用户网页登录或用户 Bearer。查看器按本轮绑定，PDF模型与上传附件共用LRU，任务结束释放资源；详见[注册中心文件图像查看](registry-file-reading.md)。
 
 
 ---
@@ -208,3 +235,6 @@ AGENT_PROGRESS_REMINDER_INTERVAL_SECONDS=60
 | `tests/fixtures/agent_core_contract.json`、`tests/fixtures/core-rendering/messages.json`、`tests/fixtures/core-rendering/messages.md` | 更新公共工具与提示词快照；公共 Core 请求样例不再带探索开场提醒。 |
 
 2026-10-24 隔离回归：`python -m unittest discover -s tests` 共 1085 项，923 项通过，162 项因未配置独立 MySQL/MyVector 环境跳过，无失败。模式专项 7 项通过；包含此前提醒与 SSE 测试的完整回归仍通过。相关六份文档的 124 个相对链接/锚点与 `git diff --check` 通过。未调用真实模型、共享数据库或中间件，未修改实际 `.env` 或其他项目，未新增助理 HTTP 接口。
+
+
+2026-10-27 个人助理排版（历史方案，现已由[执行后正文转换](assistant-message-rendering.md)取代）：四类任务的系统提示均包含钉钉单聊风格，探索模式与最终工具Schema未变。12项个人背景专项通过，全量178项中167项通过、11项数据库测试跳过。真实在线模型在合成表格比较任务中输出同字段、同顺序的纵向条目，保留金额、单位及缺失信息；未发送真实钉钉消息。输入、实际提示、原始生成和验证见[排版实验](../../../../experiment/assistant-output-style/20261027-dingtalk-vertical/analysis.md)。本次仅修改提示与文档，没有新增格式转换或校验拒绝。

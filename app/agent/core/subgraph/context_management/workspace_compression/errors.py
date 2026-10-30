@@ -3,3 +3,8 @@
 
 class WorkspaceEditRejected(ValueError):
     """旧工作区仍为权威状态，主循环可提示模型有限次调整操作。"""
+
+    def __init__(self, message, *, reason=None, required_action=None):
+        super().__init__(message)
+        self.reason=reason
+        self.required_action=required_action

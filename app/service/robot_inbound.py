@@ -1,4 +1,4 @@
-"""整条机器人消息校验、可靠暂存及入队；不执行模型，不创建用户登录或权限。"""
+"""整条机器人消息校验、首次员工初始化、可靠暂存及入队；不执行模型或创建用户登录。"""
 import asyncio
 from datetime import timedelta
 import hashlib
@@ -13,6 +13,7 @@ from app.model.assistant_queue import AssistantUpload, PublishAssistantTask
 from app.model.question_file import UploadedFile
 from app.model.question_tree import utc_now
 from app.model.robot_inbox import RobotInboxFile, RobotInboxRecord
+from app.service.employee_onboarding import EmployeeOnboardingService
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,11 @@ async def _finish_io(awaitable):
 
 
 class RobotInboundService:
-    def __init__(self, settings, repository, employees, queue, robot, files, *, clock=utc_now):
+    def __init__(self, settings, repository, employees, queue, robot, files, *, clock=utc_now,
+                 onboarding: EmployeeOnboardingService | None = None):
         self.settings, self.repository, self.employees = settings, repository, employees
         self.queue, self.robot, self.files, self.clock = queue, robot, files, clock
+        self.onboarding = onboarding
         self._task = None
         self._closed = False
         self._active = set()
@@ -58,6 +61,9 @@ class RobotInboundService:
         parts = [part for part in message.parts if part.type != 'text']
         # 先检查整个列表，再下载任何附件；不能把剩余文字或合法文件单独入队。
         for index, part in enumerate(parts):
+            if part.type == 'unsupported':
+                return await self._reject(record, '这条消息的类型暂不支持，无法读取内容。'
+                    '请改用文字、图片或 PDF 后重新发送整条消息。')
             if not supported(part):
                 return await self._reject(record, f'{_label(part,index)}：暂不支持该文件类型。'
                     '本条消息未接收，请调整后重新发送整条消息。')
@@ -65,7 +71,13 @@ class RobotInboundService:
         if len(parts) > limits.max_files:
             return await self._reject(record, '本条消息附件数量超出限制，请减少附件后重新发送整条消息。')
         if await self.employees.find_by_userid(message.userid) is None:
-            return await self._reject(record, '账号资料尚未准备好，请先登录知识平台，再重新发送整条消息。')
+            if self.onboarding is None:
+                raise RuntimeError('机器人首次员工初始化服务未装配')
+            # userid 只来自已验证企业和机器人的 Stream；复用网页登录的初始化锁及事务。
+            # 失败保留 received，不下载附件、不发布任务、不确认接收，允许原消息重推恢复。
+            user = await self.onboarding.initialize(message.userid)
+            if user.userid != message.userid:
+                raise ValueError('初始化员工与机器人发送者不一致')
         prepared = []
         for index, (part, entry) in enumerate(zip(parts, record.files, strict=True)):
             try:

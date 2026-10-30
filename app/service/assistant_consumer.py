@@ -16,6 +16,12 @@ from app.repository.assistant_runtime import task_node_id
 from app.repository.node_persistence import MySQLNodeRepository
 from app.service.question_file import QuestionFileService
 from app.infrastructure.assistant_queue import AssistantQueueError
+from app.service.assistant_personal_context import AssistantEmployeeContextLoader
+from app.service.question_agent import ModelPreparationUnavailable
+from app.repository.assistant_portrait import AssistantPortraitRepository
+from app.agent.assistant.tool.portrait_query import (build_portrait_query_pool, PortraitQueryViewer,
+    build_search_portraits_registration, build_view_portrait_query_registration)
+from app.agent.assistant.tool.portrait_mutation import PortraitMutationTools
 
 logger=logging.getLogger(__name__)
 
@@ -90,7 +96,7 @@ class AssistantConsumer:
                 await saving
                 raise
             record=await self.repository.bind_file(record.task_id,TaskFileBinding(source=source,attachment=reference))
-        return await self.repository.update(record.task_id,processing_status='prepared')
+        return await self.repository.update(record.task_id,processing_status='prepared',error_code=None)
 
     async def _node_exists(self,record):
         async with self.repository.trees._transaction() as cursor:
@@ -102,16 +108,16 @@ class AssistantConsumer:
         record=(await self.repository.receive(assistant,lease)).record
         if record.processing_status=='completed':return await self.delivery.flush(record.task_id)
         if record.processing_status=='failed':
-            await self.delivery.flush(record.task_id)
-            raise AssistantTaskBlocked()
+            # failed 是业务终态；确认消费仅释放队列，不改成成功，也不重放模型或发送动作。
+            return True
         nodes=MySQLNodeRepository(self.repository.trees,commit_hook=self.repository.commit_hook(record.task_id))
         if await self._node_exists(record):
             restored=await nodes.load_node(record.tree_id,user.userid,task_node_id(record.task_id))
-            # 不重放已有执行。进程崩溃遗留的 generating 节点显式失败，等待受控处理。
+            # 不重放已有执行。进程遗留的未完成节点显式失败后跳过，避免永久占住队列。
             if restored.node.status=='generating':await nodes.fail_task(record.tree_id,user.userid,restored.node.id)
             await self.repository.update(record.task_id,node_id=restored.node.id,processing_status='failed',
                                          finished_at=utc_now(),error_code='generation_interrupted')
-            raise AssistantTaskBlocked()
+            return True
         record=await self._prepare_files(record,lease)
         async def recipient_exists(userid):
             return userid!=user.userid and await self.employees.find_by_userid(userid) is not None and await self.repository.recipient_enabled(userid)
@@ -120,13 +126,22 @@ class AssistantConsumer:
         reminder_tools=ReminderTools(self.repository.reminders,user.userid)
         assistant_directory=build_assistant_query_pool(capacity=self.settings.directory_cache_capacity,
             page_size=self.settings.directory_page_size)
+        portrait_queries=build_portrait_query_pool(user.userid, capacity=self.settings.directory_cache_capacity,
+            page_size=self.settings.directory_page_size)
+        portrait_repository=AssistantPortraitRepository(self.repository.trees)
         tools=(send_registration(recipient_exists=recipient_exists,flush=flush),
                build_search_assistants_registration(pool=assistant_directory,employees=self.employees,
                    max_results=self.settings.directory_max_results),
                build_view_assistant_query_registration(AssistantQueryViewer(assistant_directory)),
+               build_search_portraits_registration(pool=portrait_queries, owner_userid=user.userid,
+                   repository=portrait_repository,
+                   max_results=self.settings.directory_max_results),
+               build_view_portrait_query_registration(PortraitQueryViewer(portrait_queries)),
+               *PortraitMutationTools(portrait_repository,user.userid).registrations(),
                *reminder_tools.registrations())
         agent=self.agent_factory(nodes=nodes,file_service=_PreparedFiles(record,nodes,self.files),tools=tools,
-                                 prompt_builder=task_prompt(record.task_type))
+                                 prompt_builder=task_prompt(record.task_type),
+                                 context_loader=AssistantEmployeeContextLoader(self.employees))
         async def registered(restored,summary_id):
             await self.repository.update(record.task_id,node_id=restored.node.id,processing_status='running')
         try:
@@ -142,11 +157,27 @@ class AssistantConsumer:
                 question=task_question(record,user_name=user.name or user.userid,source_name=source_name),attachments=record.attachments,
                 context_injection=source,
                 thinking_effort=self.settings.thinking_effort,on_registered=registered)
+        except ModelPreparationUnavailable:
+            # 仅接受服务明确保证“尚未执行”的故障；保留 prepared，不 ack、不创建失败节点。
+            stored=await self.repository.get_task(record.task_id)
+            if (stored is None or stored.record.processing_status!='prepared'
+                    or stored.record.node_id is not None or await self._node_exists(stored.record)):
+                raise AssistantTaskBlocked() from None
+            await self.repository.update(record.task_id,error_code='model_preparation_unavailable')
+            raise
+        except Exception as error:
+            # 仅当失败终态已可靠落盘才允许确认。取消、数据库状态不明等不能靠猜测丢弃。
+            stored=await self.repository.get_task(record.task_id)
+            if stored is None or stored.record.processing_status!='failed':raise
+            logger.warning('助理任务执行失败，跳过本任务并继续消费：error_type=%s',type(error).__name__)
+            return True
         finally:
             reminder_tools.close()
             assistant_directory.close()
+            portrait_queries.close()
             await agent.close()
         latest=(await self.repository.get_task(record.task_id)).record
+        if latest.processing_status=='failed':return True
         if latest.processing_status!='completed':raise AssistantTaskBlocked()
         return await self.delivery.flush(record.task_id)
 
@@ -157,10 +188,13 @@ class AssistantConsumer:
             if user is None:return None
             assistant=await self.repository.ensure(userid)
             if not assistant.enabled:return None
-            # 先恢复已完成任务的交付和 ack，不因发送失败或回执丢失重新调用模型。
+            # 恢复两个终态的 ack；成功任务仍须可靠交付，失败任务直接跳过、不重放任何动作。
             for stored in await self.repository.awaiting_ack(userid):
-                if not await self.delivery.flush(stored.record.task_id):return None
-                if stored.lease is None:raise AssistantTaskBlocked()
+                failed=stored.record.processing_status=='failed'
+                if not failed and not await self.delivery.flush(stored.record.task_id):return None
+                if stored.lease is None:
+                    if failed:continue  # 缺凭证时交由正常领取取得当前租约。
+                    raise AssistantTaskBlocked()
                 try:
                     await self.queue.acknowledge(stored.lease)
                 except AssistantQueueError as error:
@@ -173,13 +207,18 @@ class AssistantConsumer:
 
     async def _worker(self,userid):
         while not self._closed and userid in self._eligible:
+            delay=self.settings.poll_seconds
             try:
                 async with self._slots:
                     await self.consume_once(userid)
             except asyncio.CancelledError:raise
+            except ModelPreparationUnavailable:
+                # 等待发生在并发槽与用户锁之外，其他用户不必等待本任务的退避。
+                delay=self.settings.model_retry_seconds
+                logger.warning('助理模型暂不可用，任务尚未执行，保留待重试：retry_seconds=%s',delay)
             except Exception as error:
                 logger.warning('助理消费未完成，将重新检查：error_type=%s',type(error).__name__)
-            await asyncio.sleep(self.settings.poll_seconds)
+            await asyncio.sleep(delay)
 
     async def _run(self):
         while not self._closed:
