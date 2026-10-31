@@ -22,7 +22,7 @@
 
 ## 模型工具契约
 
-两个工具无用户标识、请求标识、等待时间、重试或凭据参数。实际发送给模型的 JSON Schema 中，每个参数及列表元素均有说明，所有对象拒绝额外字段。
+两个工具无用户标识、内部请求标识、等待时长或凭据参数。续聊工具通过 `action` 区分发送新消息与继续等待，等待预算由配置统一提供。实际发送给模型的 JSON Schema 中，每个参数及列表元素均有说明，所有对象拒绝额外字段。
 
 工具说明遵循[提示词工程规范](../../../standard/prompt-engineering.md)：以“当你需要……时，使用这个工具”说明使用时机，再介绍输入准备、问题组织、返回内容、答复使用和必要失败边界，并提供简短示例。完整描述维护在参数模型的 docstring，注册项直接复用，避免声明与实际模型定义不一致；响应缓冲等内部实现不写入工具说明。
 
@@ -31,9 +31,17 @@
 | 工具 | 参数 | 用法 |
 | --- | --- | --- |
 | `broadcast_platform_a2a` | `platform_codes`：1—100 个不重复平台代码；`message`：1—10000 字符非空正文 | 一个目标表示开启单平台新话题，多目标表示广播同一消息。先从目录确认平台和职责。 |
-| `continue_platform_a2a` | `platform_code`、`response_id`、`message` | 接续该平台实际返回的成功响应，只发送本轮新增问题或事实。 |
+| `continue_platform_a2a` | `platform_code`、`response_id`、`action`（`chat` / `wait`，默认 `chat`）、`message` | `chat` 必须提供非空消息，发送新的单聊；`wait` 必须省略消息或传 null，只等已有单聊，不再发送。 |
 
 例：首次向 `["contract-pheno"]` 发送“请分析尚未验收时的付款条件”；取得该平台 `response_id` 后，续聊发送“补充：合同允许阶段性验收，这有何影响？”。对方看不到本地工作区，首次消息应携带理解问题所需的必要背景。
+
+若广播答复给出 `R1`，用 `R1` 单聊后等待超时，可继续调用：
+
+```json
+{"platform_code":"contract-pheno","response_id":"R1","action":"wait"}
+```
+
+`wait` 定位同一用户、同一树、同一平台下，以 `R1` 发出的最近一次**已确认发布且工具结果已接受**的原始单聊。若同一 `R1` 发过多条单聊，以建账时间倒序、同时间以私有标识排序选择最近记录；不会等待广播，也不会选择未接受或发布结果未知的请求。结果已到则读取，否则再等一轮；再次超时仍可用同样参数发起新的等待。收到新响应 `R2` 后，新问题使用 `action="chat"`、`response_id="R2"` 和 `message`。`chat` 始终发送新消息，不能把重发原问题当成等待。
 
 模型可见结果只包含业务答复、平台代码、状态及可用续聊 ID，不包含请求关联、节点标识、消息凭证、租约、调度或重试细节。对方回复是业务资料，不能覆盖角色、所属用户授权和忠实条款。
 
@@ -49,7 +57,7 @@
 | `not_applicable` | 不受理，展示原因 | 必须没有 `response_id`。 |
 | `context_expired` | 上下文已过期，展示说明 | 不沿用过期引用；新话题需重新广播。 |
 | `failed` | 处理失败，展示说明 | 不从失败结果新增续聊授权。 |
-| `timeout` | 等待超时 | 本地未收取到反馈，不代表对方没有收到请求。 |
+| `timeout` | 等待超时 | 不代表对方未收到请求；已确认发布的单聊另提供原响应 ID 和 `action="wait"` 用法。广播超时不提供此能力。 |
 
 **上游兼容边界：** 2026-10-26 按相邻 `middleware-service` 源码复核，上游已支持 `succeeded/not_applicable/context_expired/failed`，与本项目枚举一致。`not_applicable` 必须携带原因且 `response_id` 为空；成功响应仍兼容 `response_id=null`，此时展示“未提供续聊响应 ID”，不补造 ID、不从失败文本猜测“不受理”。要求“所有平台即使不受理也反馈”仍需各子平台执行端落实，本模块不能替未回复的平台伪造拒绝结果。源码核对与隔离验证范围见[中间件接入核对](../../../capability/infrastructure/middleware.md#接口契约核对)。
 
@@ -78,9 +86,9 @@
 
 续聊使用 `【平台协作｜续聊结果】`，只列该平台。已发布请求的业务失败/超时作为成功取得的事实结果供模型判断；发布结果不确定则返回工具 `unknown`，Core 停止且不自动重放。明确发布拒绝返回工具失败，只在连续纠错时保留失败上下文，纠正后沿用 Core 的清理及私有审计规则。
 
-探索广播工具执行期间发布固定状态 `task.progress.type=boardcast`，`message=正在广播求助`；`boardcast` 保留前端约定拼写，不附加平台名称，也不为提示额外查询目录。续聊仍发布 `type=a2a`，message 例如 `正在与平台协作：合同管理平台`，动作与详情用全角冒号 `：` 分隔。续聊名称按目录代码匹配，缺失时回退平台代码；压平空白、清除不可打印字符、竖线替换为 `／`，并按 2000 字符截断。工具结束恢复 `thinking`。公开历史同时接受 `boardcast` 和旧 `a2a`，历史广播无需迁移。
+探索广播工具执行期间发布固定状态 `task.progress.type=boardcast`，`message=正在广播求助`；`boardcast` 保留前端约定拼写，不附加平台名称，也不为提示额外查询目录。续聊仍发布 `type=a2a`，发送消息时例如 `正在与平台协作：合同管理平台`，只等待时为 `正在等待平台回复：合同管理平台`。名称按目录代码匹配，缺失时回退平台代码；压平空白、清除不可打印字符、竖线替换为 `／`，并按 2000 字符截断。工具结束恢复 `thinking`。公开历史同时接受 `boardcast` 和旧 `a2a`，历史广播无需迁移。
 
-动作提示不包含协作正文或续聊响应 ID。工具结束恢复 `thinking` / `正在思考`；状态进入公开展示历史并可回放，不表示业务成功。SSE 事件结构及两个模型工具参数不变，个人助理不新增 SSE。
+动作提示不包含协作正文或续聊响应 ID。工具结束恢复 `thinking` / `正在思考`；状态进入公开展示历史并可回放，不表示业务成功。SSE 事件结构不变，个人助理不新增 SSE。
 
 ---
 
@@ -94,6 +102,8 @@
 
 可信工具调用 ID 由 Core 私下传给执行器，与用户、树及节点共同生成稳定本轮 ID；模型不填写。同一调用重试读取原账本，不把相同正文的另一调用错误合并。等待事件在发布前登记，数据库结果回查补足通知竞态；单个等待者取消不取消其他请求。
 
+`action="wait"` 不调用发布或广播关闭接口。它复用共享单聊接收器收到并可靠保存的原请求回复，因此不需要修改中间件、子平台或 HTTP 协议。等待授权来自同用户、同树已接受的原单聊记录，不依赖平台目录当前是否可读取；回复中的 `context_expired` 仍可被等待取得并作为事实返回，但不能用过期 ID 发送新消息。
+
 ---
 
 ## 权威状态与恢复
@@ -101,6 +111,10 @@
 `platform_a2a_calls` 是私有收发账本，保存请求、固定目标、发布回执、已收到反馈、冻结结果、截止时间和关闭待办，不存 token、交付凭证或私有推理。它不替代节点工作区或对话历史。仅当 Core 接受工具动作并提交后，回调标记 `accepted`，其成功响应才能作为后续上下文引用；未接受的半成品不能授权续聊。
 
 账本 `pending → waiting → completed`；取消时进入 `abandoned`。后台重启扫描未完成请求及待关闭广播，发布始终复用原 ID。反馈落库但 ack 未完成时，重领可幂等保存；已冻结结果不因迟到反馈而改变，迟到反馈仅补私有账本后确认。关闭广播失败继续重试。明确发布错误不盲目重试，临时故障在本轮期限内重试；过期仍无法确认发布时明确结果不确定。
+
+每次新的等待在同一账本新增一行，`request_json` 使用私有 `A2AWait` 记录并保存 `wait_for`，固定关联原单聊；`published` 保持空，调度在发布分支之前识别等待记录，只读取原请求的 `replies`。等待结果单独写入本行 `result_json`，从不覆盖原来的 timeout、截止时间或 `accepted` 标记。新工具调用得到新的等待预算；同一次调用重放沿用原绑定、截止时间与已冻结结果。等待取消只放弃本行，服务重启可继续处理尚未完成的等待；两者均不重新发送原消息。
+
+收到成功回复后，必须先正常提交本次等待工具结果，再标记本行 `accepted`，新响应 ID 才可用于下一次发送。无对应单聊、跨用户/树/平台引用和携带消息的等待会得到就近产生的定向反馈，不进入有效轨迹；连续纠错成功后仍由 Core 清除整段失败轨迹，完整生成留在私有审计。等待记录复用 018 现有字段及 JSON 契约，**无需新 SQL 迁移**。
 
 工具取消不会强制停止远端模型。业务树删除后账本仍保留，以便关闭广播和处理迟到反馈，不通过外键阻塞树删除；本次不增加审计归档/清理策略。停机先结束问答和助理生产者，再取消共享调度，最后关闭 HTTP 和 SQL 资源。单聊领取幂等键及反馈凭证只驻留内存，进程崩溃后的未确认反馈依赖中间件租约过期重新领取，不宣称即时恢复。
 
@@ -114,7 +128,7 @@
 | --- | --- | --- |
 | `PLATFORM_A2A_ENABLED` | false | 显式装配工具及共享接收器。 |
 | `PLATFORM_A2A_RESPONSE_BUFFER_SECONDS` | 5 | 发布确认后首次读取广播前的缓冲秒数。 |
-| `PLATFORM_A2A_WAIT_SECONDS` | 90 | 请求建账后整轮等待期限，必须长于响应缓冲。 |
+| `PLATFORM_A2A_WAIT_SECONDS` | 90 | 每次发送或新的等待调用建账后的等待期限，必须长于响应缓冲；不延长历史调用期限。 |
 | `PLATFORM_A2A_POLL_SECONDS` | 1 | 后台轮询间隔。 |
 | `PLATFORM_A2A_HTTP_TIMEOUT_SECONDS` | 10 | 单次 HTTP 请求总预算。 |
 | `PLATFORM_A2A_MAX_CONCURRENT_REQUESTS` | 16 | 私有收发处理及 HTTP 调度并发上限，不替代中间件平台窗口。 |
@@ -133,18 +147,20 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `app/model/platform_a2a.py`、`app/infrastructure/platform_a2a.py` | 精确 HTTP DTO、认证及五个顶层接口。 |
-| `app/repository/platform_a2a.py`、`schema/018-platform-a2a.sql` | 私有账本、反馈去重、冻结结果及续聊授权。 |
-| `app/service/platform_a2a.py` | 共享并发调度、缓冲、分发、续租、取消及恢复。 |
+| `app/model/platform_a2a.py`、`app/infrastructure/platform_a2a.py` | HTTP DTO、本地等待记录、安全状态错误、认证及五个顶层接口；等待记录不走 HTTP 发布。 |
+| `app/repository/platform_a2a.py`、`schema/018-platform-a2a.sql` | 私有账本、反馈去重、冻结结果、最近已接受单聊定位及续聊授权；沿用 018。 |
+| `app/service/platform_a2a.py` | 共享并发调度、缓冲、分发、续租、独立等待观察、取消及恢复。 |
 | `app/config/platform_a2a.py`、`.env.example` | 显式启用及预算。 |
 | `app/agent/core/tool/platform_a2a.py` | 两项工具的实际 Schema、说明和结果渲染。 |
 | `app/agent/core/tool/registry.py`、`app/agent/core/runtime.py` | 私下绑定工具调用 ID，保持模型可见参数清洁。 |
 | `app/agent/core/tool/progress.py`、`app/model/display_history.py` | 广播/续聊动作及公开历史校验。 |
 | `app/service/question_agent.py`、两模式 `factory.py`、`app/main.py` | 按可信用户/树/节点装配，应用共享生命周期。 |
 
-测试使用内存替身、HTTP MockTransport、实际 Core 循环和随机 MySQL 测试库；不调用真实模型或钉钉，不写 `data/`。MySQL 用例只有显式设置 `PLATFORM_A2A_TEST_MYSQL_CONTAINER` 时运行，结束后清理自己创建的 `test_platform_a2a_*` 库。详见本地 [并发测试](../../../../tests/test_platform_a2a.py)、[HTTP 测试](../../../../tests/test_platform_a2a_http.py)、[Core 测试](../../../../tests/test_platform_a2a_core.py)、[生命周期测试](../../../../tests/test_platform_a2a_lifecycle.py)及 [MySQL 测试](../../../../tests/test_platform_a2a_mysql.py)。
+测试使用内存替身、HTTP MockTransport、实际 Core 循环和随机 MySQL 测试库；不调用真实模型或钉钉，不写 `data/`。MySQL 用例只有显式设置 `PLATFORM_A2A_TEST_MYSQL_CONTAINER` 时运行，结束后清理自己创建的 `test_platform_a2a_*` 库。详见本地 [并发测试](../../../../tests/test_platform_a2a.py)、[等待测试](../../../../tests/test_platform_a2a_wait.py)、[HTTP 测试](../../../../tests/test_platform_a2a_http.py)、[Core 测试](../../../../tests/test_platform_a2a_core.py)、[生命周期测试](../../../../tests/test_platform_a2a_lifecycle.py)及 [MySQL 测试](../../../../tests/test_platform_a2a_mysql.py)。
 
 
 2026-10-26 验证：本次新增 22 项 A2A 用例全部通过；包含并发/缓冲 9 项、HTTP 6 项、Core 2 项、应用生命周期 2 项和 MySQL 3 项。两组显式容器测试启用后的本地完整回归共 119 项全部通过、无跳过；覆盖 100 平台中文反馈的传输预算、回复乱序、重复确认、用户/树/平台隔离、过期响应、取消与重启、实际发送 Schema、权威提交后的续聊授权，以及失败纠错后上下文清理和私有生成留存。隔离库已清理，未执行业务库 018 迁移或真实跨平台请求。`compileall`、`git diff --check` 及相关文档 109 个本地文件链接校验通过。
 
 Core 检查点与私有 `accepted` 标记通过提交后的回调顺序衔接。若检查点已提交但标记写入失败，会停止当前执行并保守拒绝该响应的续聊，需核对后恢复标记；不会把未接受的结果提前授权。此处不承诺跨节点与私有账本的独立事务具备原子提交。
+
+2026-10-30 等待扩展验证：31 项无网络隔离回归和 6 项一次性 MySQL 8.4 测试通过。覆盖不重复发布、迟到回复、重复超时的新预算、相同调用的固定绑定与截止时间、最近已接受单聊选择、用户/树/平台隔离、取消和重启恢复、真实模型请求中的 Schema、定向反馈进入下一轮及成功后失败轨迹清理、等待成功后的响应授权和上下文过期。首次数据库测试因容器初始化阶段尚未开放 TCP 连接而失败；改为等待认证 TCP 查询成功后，全部 SQL 用例通过，未修改业务代码规避测试。临时数据库、容器和凭据均已清理，未修改 `.env`、业务库或其他项目，未进行真实跨平台通信或重启业务服务。测试文件仍按项目既有规则仅保留在本地。

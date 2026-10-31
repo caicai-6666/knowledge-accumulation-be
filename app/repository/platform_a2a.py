@@ -91,6 +91,19 @@ class PlatformA2ARepository:
         async with self.database._transaction() as c:
             await c.execute("UPDATE platform_a2a_calls SET accepted=TRUE WHERE broadcast_id=%s AND state='completed'", (identity,))
 
+    async def latest_direct(self, userid, tree_id, platform, response_id):
+        """只定位模型已接受且确认发布的原始单聊；等待记录不能成为新的远端请求。"""
+        async with self.database._transaction() as c:
+            await c.execute("""SELECT * FROM platform_a2a_calls
+                WHERE userid=%s AND tree_id=%s AND accepted=TRUE AND state='completed'
+                    AND JSON_EXTRACT(request_json,'$.wait_for') IS NULL
+                    AND CAST(JSON_UNQUOTE(JSON_EXTRACT(request_json,'$.response_id')) AS BINARY)=CAST(%s AS BINARY)
+                    AND CAST(JSON_UNQUOTE(JSON_EXTRACT(request_json,'$.response_platform_code')) AS BINARY)=CAST(%s AS BINARY)
+                    AND JSON_UNQUOTE(JSON_EXTRACT(published,'$.reply_flow'))='direct'
+                ORDER BY created_at DESC,broadcast_id DESC LIMIT 1""",
+                (userid, tree_id, response_id, platform))
+            return decode(await c.fetchone())
+
     async def has_context(self, userid, tree_id, platform, response_id):
         async with self.database._transaction() as c:
             # 只允许本用户、本树已接受结果中实际返回的成功上下文；不信任模型自报 ID。

@@ -11,6 +11,23 @@ class A2AModel(BaseModel):
     model_config = ConfigDict(extra='forbid', hide_input_in_errors=True)
 
 
+class PlatformA2AStateError(ValueError):
+    """仅传递状态校验分支提供的安全反馈，不回显外部异常或请求正文。"""
+
+    def __init__(self, reason, required_action):
+        super().__init__(reason)
+        self.reason, self.required_action = reason, required_action
+
+
+class A2AWait(A2AModel):
+    """本地等待记录，绝不作为中间件发布请求；关联信息只留在私有账本。"""
+    broadcast_id: Identifier
+    userid: Identifier
+    response_id: Identifier
+    response_platform_code: PlatformCode
+    wait_for: Identifier
+
+
 class A2APublish(A2AModel):
     broadcast_id: Identifier
     userid: Identifier
