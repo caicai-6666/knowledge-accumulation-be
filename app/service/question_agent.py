@@ -44,12 +44,13 @@ class TreeAgentResult(TreeModel):
 
 class QuestionAgentService:
     def __init__(self,nodes,core,*,context_builder=None,expected_tree_kind=None,tool_loader=None,file_service=None,file_cache=None,
-                 expert_settings=None,expert_client=None,web_search_service=None,web_graph_factory=None,memory_backend=None,platform_directory=None,file_retrieval=None,registry_files=None,registry_file_access=None,output_observer_factory=None,platform_a2a=None):
+                 expert_settings=None,expert_client=None,web_search_service=None,web_graph_factory=None,memory_backend=None,platform_directory=None,file_retrieval=None,registry_files=None,registry_file_access=None,output_observer_factory=None,platform_a2a=None,registry_builder=None,file_authorize_wrapper=None):
         self.platform_a2a=platform_a2a
         self.output_observer_factory=output_observer_factory
         self.nodes=nodes
         self.core=core
         self.context_builder=context_builder
+        self.registry_builder=registry_builder
         self.expected_tree_kind=expected_tree_kind
         self.tool_loader=tool_loader
         self.memory_backend=memory_backend
@@ -58,6 +59,8 @@ class QuestionAgentService:
         self.registry_files=registry_files
         self.registry_file_access=registry_file_access
         self.file_service=file_service
+        # 可选策略仅包装上传附件查看器，不影响通用读取服务及注册中心授权。
+        self.file_authorize_wrapper=file_authorize_wrapper
         if file_cache is not None and ((file_service is None and registry_files is None) or not isinstance(file_cache,FileModelCache)):
             raise ValueError('外部文件池需要与上传文件或注册中心文件服务一起装配')
         self.file_cache=(file_cache or FileModelCache(max_files=core.options.file_cache_max_files)) if file_service is not None or registry_files is not None else None
@@ -123,6 +126,8 @@ class QuestionAgentService:
             if self.file_service is not None:
                 async def read_file(file_id):return await self.file_service.read_file(tree_id,user.userid,file_id)
                 async def authorize(file_id):return await self.nodes.find_file(tree_id,user.userid,file_id)
+                if self.file_authorize_wrapper is not None:
+                    authorize=self.file_authorize_wrapper(authorize, user)
                 viewer=ImageFileViewer(scope=(user.userid,tree_id),read_file=read_file,authorize=authorize,cache=self.file_cache)
             if self.registry_files is not None:
                 async def authorize_registry_file(file_id):
@@ -234,6 +239,9 @@ class QuestionAgentService:
             raise ValueError('树用途与已装配的生成服务不一致')
         if tree.kind=='assistant' and selected_node_id is not None and _registered is None:
             raise ValueError('助理生成入口不接受节点选择')
+        if self.registry_builder is not None:
+            # 模式在任务局部绑定可信身份，避免并发用户互相覆盖工具校验条件。
+            core=core.with_registry(self.registry_builder(user.model_copy(deep=True),core.registry,tree_id))
         additional=[build_image_view_registration(_viewer)] if _viewer is not None else []
         if _registry_viewer is not None:
             additional.append(build_registry_file_registration(_registry_viewer))
@@ -253,6 +261,10 @@ class QuestionAgentService:
                 search=lambda plan:self.memory_backend.search(tree_id,user.userid,node_id,plan),
                 reference_time=lambda:journal.restored.node.created_at, core=core, journal=lambda:journal,
                 thinking_effort=thinking_effort), build_memory_view_registration(MemoryQueryViewer(_memory))])
+            if tree.kind == 'assistant':
+                from app.agent.assistant.tool.memory_window import build_memory_window_registration
+                additional.append(build_memory_window_registration(pool=_memory,
+                    lookup=lambda **args:self.memory_backend.window(tree_id,user.userid,node_id,**args)))
         if _file_results is not None:
             additional.extend([build_file_search_registration(pool=_file_results,backend=self.file_retrieval,
                 userid=user.userid,core=core,journal=lambda:journal,thinking_effort=thinking_effort),

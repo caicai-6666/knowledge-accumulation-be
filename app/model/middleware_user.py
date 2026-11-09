@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
 
-from app.model.personnel import PlatformCode
+from app.model.personnel import PlatformCode, EmploymentStatus
 
 
 def reject_duplicate_departments(values: list[str]) -> list[str]:
@@ -27,10 +27,22 @@ class MiddlewareUserInfo(BaseModel):
     permissions: dict[PlatformCode, Annotated[int, Field(strict=True, ge=0)]] = Field(description='平台代码到非负文件访问等级的映射，不携带管理权限。')
     # 全表省略部门会清空中央资料，本地强制调用方明确提供，避免扩展 DTO 时静默漏传。
     departments: Departments = Field(description='全部所属部门名称，未知时传 []；去除首尾空白后不得重复，顺序不表示主部门或权限。')
+    # 中央全表省略状态会重置为在职，调用方必须显式提供权威状态。
+    employment_status: EmploymentStatus = Field(description='员工任职状态：employed 在职，resigned 离职；从权威员工资料原样同步，不过滤离职员工。')
+
+
+class MiddlewareUserEmploymentStatus(BaseModel):
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    userid: str = Field(strict=True, min_length=1, max_length=128, description='本次全表成功保存的员工 userid。')
+    employment_status: EmploymentStatus = Field(description='本次成功保存的任职状态，须与对应请求一致。')
 
 
 class MiddlewareUserTableResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
     count: int = Field(strict=True, ge=0, description='中间件确认的总表用户数量，必须等于提交数量。')
+    users: list[MiddlewareUserEmploymentStatus] = Field(description='按请求顺序返回的逐用户任职状态回执；空总表为 []。')
 
 
 class MiddlewareUserLoginStatus(BaseModel):
@@ -55,6 +67,8 @@ class MiddlewareUserLoginQueryStatus(MiddlewareUserLoginStatus):
         description='有效中央登录对应的当前用户名；无效登录为 null，旧版本响应可省略。')
     departments: Departments | None = Field(default=None,
         description='有效登录的部门名称列表，无部门为 []；无效登录为 null，旧版本响应可省略。')
+    employment_status: EmploymentStatus | None = Field(default=None,
+        description='有效登录时为当前 employed 或 resigned，无效登录时为 null；旧版本响应可省略，不据此改变登录或权限。')
 
     @model_validator(mode='after')
     def validate_username(self):
@@ -62,4 +76,6 @@ class MiddlewareUserLoginQueryStatus(MiddlewareUserLoginStatus):
             raise ValueError('中央用户名与登录状态不一致')
         if 'departments' in self.model_fields_set and ((self.departments is not None) != self.is_logged_in):
             raise ValueError('中央部门列表与登录状态不一致')
+        if 'employment_status' in self.model_fields_set and ((self.employment_status is not None) != self.is_logged_in):
+            raise ValueError('中央任职状态与登录状态不一致')
         return self

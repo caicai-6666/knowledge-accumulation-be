@@ -34,10 +34,14 @@ class RegisteredTool:
     # 输出仍须提交，只有通过此条件才交给宿主发送；条件不进入模型 Schema。
     deliver_output: Callable | None = None
     hooks: tuple[ToolHook, ...] = ()
+    # 仅需同事务消费结果的工具启用；结构化结果不进入模型消息。
+    persist_result: bool = False
 
     def __post_init__(self):
         # 注册时复制容器，外部列表追加不会影响本工具，更不会影响其他工具。
         object.__setattr__(self, 'hooks', tuple(self.hooks))
+        if type(self.persist_result) is not bool:
+            raise TypeError('结构化结果持久化声明必须为布尔值')
         if any(not callable(hook) for hook in self.hooks):
             raise TypeError('工具钩子必须可调用')
 

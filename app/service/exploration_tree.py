@@ -51,12 +51,13 @@ def render_tree(loaded: LoadedQuestionTree) -> ExplorationTreeResponse:
 
 class ExplorationTreeService:
     def __init__(self, repository: MySQLQuestionTreeRepository, *, max_loaded_trees: int = 32,
-                 upload_files: UploadFileStore | None = None):
+                 upload_files: UploadFileStore | None = None, file_registration=None):
         if type(max_loaded_trees) is not int or max_loaded_trees < 1:
             raise ValueError('驻留树容量必须为正整数')
         self._repository = repository
         self._deletions = QuestionTreeDeletionRepository(repository)
         self._files = upload_files if upload_files is not None else UploadFileStore()
+        self._file_registration = file_registration
         # 打开、注册与生成共用仓库的结构池，避免展示层持有另一份从未参与执行的树。
         self._structures = repository.structure_cache
         self._structures.resize(max_loaded_trees)
@@ -113,7 +114,10 @@ class ExplorationTreeService:
                 attachments = await self._deletions.delete(tree_id, owner_userid)
                 self._structures.discard(owner_userid, tree_id)
                 for reference in attachments:
-                    await self._files.delete(reference)
+                    if self._file_registration is not None:
+                        await self._file_registration.delete(reference, owner_userid)
+                    else:
+                        await self._files.delete(reference)
                 await self._deletions.finish(tree_id, owner_userid)
             finally:
                 # 提交回执不确定或文件清理失败也不得继续使用旧快照。

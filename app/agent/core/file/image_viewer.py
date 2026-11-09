@@ -31,7 +31,7 @@ class ImageFileViewer:
         self._closed=False
 
     def _require_open(self):
-        if self._closed:raise FileViewError('viewer_closed','附件查看器已关闭。')
+        if self._closed:raise FileViewError('viewer_closed','本次附件查看已结束，请在有效任务中重新查看。')
 
     async def _source(self,file_id):
         # 上传时为每份文件分配独占 UUID；命中只需检查登记归属，不再读整份 PDF 算哈希。
@@ -66,7 +66,7 @@ class ImageFileViewer:
                 loaded_reference,content=await self.read_file(file_id)
                 if loaded_reference!=reference:
                     raise FileViewError('file_changed','附件登记已变化，请重新核对文件引用。')
-                if not isinstance(content,bytes):raise FileViewError('invalid_file','附件内容无法读取。')
+                if not isinstance(content,bytes):raise FileViewError('invalid_file','未取得有效附件内容，请重新上传可读取的文件。')
                 page,count=await asyncio.to_thread(loaded)
         else:
             # 远程来源已完成下载及授权，沿用其版本键，不改变注册中心访问契约。
@@ -81,9 +81,9 @@ class ImageFileViewer:
         if isinstance(error,FileViewError):return error
         if isinstance(error,(PermissionError,LookupError)):
             return FileViewError('file_unavailable','附件不存在或当前用户无权访问，请核对文件引用。')
-        if isinstance(error,PDFOpenError):return FileViewError('invalid_file','多图附件损坏、为空或需要密码，请提供可读取的文件。')
+        if isinstance(error,PDFOpenError):return FileViewError('invalid_file','附件未能解析为可读取的图像页面，请提供可读取的文件。')
         if isinstance(error,FileCacheBusyError):return FileViewError('resource_busy','附件暂时无法打开，请稍后重试。')
-        if isinstance(error,(ValueError,TypeError)):return FileViewError('invalid_arguments','文件标识、页码或附件内容无效，请核对后重试。')
+        if isinstance(error,(ValueError,TypeError)):return FileViewError('invalid_arguments','附件读取未通过校验，请核对文件引用和页码后重新查看。')
         return FileViewError('read_failed','附件暂时无法读取，请稍后重试。')
 
     def _validate_file_id(self, file_id):

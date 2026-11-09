@@ -2,14 +2,59 @@
 import asyncio
 import logging
 from contextlib import AsyncExitStack
+from dataclasses import replace
+from textwrap import dedent
 from langgraph.errors import NodeCancelledError
 from ..subgraph.file_retrieval.schema import SearchFilesArguments
-from ..subgraph.file_retrieval.pool import CandidatePool
+from ..subgraph.file_retrieval.pool import CandidatePool, FileResultError
+from ..context_rendering.block import text_block
+from ..json_codec import ModelActionRejected
 from ..subgraph.file_retrieval.ranking import rank_candidates
 from ..subgraph.file_retrieval import build_file_retrieval_subgraph
 from .registry import RegisteredTool
-from .result import ToolExecution, ToolExecutionResult
+from .result import OrdinaryToolContent, ToolExecution, ToolExecutionResult
 from .progress import ToolProgress
+
+
+def render_file_search_feedback(arguments, execution, context):
+    result = execution.result.tool_result
+    if execution.result.status == 'failed':
+        text = dedent("""
+            ### 文件检索
+
+            状态：查询失败，未发布结果集。
+            原因：{message}
+            下一步：{required_action}
+        """).strip().format(**result)
+    else:
+        explanation = text_block(result['explanation'])
+        if result['count'] == 0:
+            text = dedent("""
+                ### 文件检索
+
+                状态：查询完成，未返回可查看的候选。
+                候选文件：0 个
+                未生成结果集 ID，无需调用 view_file_candidates。
+
+                查询范围与限制：
+                {explanation}
+            """).strip().format(explanation=explanation)
+        else:
+            text = dedent("""
+                ### 文件检索
+
+                状态：查询成功
+                结果集 ID：{result_id}
+                候选文件：{count} 个
+                下一步：使用此结果集 ID 调用 view_file_candidates 查看；命中不代表原文已核实。
+
+                查询范围与限制：
+                {explanation}
+            """).strip().format(result_id=result['result_id'], count=result['count'], explanation=explanation)
+    return replace(
+        execution,
+        result=execution.result.model_copy(update={'content': OrdinaryToolContent(text=text)}),
+    )
 
 
 def build_file_search_registration(*, pool, backend, userid, core, journal, thinking_effort):
@@ -23,13 +68,19 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
             initial=tuple(i for i,_ in parent.ranking.hits) if parent is not None else None
             # 本次初始范围由权威来源确定；关闭任务、撤权或平台交集为空都不能退回全库。
             if pool.closed:
-                raise ValueError('查询已释放')
+                raise ModelActionRejected(
+                    '当前任务的文件查询资源已释放，本次检索已停止。',
+                    '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
+                )
             rows=await backend.read(userid,initial,platforms)
             allowed=tuple(r.id for r in rows)
             if parent is not None:
                 pool.check(args.result_id,parent)
             if pool.closed:
-                raise ValueError('查询已释放')
+                raise ModelActionRejected(
+                    '当前任务的文件查询资源已释放，本次检索已停止。',
+                    '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
+                )
             if not allowed:
                 return ToolExecutionResult(status='succeeded',tool_result={'status':'success','count':0,
                     'explanation':'当前限定范围内没有可访问文件，未生成结果集。'})
@@ -39,12 +90,18 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
                 k=settings.rrf_k,history_weight=settings.history_weight)
             async def search(field,query,scope):
                 if pool.closed:
-                    raise ValueError('查询已释放')
+                    raise ModelActionRejected(
+                        '当前任务的文件查询资源已释放，本次检索已停止。',
+                        '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
+                    )
                 if parent is not None:
                     pool.check(args.result_id,parent)
                 result=await backend.search(userid,field,query,scope,platforms)
                 if pool.closed:
-                    raise ValueError('查询已释放')
+                    raise ModelActionRejected(
+                        '当前任务的文件查询资源已释放，本次检索已停止。',
+                        '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
+                    )
                 if parent is not None:
                     pool.check(args.result_id,parent)
                 return result
@@ -61,7 +118,10 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
             if parent is not None:
                 pool.check(args.result_id,parent)
             if pool.closed:
-                raise ValueError('查询已释放')
+                raise ModelActionRejected(
+                    '当前任务的文件查询资源已释放，本次检索已停止。',
+                    '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
+                )
             if ranking is None:
                 return ToolExecutionResult(status='succeeded',tool_result={'status':'success','count':0,'explanation':explanation})
             current=await backend.read(userid,tuple(i for i,_ in ranking.hits),platforms)
@@ -75,10 +135,22 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
                 'status':'success','result_id':rid,'count':len(ranking.hits),'explanation':explanation}),after_commit=commit)
         except NodeCancelledError:
             raise asyncio.CancelledError() from None
+        except ModelActionRejected as error:
+            return ToolExecutionResult(status='failed', tool_result={
+                'code': 'file_search_rejected', 'message': error.reason,
+                'required_action': error.required_action,
+            })
+        except FileResultError as error:
+            return ToolExecutionResult(status='failed', tool_result={
+                'code': 'file_result_unavailable',
+                'message': error.reason if error.required_action else '结果集引用未通过有效性检查，本次查询未完成。',
+                'required_action': error.required_action or '请重新取得有效的最终结果集 ID；若必须限定原范围，不要删除 result_id 后扩大查询。',
+            })
         except Exception as error:
             logging.getLogger(__name__).warning('文件检索失败：error_type=%s',type(error).__name__)
             return ToolExecutionResult(status='failed',tool_result={'code':'file_search_unavailable',
-                'message':'结果引用已失效、范围不合法或文件检索依赖暂不可用；本次查询失败，不能解释为没有相关文件。'})
+                'message':'文件检索未能完成，未发布可用结果；不能据此判断没有相关文件。',
+                'required_action':'请稍后按原范围重新检索；不要使用本次尚未发布的候选引用。'})
         finally:
             if candidates is not None:
                 candidates.close()
@@ -92,4 +164,5 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
 
     return RegisteredTool('search_files',SearchFilesArguments.__doc__,SearchFilesArguments,
         lambda name,raw,workspace,args:workspace,executor=execute,
-        progress=ToolProgress(type='local-search',message='正在检索注册中心文件'),progress_factory=progress)
+        progress=ToolProgress(type='local-search',message='正在检索注册中心文件'),progress_factory=progress,
+        hooks=(render_file_search_feedback,))

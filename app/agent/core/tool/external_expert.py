@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from copy import deepcopy
 import json
+from textwrap import dedent
 from uuid import uuid4
 from typing import Annotated, Any, Final
 
@@ -124,17 +125,20 @@ def render_external_expert_reply(*, session_id: str, round_number: int, content:
         raise ValueError('专家对话轮次必须为正整数')
     if not isinstance(content, str) or not content.strip():
         raise ValueError('专家答复正文不能为空')
-    return (
-        '════════════ 外部专家答复 ════════════\n'
-        f'专家会话：{session_id}\n'
-        f'对话轮次：{round_number}\n\n'
-        '以下内容为外部专家意见，需结合其依据、适用条件和不确定性判断。\n\n'
-        f'{content}\n\n'
-        '────────────────────────────────\n'
-        '如需追问或补充背景，请调用 continue_external_expert，\n'
-        '并使用上方完整的专家会话标识。\n'
-        '════════════ 专家答复结束 ════════════'
-    )
+    return dedent("""
+        ════════════ 外部专家答复 ════════════
+        专家会话：{session_id}
+        对话轮次：{round_number}
+
+        以下内容为外部专家意见，需结合其依据、适用条件和不确定性判断。
+
+        {content}
+
+        ────────────────────────────────
+        如需追问或补充背景，请调用 continue_external_expert，
+        并使用上方完整的专家会话标识。
+        ════════════ 专家答复结束 ════════════
+    """).strip().format(session_id=session_id, round_number=round_number, content=content)
 
 
 @dataclass
@@ -277,6 +281,23 @@ def build_external_expert_tools() -> list[dict]:
     )]
 
 
+def render_expert_feedback(arguments, execution, context):
+    from textwrap import dedent
+    from .feedback import with_feedback
+    result = execution.result.tool_result
+    if execution.result.status == 'succeeded':
+        # 专家答复已经包含会话标识、轮次和资料边界；不改写原文，不再套 JSON。
+        text = result['content']
+    else:
+        text = dedent("""
+            ### 外部专家咨询
+
+            状态：未取得有效专家答复
+            原因及处理方向：{message}
+        """).strip().format(**result)
+    return with_feedback(execution, text)
+
+
 def build_external_expert_registrations(*, get_pool, on_audit=None):
     """适配公共注册表；本次调用的私有审计独立绑定节点，不给共享池换用户状态。"""
     from .result import ToolExecutionResult
@@ -317,6 +338,6 @@ def build_external_expert_registrations(*, get_pool, on_audit=None):
 
     return [RegisteredTool(name, model.__doc__.strip(), model, prepare, executor=execute,
                           progress=ToolProgress(type='external-expert', message='正在咨询外部专家'),
-                          progress_factory=progress)
+                          progress_factory=progress, hooks=(render_expert_feedback,))
             for name, model in (('ask_external_expert', AskExternalExpertArguments),
                                 ('continue_external_expert', ContinueExternalExpertArguments))]

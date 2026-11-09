@@ -10,6 +10,7 @@ from websockets.asyncio.client import connect
 from app.config.dingtalk_robot import DingTalkRobotSettings
 from app.infrastructure.dingtalk_robot import DingTalkRobotClient, ROBOT_TOPIC, RobotUnavailable
 from app.model.dingtalk_robot import RobotMessage, RobotMessageInvalid, parse_robot_message
+from app.infrastructure.robot_reply_capture import capture_reply_callback
 
 logger = logging.getLogger(__name__)
 # WebSocket 调试日志可包含 ticket、消息或下载码；只由本适配器输出脱敏状态。
@@ -117,6 +118,11 @@ class DingTalkRobotStream:
             return _ack(frame, 200 if topic in ('ping', 'disconnect') else 404, data), topic == 'disconnect'
         if kind != 'CALLBACK' or topic != ROBOT_TOPIC:
             return _ack(frame, 404), False
+        try:
+            # 显式开启的单次诊断保留解析前的引用结构；不输出原始帧或影响业务确认。
+            capture_reply_callback(data, self.settings)
+        except Exception as error:
+            logger.warning('钉钉引用消息脱敏采样未完成：error_type=%s', type(error).__name__)
         try:
             message = parse_robot_message(data, self.settings)
         except RobotMessageInvalid as error:

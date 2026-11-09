@@ -1,7 +1,22 @@
 """最终输出的抽象契约；具体交付语义由助理或探索模式定义。"""
 from abc import ABC, abstractmethod
+from textwrap import dedent
 from pydantic import Field
 from ...workspace import WorkspaceObject, WorkspaceText
+from ..feedback import with_feedback
+from ..hooks import FeedbackOnlyHook
+
+
+def render_finish_feedback(arguments, execution, context):
+    if execution.result.status != 'succeeded':
+        return execution
+    # 工具成功后结束循环；回执供已提交历史恢复，不声称外部消息已送达。
+    text = dedent("""
+        ### 任务结束
+
+        状态：本轮最终正文已保存，任务已结束。
+    """).strip()
+    return with_feedback(execution, text)
 
 
 class OutputArguments(WorkspaceObject):
@@ -28,5 +43,6 @@ class FinishTaskTool(ABC):
         return RegisteredTool(
             'finish_task', self.description, self.arguments_model,
             lambda name, raw, workspace, arguments: workspace,
-            output_kind='final', deliver_output=self.deliver_output, hooks=self.hooks,
+            output_kind='final', deliver_output=self.deliver_output,
+            hooks=(*self.hooks, FeedbackOnlyHook(render_finish_feedback)),
         )

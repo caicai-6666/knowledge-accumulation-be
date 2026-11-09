@@ -61,7 +61,7 @@ class MySQLAssistantRepository:
             await cursor.execute('SELECT tree_id,id,content,summary,first_sequence FROM assistant_workspaces LIMIT 0')
             await cursor.execute('SELECT userid,tree_id,enabled,heartbeat_interval_seconds FROM assistants LIMIT 0')
             await cursor.execute('SELECT task_id,delivery_token,lease_expires_at FROM assistant_task_executions LIMIT 0')
-            await cursor.execute('SELECT id,action_key,status,error_code FROM assistant_deliveries LIMIT 0')
+            await cursor.execute('SELECT id,action_key,status,error_code,file_id FROM assistant_deliveries LIMIT 0')
             await cursor.execute("SHOW INDEX FROM assistant_task_executions WHERE Key_name='uq_assistant_active'")
             if not await cursor.fetchone():raise ValueError('请先执行 012 助理消费迁移')
 
@@ -70,7 +70,7 @@ class MySQLAssistantRepository:
         """独立连接持有 MySQL 命名锁，跨本服务实例串行同一用户；连接丢失立即取消消费。"""
         await self.trees._initialize()
         settings=self.trees._settings
-        if namespace not in ('assistant','robot-inbox'):raise ValueError('锁命名空间不合法')
+        if namespace not in ('assistant','robot-inbox','robot-user'):raise ValueError('锁命名空间不合法')
         name=namespace+':'+hashlib.sha256((settings.database+'\0'+userid).encode()).hexdigest()[:48]
         connection=await asyncmy.connect(host=settings.host,port=settings.port,user=settings.user,
             password=settings.password.get_secret_value(),db=settings.database,autocommit=True,
@@ -159,6 +159,30 @@ class MySQLAssistantRepository:
             # 尚未创建绑定的真实员工可接收，消费者随后会创建其唯一助理。
             return row is None or bool(row['enabled'])
 
+    async def find_message_content(self, userid, request_id, *, platform_code):
+        """按可信入站关联查找原消息的正文和完整附件，不能把外部消息 ID 当作文件 ID。"""
+        async with self.trees._transaction() as cursor:
+            await cursor.execute(
+                'SELECT e.* FROM assistant_task_executions AS e '
+                'JOIN assistants AS a ON a.userid=e.userid AND a.tree_id=e.tree_id '
+                "WHERE e.userid=%s AND JSON_CONTAINS(e.input_payload,%s,'$.user_messages')=1",
+                (userid, _dump([{'request_id':request_id, 'source_platform_code':platform_code}])))
+            found = []
+            for row in await cursor.fetchall():
+                record = _task(row).record
+                for message in record.input_payload.user_messages:
+                    if message.request_id == request_id and message.source_platform_code == platform_code:
+                        refs = record.message_attachments(message.message_id)
+                        if len(refs) == len(message.files) and all(ref.type == 'images' for ref in refs):
+                            found.append((record.tree_id, message.message, refs))
+            return found[0] if len(found) == 1 else None
+
+    async def find_message_attachment(self, userid, request_id, *, platform_code):
+        found = await self.find_message_content(userid, request_id, platform_code=platform_code)
+        if found is None or len(found[2]) != 1:
+            return None
+        return found[0], found[2][0]
+
     async def get_task(self,task_id):
         async with self.trees._transaction() as cursor:
             await cursor.execute('SELECT * FROM assistant_task_executions WHERE task_id=%s',(task_id,))
@@ -208,21 +232,21 @@ class MySQLAssistantRepository:
             return stored.record
         return await self.update(task_id,file_bindings=(*stored.record.file_bindings,binding))
 
-    async def _insert_delivery(self,cursor,record,*,key,recipient,message,destination):
+    async def _insert_delivery(self,cursor,record,*,key,recipient,message,destination,file_id=None):
         await cursor.execute('SELECT * FROM assistant_deliveries WHERE task_id=%s AND action_key=%s',(record.task_id,key))
         row=await cursor.fetchone()
         if row:
             existing=_delivery(row)
-            if (existing.recipient_userid,existing.message,existing.destination)!=(recipient,message,destination):
+            if (existing.recipient_userid,existing.message,existing.destination,existing.file_id)!=(recipient,message,destination,file_id):
                 raise ValueError('已接受发送动作不能覆盖')
             return
         item=AssistantDelivery(userid=record.userid,task_id=record.task_id,action_key=key,destination=destination,
-            recipient_userid=recipient,message=message,task_type='assistant_message' if destination=='assistant' else None)
+            recipient_userid=recipient,message=message,file_id=file_id,task_type='assistant_message' if destination=='assistant' else None)
         await cursor.execute('INSERT INTO assistant_deliveries '
-            '(id,userid,task_id,action_key,destination,recipient_userid,task_type,message,status,attempt_count,created_at,updated_at) '
-            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'pending',0,%s,%s)",
+            '(id,userid,task_id,action_key,destination,recipient_userid,task_type,message,file_id,status,attempt_count,created_at,updated_at) '
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',0,%s,%s)",
             (item.id,item.userid,item.task_id,item.action_key,item.destination,item.recipient_userid,item.task_type,
-             item.message,_date(item.created_at),_date(item.updated_at)))
+             item.message,item.file_id,_date(item.created_at),_date(item.updated_at)))
 
     def commit_hook(self,task_id):
         async def commit(cursor,tree,node_id,content,status):
@@ -251,6 +275,9 @@ class MySQLAssistantRepository:
                 if final.send_to_user:
                     await self._insert_delivery(cursor,record,key='final',recipient=record.userid,
                                                 message=content.answer,destination='user')
+                    for file_id in final.file_ids:
+                        await self._insert_delivery(cursor,record,key='file:'+file_id,recipient=record.userid,
+                            message='用户附件',destination='user',file_id=file_id)
                 changes.update(processing_status='completed',finished_at=now,error_code=None)
             elif status!='generating':
                 changes.update(processing_status='failed',finished_at=now,error_code='generation_interrupted')

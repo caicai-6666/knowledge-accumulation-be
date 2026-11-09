@@ -285,13 +285,13 @@ class MySQLNodeRepository:
         return type(left) is type(right) and left.model_dump(exclude={'sequence','created_at'})==right.model_dump(exclude={'sequence','created_at'})
 
     async def checkpoint(self,tree_id,owner_userid,node_id,*,expected_revision:int,
-                         events=(),workspace:WorkspaceVersion | None=None,exchanges:list[dict] | None=None) -> RestoredNode:
+                         events=(),workspace:WorkspaceVersion | None=None,exchanges:list[dict] | None=None,tool_results:dict | None=None) -> RestoredNode:
         return await self._commit(tree_id,owner_userid,node_id,expected_revision=expected_revision,
-            events=events,workspace=workspace,exchanges=exchanges)
+            events=events,workspace=workspace,exchanges=exchanges,tool_results=tool_results)
 
     async def finish_node(self,tree_id,owner_userid,node_id,*,status:str,expected_revision:int,
                           final:NodeMessage | None=None,events=(),workspace:WorkspaceVersion | None=None,
-                          exchanges:list[dict] | None=None) -> RestoredNode:
+                          exchanges:list[dict] | None=None,tool_results:dict | None=None) -> RestoredNode:
         if status not in ('complete','failed','cancelled'):
             raise ValueError('节点终态不合法')
         if (status=='complete')!=(final is not None):
@@ -299,9 +299,9 @@ class MySQLNodeRepository:
         if final is not None and (final.kind!='final' or final.node_id!=node_id or final.status!='completed'):
             raise ValueError('最终消息与节点不一致')
         return await self._commit(tree_id,owner_userid,node_id,expected_revision=expected_revision,
-            events=(*events,final) if final else events,workspace=workspace,exchanges=exchanges,terminal=status)
+            events=(*events,final) if final else events,workspace=workspace,exchanges=exchanges,terminal=status,tool_results=tool_results)
 
-    async def _commit(self,tree_id,owner_userid,node_id,*,expected_revision,events,workspace,exchanges,terminal=None,latest=False):
+    async def _commit(self,tree_id,owner_userid,node_id,*,expected_revision,events,workspace,exchanges,terminal=None,latest=False,tool_results=None):
         copied=[]
         for event in events:
             if not isinstance(event,(NodeMessage,NodeGeneration)):
@@ -313,6 +313,8 @@ class MySQLNodeRepository:
                 raise ValueError('工作区版本不能跨树')
         if exchanges is not None:
             exchanges=TaskContent(question='校验占位',exchanges=exchanges).exchanges
+        if tool_results is not None:
+            tool_results=TaskContent(question='校验占位',tool_results=tool_results).tool_results
         if len({event.id for event in copied})!=len(copied):
             raise ValueError('同批执行记录标识重复')
         async with self.trees._transaction() as cursor:
@@ -344,11 +346,24 @@ class MySQLNodeRepository:
                 elif original[:len(exchanges)]!=exchanges:
                     raise QuestionTreeConflict('已接受的交互轨迹不能改写')
                 # 回执丢失后重放较早的完整前缀，不倒退或删除后续轨迹。
+            merged_results = dict(current.content.tool_results)
+            if tool_results is not None:
+                accepted_exchanges = exchanges if changed_exchanges else original
+                calls = {call['id']: call['function']['name'] for message in accepted_exchanges
+                         if message.get('role') == 'assistant' for call in message.get('tool_calls', [])}
+                receipts = {message['tool_call_id'] for message in accepted_exchanges if message.get('role') == 'tool'}
+                for call_id, value in tool_results.items():
+                    if calls.get(call_id) != value.name or call_id not in receipts:
+                        raise ValueError('结构化结果必须对应已接受的工具调用与回执')
+                    if call_id in merged_results and merged_results[call_id] != value:
+                        raise QuestionTreeConflict('已提交的工具结构化结果不能覆盖')
+                    merged_results[call_id] = value
+            changed_results = merged_results != current.content.tool_results
             changed_workspace=workspace is not None and workspace.id!=current.workspace.id
             if workspace is not None and not changed_workspace and workspace.content!=current.workspace.content:
                 raise QuestionTreeConflict('已有工作区版本不能覆盖')
             changed_terminal=terminal is not None and terminal!=current.node.status
-            changed=bool(new) or changed_exchanges or changed_workspace or changed_terminal
+            changed=bool(new) or changed_exchanges or changed_workspace or changed_terminal or changed_results
             if not changed:
                 return current  # 相同记录即使使用旧 revision 重放也不重复提交。
             if not latest:
@@ -379,6 +394,7 @@ class MySQLNodeRepository:
             # 检查点只更新生成轨迹与答案，保留创建时登记的原始附件。
             content=current.content.model_copy(update={
                 'exchanges':exchanges if changed_exchanges else original,
+                'tool_results':merged_results,
                 'answer':final_messages[0].text if final_messages else ''})
             status=terminal or current.node.status
             if (status=='complete')!=bool(final_messages):

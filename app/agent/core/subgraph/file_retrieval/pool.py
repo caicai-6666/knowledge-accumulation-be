@@ -6,6 +6,7 @@ import json
 import re
 from uuid import uuid4
 from .ranking import rank_candidates, union_candidates
+from ...json_codec import ModelActionRejected
 
 
 class CandidatePool:
@@ -18,13 +19,14 @@ class CandidatePool:
 
     def get(self, rid):
         if self.closed or rid not in self.entries:
-            raise ValueError('结果集不存在或已失效，请重新查询；不能回退全库。')
+            raise ModelActionRejected('候选结果集不存在或已失效，本次操作未完成。',
+                '重新执行候选检索并使用新返回的候选结果集 ID；不能把失效引用当作空结果或擅自扩大范围。')
         self.entries.move_to_end(rid)
         return self.entries[rid]
 
     def scope(self, rid):
         if self.closed:
-            raise ValueError('查询已结束')
+            raise ModelActionRejected('本次候选查询已经结束，不能继续使用。', '重新发起文件检索，不复用已结束查询的候选 ID。')
         return tuple(i for i,_ in self.get(rid).hits) if rid is not None else self.initial
 
     def _store(self, ranking):
@@ -83,6 +85,11 @@ def passport_list(values):
 class FileResultError(ValueError):
     """可向模型展示的本地结果引用/页码错误。"""
 
+    def __init__(self, reason, required_action=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.required_action = required_action
+
 
 class FileResultPool:
     def __init__(self, reader, *, capacity=10, page_size=5):
@@ -95,13 +102,15 @@ class FileResultPool:
 
     def get(self, rid):
         if self.closed or rid not in self.entries:
-            raise FileResultError('结果集不存在或已释放，请重新检索。')
+            raise FileResultError('结果集不存在或已释放。',
+                '请使用 search_files 重新检索并取得新的最终结果集 ID，不复用其他任务的引用。')
         self.entries.move_to_end(rid)
         return self.entries[rid]
 
     def check(self, rid, entry):
         if self.get(rid) is not entry:
-            raise FileResultError('结果集已变化')
+            raise FileResultError('读取期间结果集已变化，本次结果未接受。',
+                '请重新检索并使用新结果集查看，不依据旧引用推断文件内容。')
 
     def prepare(self, ranking, platforms, explanation, *, parent_id=None, parent=None):
         if self.closed or not ranking.hits:
@@ -127,14 +136,17 @@ class FileResultPool:
             pages=(total+self.page_size-1)//self.page_size
             target=entry.page+1 if page is None else page
             if page is None and target>pages:
-                raise FileResultError('已经到达末页；可以指定页码重看。')
+                raise FileResultError('已经到达末页，没有下一页。',
+                    f'如需重看，请明确指定 1 至 {pages} 之间的页码；不要继续省略 page 请求下一页。')
             if type(target) is not int or not 1<=target<=pages:
-                raise FileResultError('页码超出结果集范围。')
+                raise FileResultError('页码超出结果集范围。',
+                    f'请将 page 设为 1 至 {pages} 之间的整数，或省略 page 查看下一页。')
             start=(target-1)*self.page_size
             ids=[i for i,_ in entry.ranking.hits[start:start+self.page_size]]
             rows={row.id:row for row in await self.reader(ids,entry.platforms)}
             if not set(rows)<=set(ids):
-                raise FileResultError('回读结果越界')
+                raise FileResultError('回读文件超出请求范围，本次页面未接受。',
+                    '请重新检索后再查看；不要使用未通过范围校验的文件资料。')
             self.check(rid,entry)
             lines=['# 文件查询结果','',f'第 {target} / {pages} 页 · 本次召回 {total} 个候选','']
             for offset,i in enumerate(ids,start+1):

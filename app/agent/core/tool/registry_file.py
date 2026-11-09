@@ -1,8 +1,11 @@
 """注册中心PDF图像查看工具；文件ID与用户上传UUID明确区分。"""
 from pydantic import BaseModel,ConfigDict,Field,field_validator
+from functools import partial
 from app.infrastructure.registry_file import validate_resource_id
 from .registry import RegisteredTool
 from .progress import ToolProgress
+from .image_viewer import render_image_feedback
+from .result import ToolPageUnavailable
 
 
 class ViewRegistryFileArguments(BaseModel):
@@ -20,6 +23,12 @@ class ViewRegistryFileArguments(BaseModel):
 
 
 def build_registry_file_registration(viewer):
+    async def resolve(reference):
+        try:
+            return await viewer.resolve_page(reference)
+        except Exception:
+            raise ToolPageUnavailable('注册中心文件图像当前无法读取。') from None
+
     async def progress(args):
         prefix='正在查看文件'
         try:
@@ -37,5 +46,6 @@ def build_registry_file_registration(viewer):
 
     return RegisteredTool('view_registry_file',ViewRegistryFileArguments.__doc__,ViewRegistryFileArguments,
         lambda name,raw,workspace,args:workspace,executor=lambda args:viewer.view(**args.model_dump()),
-        return_types=('foldable',),page_resolver=viewer.resolve_page,
-        progress=ToolProgress(type='thinking',message='正在查看文件'),progress_factory=progress)
+        return_types=('foldable',),page_resolver=resolve,
+        progress=ToolProgress(type='thinking',message='正在查看文件'),progress_factory=progress,
+        hooks=(partial(render_image_feedback, title='注册中心文件查看'),))

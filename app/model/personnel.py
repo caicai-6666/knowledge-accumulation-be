@@ -1,10 +1,11 @@
 """与现有人员 DDL 对齐的数据契约；权限等级与管理员身份互相独立。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PlatformCode = Annotated[str, Field(strict=True, pattern=r'^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$')]
+EmploymentStatus = Literal['employed', 'resigned']
 
 
 class EmployeeWorkProfile(BaseModel):
@@ -38,6 +39,7 @@ class EmployeeName(BaseModel):
 
     userid: str = Field(strict=True, min_length=1, max_length=128, pattern=r'\S', description='用户 userid，也是其唯一助理的通信标识，保留原始大小写。')
     username: str = Field(strict=True, min_length=1, max_length=200, pattern=r'\S', description='权威员工姓名；姓名未知时使用其 userid 展示，不推测姓名。')
+    employment_status: EmploymentStatus = Field(description='权威员工在职状态：employed 表示在职，resigned 表示离职；不表示助理在线或消息可送达。')
     departments: list[Department] = Field(default_factory=list,
         description='用户所属的全部一级部门，空列表表示未知；各部门并列归属，不代表主次或权限。')
 

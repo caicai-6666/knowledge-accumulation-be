@@ -125,7 +125,7 @@ curl -i -X PATCH http://127.0.0.1:24000/knowledge-accumulation/api/exploration/t
   -d '{"name":"新的方案名称"}'
 ```
 
-在同一事务中按认证用户锁定树记录、确认 exploration 类型，再修改 `name`、递增 `revision` 并更新 `updated_at`。不修改节点、附件或工作区。客户端无需传版本号；并发改名按行锁获取顺序执行，后执行的名称生效。重复提交当前名称不变更版本和活动时间；改为不同名称后，列表排序使用更新后的活动时间。
+在同一事务中按认证用户锁定树记录、确认 exploration 类型，再修改 `name` 并更新 `updated_at`。名称属于展示元数据，不递增生成过程使用的 `revision`，不修改节点、附件或工作区；因此允许在待激活或正在生成期间改名，不会使任务的版本校验失效。客户端无需传版本号；并发改名按行锁获取顺序执行，后执行的名称生效。重复提交当前名称不变更版本和活动时间；改为不同名称后，列表排序使用更新后的活动时间。节点、工作区、停止或替代等实际执行状态变更仍保留版本冲突保护。
 
 ---
 
@@ -145,7 +145,7 @@ curl -i -X PATCH http://127.0.0.1:24000/knowledge-accumulation/api/exploration/t
 | `kind` | 固定 `exploration` |
 | `root_id` | 根节点 ID，空树为 `null` |
 | `main_leaf_id` | 主干末端任务 ID，空树为 `null` |
-| `revision` | 本次读取的数据库版本 |
+| `revision` | 本次读取的执行数据版本；纯改名不递增，名称和活动时间应按响应实际字段刷新 |
 | `created_at`、`updated_at` | 带时区的 UTC 时间 |
 | `nodes` | 按 `sequence` 升序的完整节点数组，含所有主干、分支和摘要；空树为 `[]` |
 

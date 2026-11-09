@@ -37,7 +37,7 @@ class RetrievalPlan(RetrievalModel):
 
 
 class RankedTask(RetrievalModel):
-    node_id: str = Field(pattern=r'^[0-9a-f]{32}$', description='内部回读标识，不注入模型正文。')
+    node_id: str = Field(pattern=r'^[0-9a-f]{32}$', description='历史任务的持久引用，查看页面时展示为任务 ID，供定位相邻任务使用。')
     score: float = Field(ge=0, allow_inf_nan=False, description='RRF排名分数，不表示答案置信度。')
 
 

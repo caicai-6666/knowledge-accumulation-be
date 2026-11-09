@@ -12,12 +12,12 @@
 
 ## 数据流与失败处理
 
-启动任务非阻塞等待平台 token，不提前查询数据库；取得同一维护锁后读取完整员工快照、优先保留 SQL 开发身份，仅补充尚未落库的模拟身份、校验唯一 userid，再发布全表。用户阶段成功严格校验 count 后继续管理员阶段；两阶段均完成才退出。管理员失败仅重试管理员，不重发用户表，规则见[启动管理员全表同步](startup-admin-sync.md)。用户阶段失败脱敏记录并重读重试，不周期同步。数据库错误、非法资料及冲突不能降级为空表；真实空表按外部删除语义处理。
+启动任务非阻塞等待平台 token，不提前查询数据库；取得同一维护锁后读取完整员工快照、优先保留 SQL 开发身份，仅补充尚未落库的模拟身份、校验唯一 userid，再发布全表。用户阶段成功严格校验 count 及逐用户状态回执后继续管理员阶段；两阶段均完成才退出。管理员失败仅重试管理员，不重发用户表，规则见[启动管理员全表同步](startup-admin-sync.md)。用户阶段失败脱敏记录并重读重试，不周期同步。数据库错误、非法资料及冲突不能降级为空表；真实空表按外部删除语义处理。
 
 显式生产或开发 POST login 先生成随机用户 token 并尝试 PUT 绑定；中央已有资料时无需全表。只有 PUT 明确返回既有契约的资料缺失错误（404、detail 为“用户不存在，请先同步用户信息”）才进入登记：
 
 1. 丢弃该 userid 的旧成员确认，调用 `ensure_registered_locked(userid)`，重新读取完整权威表；必须包含目标用户，配置不得覆盖已有 SQL 开发身份，SQL userid 重复必须拒绝。
-2. 严格校验 full-table count，成功后仅记录成员集合，不缓存权限。前台成功满足启动任务的用户阶段；管理员阶段仍由启动任务独立完成。
+2. 严格校验 full-table count、回执用户顺序及任职状态，成功后仅记录成员集合，不缓存权限。前台成功满足启动任务的用户阶段；管理员阶段仍由启动任务独立完成。
 3. 使用本次同一随机 token 最多再 PUT 一次，成功后才向客户端返回。第二次失败直接返回 503，不无限重发全表。
 
 中央资料缺失时始终允许按既定 404 契约受控补登记，注册失败仍返回 503。普通 404、网络故障、401/403/409 或非法响应不被当成登记依据。GET me 及普通请求只用 access_token 查询中央，不注册、不 PUT、不复活旧 token。中央 PUT 与 POST 的精确 token 契约见[登录与会话管理](../../architecture/system/user-auth.md#本地与中央会话规则)。
@@ -31,10 +31,12 @@
 出站请求为 `POST /middleware-service/api/user/full-table`，使用本项目平台 Bearer，精确 body：
 
 ```json
-{"users":[{"userid":"employee-a","username":"员工甲","permissions":{"registry":0},"departments":["综合管理部","总经办"]}]}
+{"users":[{"userid":"employee-a","username":"员工甲","permissions":{"registry":0},"departments":["综合管理部","总经办"],"employment_status":"employed"}]}
 ```
 
-映射只取[权威员工现有字段](../../architecture/data/personnel.md#中间件资料映射)，用户资料 DTO 显式发送完整部门名称列表，不发送部门 ID、头像、管理员关系或用户 token，不重新生成已有员工等级。成功响应 `200 {"count":1}` 中 count 必须为严格整数且等于提交数量。
+映射只取[权威员工现有字段](../../architecture/data/personnel.md#中间件资料映射)，用户资料 DTO 显式发送完整部门名称列表及当前任职状态（employed 在职、resigned 离职），不发送部门 ID、头像、管理员关系或用户 token，不重新生成已有员工等级。成功响应为 `200 {"count":1,"users":[{"userid":"employee-a","employment_status":"employed"}]}`。count 必须为严格整数且等于提交数量，users 必须按请求顺序逐项匹配 userid 和 employment_status；字段缺失、用户错位、重复或状态不一致均拒绝确认登记。空表必须返回 count=0、users=[]。
+
+同步集合保留离职员工；状态原样同步，不自动改变 A2A、登录或权限。中央全表省略状态会默认写为 employed，因此本项目出站 DTO 要求明确提供权威值。
 
 本协调器不调用登录缓存接口；**full-table 可能删除遗漏用户及其登录缓存**。它不发送用户心跳、不周期发布、不在关闭时清空中央表。PUT 只由显式认证服务在登记后执行。外部参考见相邻中间件项目的 `description/api/user.md`，最终职责以用户划分为准。
 
@@ -65,6 +67,10 @@
 ---
 
 ## 验证与结果
+
+2026-11-02 任职状态契约对齐：按相邻中间件 `app/service/user.py`、`app/router/user.py` 和 `description/api/user.md` 核对，本地身份、022 SQL 约束及中间件 DTO 统一采用 `employed` / `resigned`。全量请求显式发送任职状态；严格核对 count 与按序逐用户状态回执；登录查询支持状态及有效性/null 边界，PUT 写入回执保持原最小结构。
+
+[任职状态协议测试](../../../tests/test_middleware_employment_status.py)、[员工状态测试](../../../tests/test_employee_employment_status.py)、部门同步、建档与背景注入回归，以及[相邻中间件真实路由](../../../tests/test_middleware_source_contract.py)中的用户接口用例，合计 41 项通过。其中两项用例在中间件独立 Python 环境调用真实 ASGI 路由，存储和平台会话使用替身；未启动生命周期、修改相邻项目代码或发布共享人员表。022 仍需在部署前执行，实库验证限制见[员工在职状态](../../architecture/data/personnel.md#员工在职状态)。
 
 2026-10-29 多部门契约：新增[部门同步测试](../../../tests/test_user_sync_departments.py)，验证完整列表优先、同名去重、旧单部门和模拟身份回退、空列表、出站字段隔离、启动与缺失用户补登记的实际 HTTP 请求体，以及新版登录查询响应。另以[相邻中间件真实路由](../../../tests/test_middleware_source_contract.py)验证多部门注册与登录查询；存储、身份会话使用替身，不启动生命周期或发布共享全表。
 

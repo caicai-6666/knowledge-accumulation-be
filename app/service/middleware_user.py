@@ -32,7 +32,8 @@ def middleware_profile(user: AuthenticatedUser) -> MiddlewareUserInfo:
              if user.departments else [user.department_name] if user.department_name is not None else [])
     departments = list(dict.fromkeys(name.strip() for name in names))
     return MiddlewareUserInfo(userid=user.userid, username=user.name or user.userid,
-                              permissions=user.platform_permissions, departments=departments)
+                              permissions=user.platform_permissions, departments=departments,
+                              employment_status=user.employment_status)
 
 
 class MiddlewareUserSyncService:

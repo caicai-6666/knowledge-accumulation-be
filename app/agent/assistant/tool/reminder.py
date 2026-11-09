@@ -1,5 +1,7 @@
 """助理专属提醒工具：查询、创建、删除；变更由节点事务钩子提交。"""
 import logging
+from textwrap import dedent
+from app.agent.core.tool.feedback import with_feedback
 from datetime import date
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -15,6 +17,90 @@ from app.model.question_tree import TreeID, utc_now
 from app.service.reminder_schedule import next_occurrence, describe_schedule
 
 logger = logging.getLogger(__name__)
+
+
+def render_create_reminder_feedback(arguments, execution, context):
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        text = dedent("""
+            ### 提醒创建
+
+            状态：创建失败，本次未提交
+            原因及处理方向：{message}
+        """).strip().format(**result)
+    else:
+        text = dedent("""
+            ### 提醒创建
+
+            状态：提醒已创建
+            提醒 ID：{reminder_id}
+            时间规则：{schedule}
+            时区：{timezone}
+            下次触发：{next_fire_at}
+            截止时间：{deadline}
+        """).strip().format(**result, deadline=result['end_at'] or '未设置')
+    return with_feedback(execution, text)
+
+
+def render_delete_reminder_feedback(arguments, execution, context):
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        text = dedent("""
+            ### 提醒删除
+
+            状态：删除失败，本次未提交
+            原因及处理方向：{message}
+        """).strip().format(**result)
+    else:
+        text = dedent("""
+            ### 提醒删除
+
+            状态：{state}
+            提醒 ID：{reminder_id}
+            结果：{message}
+        """).strip().format(**result, state='后续触发已停止' if result['changed'] else '已停止，无需重复删除')
+    return with_feedback(execution, text)
+
+
+def render_list_reminders_feedback(arguments, execution, context):
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        text = dedent("""
+            ### 提醒查看
+
+            状态：查询失败
+            原因及处理方向：{message}
+        """).strip().format(**result)
+        return with_feedback(execution, text)
+    if not result['count']:
+        text = dedent("""
+            ### 提醒查看
+
+            状态：查询完成，本页为 0 条提醒
+            起始位置：{offset}
+            下一步：本页没有记录；需要重新查询时从 offset=0 开始。
+        """).strip().format(offset=arguments.offset)
+        return with_feedback(execution, text)
+    template = dedent("""
+        ### 提醒查看
+
+        状态：查看记录已提交
+        本页提醒：{count} 条
+        起始位置：{offset}
+        下一页 offset：{next_page}
+        资料状态：{state}
+        下一步：{action}
+    """).strip()
+    values = {**result, 'offset':arguments.offset, 'next_page':result['next_offset'] if result['next_offset'] is not None else '无，已到末页'}
+    return with_feedback(
+        execution,
+        template.format(**values, state='本页提醒见随后提供的资料。',
+                        action='需要时使用下一页 offset 继续查看。' if result['next_offset'] is not None else '已到末页，需要刷新时从 offset=0 重新查询。'),
+        hidden=template.format(**values, state='本页正文当前未展示，不能从查看记录推断提醒内容。',
+                               action='需要核对时重新调用 list_reminders；结果可能随提醒状态变化。'),
+        unavailable=template.format(**values, state='本页资料当前无法读取，不能推断提醒内容。',
+                                    action='请重新调用 list_reminders 查看。'),
+    )
 
 
 class OnceArguments(OnceSchedule):
@@ -93,15 +179,28 @@ def reminder_summary(reminder):
 
 
 def render_reminders(rows):
-    lines = ['# 当前定时任务']
+    template = dedent("""
+        ---
+
+        提醒 ID：{reminder_id}
+
+        提醒内容：
+
+        {content}
+
+        时间规则：{schedule}
+        时区：{timezone}
+        下次触发：{next_time}
+        截止时间：{deadline}
+        状态：{state}
+    """).strip()
+    sections = ['# 当前定时任务']
     for row in rows:
         info = reminder_summary(row)
-        lines.extend(['', '---', '', f'提醒 ID：{row.id}', '', '提醒内容：', '', row.content, '',
-                      '时间规则：' + info['schedule'], '时区：' + info['timezone'],
-                      '下次触发：' + (info['next_fire_at'] or '暂无'),
-                      '截止时间：' + (info['end_at'] or '未设置'),
-                      '状态：' + ('启用' if row.status == 'enabled' else '暂停')])
-    return '\n'.join(lines)
+        sections.append(template.format(**info, next_time=info['next_fire_at'] or '暂无',
+            deadline=info['end_at'] or '未设置', state='启用' if row.status == 'enabled' else '暂停'))
+    return '\n\n'.join(sections)
+
 
 
 class ReminderTools:
@@ -126,7 +225,8 @@ class ReminderTools:
         if row is None:
             return ToolExecutionResult(status='failed', tool_result={'code':'reminder_not_found', 'message':'未找到当前助理的该提醒，请重新查看列表。'})
         return ToolExecutionResult(status='succeeded', tool_result={
-            'reminder_id': row.id, 'message':'提醒已删除，后续不再触发；已经生成的交付或入队任务不会撤回。'})
+            'reminder_id': row.id, 'changed': row.status != 'cancelled',
+            'message':'提醒后续不再触发；已经生成的交付或入队任务不会撤回。'})
 
     async def list(self, args):
         rows = await self.repository.list_current(self.userid, offset=args.offset, limit=args.limit + 1)
@@ -157,13 +257,13 @@ class ReminderTools:
                 except Exception as error:
                     logger.warning('提醒工具预验失败：error_type=%s', type(error).__name__)
                     return ToolExecutionResult(status='failed', tool_result={
-                        'code':'reminder_unavailable', 'message':'提醒资料暂不可用，本次操作未提交，不能据此判断列表为空或提醒已设置、删除。'})
+                        'code':'reminder_unavailable', 'message':'提醒资料暂不可用，本次操作未提交；请稍后重试，不能据此判断列表为空或提醒已设置、删除。'})
             return execute
         return tuple(RegisteredTool(name, args.__doc__, args,
-            lambda name, raw, workspace, arguments: workspace, executor=safe(method),
+            lambda name, raw, workspace, arguments: workspace, executor=safe(method), hooks=(render,), persist_result=name == 'create_reminder',
             parser=(lambda raw: validate_model_json(CreateReminderArguments, raw)) if name == 'create_reminder' else None,
             **({'return_types':('ordinary','foldable'), 'page_resolver':self.resolve_page} if name == 'list_reminders' else {}))
-            for name, args, method in (
-                ('list_reminders', ListRemindersArguments, self.list),
-                ('create_reminder', CreateReminderArguments, self.create),
-                ('delete_reminder', DeleteReminderArguments, self.delete)))
+            for name, args, method, render in (
+                ('list_reminders', ListRemindersArguments, self.list, render_list_reminders_feedback),
+                ('create_reminder', CreateReminderArguments, self.create, render_create_reminder_feedback),
+                ('delete_reminder', DeleteReminderArguments, self.delete, render_delete_reminder_feedback)))

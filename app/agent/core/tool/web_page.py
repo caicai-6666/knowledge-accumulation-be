@@ -54,6 +54,37 @@ def render_web_page(snapshot, page):
         f'可继续查看第 {page + 1} 页。' if page < len(snapshot.pages) else '已到最后一页。'])
 
 
+def render_web_page_feedback(arguments, execution, context):
+    from textwrap import dedent
+    from .feedback import with_feedback
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        return with_feedback(execution, dedent("""
+            ### 网页读取
+
+            状态：读取失败，阅读位置未推进。
+            原因及处理方向：{message}
+        """).strip().format(**result))
+    if result.get('status') == 'no_content':
+        # 原分支已生成完整的可读提示；去掉 JSON 外壳，保留限制及重复读取指引。
+        return with_feedback(execution, result['message'])
+    template = dedent("""
+        ### 网页读取
+
+        状态：查看记录已提交
+        来源标识：{source_id}
+        当前页：第 {page} / {total_pages} 页
+        本次图片：{image_count} 张
+        资料状态：{state}
+    """).strip()
+    return with_feedback(
+        execution,
+        template.format(**result, state='可读正文和图片见随后资料；可继续翻页或指定有效页码重看，不推断未展示内容。'),
+        hidden=template.format(**result, state='本页正文及图片当前未展示；需要核对时使用来源标识和页码重新读取。'),
+        unavailable=template.format(**result, state='本次至少一项资料无法读取，以实际展示内容为准；缺失内容需重新读取或换来源。'),
+    )
+
+
 def _failure(code, message):
     return ToolExecutionResult(status='failed', tool_result={'code': code, 'message': message})
 
@@ -288,6 +319,7 @@ def build_open_web_page_registration(viewer, *, on_audit=None):
 
     return RegisteredTool('open_web_page', OpenWebPageArguments.__doc__, OpenWebPageArguments, prepare,
         executor=execute, return_types=('ordinary', 'foldable'), page_resolver=viewer.resolve_page,
-        progress=ToolProgress(type='online-search',message='正在读取网页'),progress_factory=progress)
+        progress=ToolProgress(type='online-search',message='正在读取网页'),progress_factory=progress,
+        hooks=(render_web_page_feedback,))
 
 

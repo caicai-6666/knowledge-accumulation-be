@@ -29,7 +29,7 @@
 - 与企业知识沉淀相关组件交互，协调请求、结果及失败反馈，为用户提供完整服务。
 - 确保问答数据按用户及授权范围访问，避免用户间的数据混用。
 
-已准备[问答树存储与内存索引](architecture/data/question-tree.md)：独立树表、任务/摘要节点、按需加载正文、工作区版本及最近摘要回溯。另已提供[节点落盘与恢复](architecture/data/node-persistence.md)，保存完整生成、公开消息和检查点快照。[核心 Agent 循环与上下文管理](architecture/workflow/question-answering/readme.md)已接入内部节点生成入口，支持工作区、中途与最终输出、受控摘要及私有生成落盘。另支持[用户附件登记与读取](architecture/data/question-file.md)，使用 UUID 和固定类型后缀定位磁盘文件。生成支持内部 Python 入口及[探索任务注册与 SSE](architecture/workflow/question-answering/exploration-session.md)，HTTP 可直接上传 PDF；已接入[注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)，支持名称/摘要组合检索、单个通行证精确查找、平台过滤与分页列表，已接入[注册中心PDF逐页查看](architecture/workflow/question-answering/registry-file-reading.md)，通过平台认证及可信任务 userid 远程授权读取，不依赖网页登录；应用不自动执行数据库迁移。
+已准备[问答树存储与内存索引](architecture/data/question-tree.md)：独立树表、任务/摘要节点、按需加载正文、工作区版本及最近摘要回溯。另已提供[节点落盘与恢复](architecture/data/node-persistence.md)，保存完整生成、公开消息和检查点快照。[核心 Agent 循环与上下文管理](architecture/workflow/question-answering/readme.md)已接入内部节点生成入口，支持工作区、中途与最终输出、受控摘要及私有生成落盘。另支持[用户附件登记与读取](architecture/data/question-file.md)，使用 UUID 和固定类型后缀定位磁盘文件；个人助理接收的附件在转换、校验并持久保存后自动登记[上传元信息](architecture/data/assistant-file-notes.md)，任务引用继续负责当前读取授权；个人助理另提供文件备忘新增、删除、名称/摘要独立全文查找与 LRU 结果集查看，支持在旧结果内继续筛选。生成支持内部 Python 入口及[探索任务注册与 SSE](architecture/workflow/question-answering/exploration-session.md)，HTTP 可直接上传 PDF；已接入[注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)，支持名称/摘要组合检索、单个通行证精确查找、平台过滤与分页列表，已接入[注册中心PDF逐页查看](architecture/workflow/question-answering/registry-file-reading.md)，通过平台认证及可信任务 userid 远程授权读取，不依赖网页登录；应用不自动执行数据库迁移。
 
 节点记忆另提供 [MyVector/vLLM 基础设施](capability/infrastructure/myvector.md)，以权威记忆和消息表刷新独立缓存，支持 HNSW 向量及[原生中文全文检索](capability/infrastructure/fulltext.md)，按用户与树过滤、返回前回查。已接入[节点记忆自动向量化](capability/application/memory-embedding.md)，配置 Embedding 地址后后台加工终态任务的完整公开消息；已接入[祖先任务记忆召回](architecture/workflow/question-answering/memory-retrieval.md)，检索时按需刷新缓存、混合召回并分页查看，范围限于当前任务的祖先父链。插件和模型部署由运行环境显式准备。
 
@@ -40,6 +40,8 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 个人助理已接入[员工背景与私有画像名称全文查询](architecture/workflow/question-answering/assistant-personal-context.md)，查询结果复用已有 LRU 结果池，按用户分组分页查看；单条新增和删除已接入检查点同事务提交与去重。个人助理已准备[助理绑定、任务执行、交付与提醒存储](architecture/data/assistant-storage.md)：每位用户绑定唯一 assistant 树，队列附件复用现有上传目录、节点登记和 Core 查看工具。生成路径已支持[持久化压缩窗口与当前工作区加载](architecture/workflow/question-answering/assistant-memory.md)；另提供[中间件队列发布、领取、续租与确认](capability/infrastructure/assistant-queue.md)及单次消费处理器。已接入[后台消费、助理消息工具与可靠交付](capability/application/assistant-consumption.md)，默认关闭；已实现[查看、创建、删除定时任务及到期调度](capability/application/assistant-reminders.md)，已接入[空闲心跳调度](capability/application/assistant-heartbeat.md)，已接入[钉钉消息原子接收与发布](capability/application/assistant-inbound.md)，不支持的附件导致整条拒绝；首次从机器人发起的有效消息会初始化未建档员工，再继续处理原消息，无需先登录主页；助理当前工作区与压缩边界依赖 021 迁移及显式数据迁移，各部署环境须按[助理记忆迁移说明](architecture/workflow/question-answering/assistant-memory.md)独立完成。最终正文通过[工具独立钩子与转换子智能体](architecture/workflow/question-answering/assistant-message-rendering.md)转换后再正常提交，后续上下文读取转换后的正文。
 
 已实现[跨平台广播与续聊工具](architecture/workflow/question-answering/platform-a2a.md)，经中间件平台 A2A 队列通信，探索与个人助理共享反馈接收、并发分发、响应缓冲和私有 SQL 账本；默认关闭，启用前需手工执行 018 迁移。尚未执行真实跨平台收发。
+
+个人助理已接入[日程集查询](capability/application/assistant-calendar.md)，支持指定本项目员工和时间范围读取钉钉主日历，返回任务内隔离的查询 ID、数量和分页信息，再用查看工具读取可折叠日程正文及参与人员邀约响应。
 
 另已准备[钉钉单聊机器人基础设施](capability/infrastructure/dingtalk-robot.md)：Stream 接收、可信单聊过滤、OpenAPI 完整回复和主动发送、附件下载。已通过可靠接收器接入队列，与助理消费共用默认关闭的启动开关，已观察到真实消息入站、队列发布及助理执行；最终转换与交付的验证边界见[真实任务观察](capability/infrastructure/dingtalk-robot.md#真实任务观察与验证边界)。
 

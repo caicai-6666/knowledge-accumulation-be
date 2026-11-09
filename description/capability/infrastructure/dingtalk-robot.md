@@ -94,6 +94,7 @@ async def run_robot(receive):
 | --- | --- |
 | `send_text(userid, content)` | 使用 `sampleText` 向指定员工发送完整文本。 |
 | `send_markdown(userid, title, text)` | 使用 `sampleMarkdown` 发送完整 Markdown。 |
+| `send_file(userid, filename, content)` | 上传 PDF 媒体后使用 `sampleFile` 分别发送文件，单份不超过 20 MiB。 |
 | `download_file(SecretStr(download_code))` | 换取临时地址并返回文件字节。 |
 | `open_stream()` | 获取一次性连接地址，返回 SecretStr，不返回可直接打印的明文凭据。 |
 | `close()` | 清理 token 和 HTTP 客户端。 |
@@ -101,6 +102,8 @@ async def run_robot(receive):
 发送请求为 `POST /v1.0/robot/oToMessages/batchSend`，携带钉钉应用 token、`robotCode`、单个目标的 `userIds`、`msgKey` 和 JSON 字符串 `msgParam`。应用 token 来自 `/v1.0/oauth2/accessToken`，并发获取合并、提前刷新；它与本项目中央用户 token 无关。接口出处见[单聊发送](https://open.dingtalk.com/document/orgapp/chatbots-send-one-on-one-chat-messages-in-batches)。
 
 成功必须有 `processQueryKey`，且 `invalidStaffIdList`、`flowControlledStaffIdList`、`filteredStaffIdList` 不包含失败目标；HTTP 200 本身不代表成功。该回执只表示接口受理，不代表用户已读。正文不自动截断或拆成多条，超限等上游拒绝需交付层显式处理。
+
+文件发送先调用官方[上传媒体文件](https://open.dingtalk.com/document/orgapp/upload-media-files)：`POST https://oapi.dingtalk.com/media/upload`，query 携带应用 `access_token`，multipart 字段为 `type=file` 与 `media`。成功取得 `media_id` 后，使用 `sampleFile`，`msgParam` 包含 `mediaId`、`fileName`、`fileType=pdf`。当前仅发送系统保存的 PDF 用户附件；业务范围与事务边界见[最终回复附件交付](../application/assistant-consumption.md#最终回复的用户附件交付)。上传错误表示尚未发送用户消息；发送阶段仍遵循结果不明不重发的规则。上传响应限制为 1 MiB，凭据及媒体内容不写入日志。
 
 客户端不自动重试发送。401 仅失效本次使用的应用 token，下次调用重新获取；超时、5xx 或无法解析的发送成功响应通过 `RobotUnavailable.uncertain=True` 表示结果不确定，交付层不能立即盲发第二条。当前发送接口没有为本适配器提供可用的客户端去重键，不承诺网络发送恰好一次；后续交付恢复需明确查询/人工处理等策略。
 
@@ -144,3 +147,16 @@ async def run_robot(receive):
 同日 10:52:51+08:00 的诊断及复查观察到模型端口拒绝连接，无 HTTP 响应；这只是当时的服务状态，不表示后续持续不可用。历史转换错误已被统一封装，现有证据不足以断言其原因是 Schema、原生推理、OOM 或 300 秒请求超时。
 
 证据见[诊断分析](../../../experiment/assistant-rendering-diagnosis/20261030-james/analysis.md)、[任务审计投影](../../../experiment/assistant-rendering-diagnosis/20261030-james/task-evidence.json)和[合成探测结果](../../../experiment/assistant-rendering-diagnosis/20261030-james/probe-results.json)。实验产物依项目白名单规则不随部署副本分发。完整转换与交付验收需在依赖可用时单独完成，不以这次失败记录或早期隔离测试替代。
+
+
+---
+
+## 单次引用回调诊断
+
+`app/infrastructure/robot_reply_capture.py` 提供显式开启的脱敏采样，调用位置在 Stream 解码后、业务解析前。默认不存在启用文件时不采集；不启动额外 Stream 连接，不改变接收或 ACK，诊断异常只记录异常类型。
+
+启用文件为 `experiment/dingtalk-reply-capture/armed.json`，包含目标 `userid`、仅小写字母/数字/连字符的 `run` 目录名及带时区的 `expires_at`。仅采集有效期内该用户下一条可信企业单聊，写入对应运行目录的 `callback.json`；以独占创建保证重推及后续消息不覆盖首次证据。移除启用文件即可关闭，到期自动失效。源码首次接入需要重启，后续读取启用文件不需要重启。
+
+产物保留引用字段结构及白名单内的消息关联、类型和正文值；采样格式 2 另保留 `originalProcessQueryKey`、`elementType` 和 `cardContent` 内 `elementType=TEXT` 节点的 `value`，用于对照发送回执及原文。卡片非文字节点的 `value` 继续脱敏，不放开图片链接和按钮参数。下载码、Webhook、身份字段和其他未知标量只保留存在性和类型。最多12层、每对象100字段、每列表30项、单字符串4000字符，不得把它称为完整原始报文。敏感凭据不进入产物或日志，采样结果不进入模型上下文。若引用信息未出现，应区分平台本次未提供与采样截断，结合实际字段判断，不能从规范化消息反推原始回调。
+
+2026-11-09：13 项采样与接收回归测试通过，覆盖目标过滤、嵌套敏感字段脱敏、引用正文保留、过期和首次证据保护。随后真实采样已确认图片引用位于 `text.repliedMsg`，包含原消息 ID、`msgType=picture` 和下载码字段，顶层 `originalMsgId` 与引用 ID 一致；下载码值未保存。采样已关闭。引用文字、图片、图文及助理文字卡片的正式处理与本地文件复用见[引用回复作为新任务](../application/assistant-inbound.md#引用回复作为新任务)。

@@ -33,8 +33,9 @@ class QuestionTreeCache:
             return
         key = (snapshot.tree.owner_userid, snapshot.tree.id)
         old = self._entries.get(key)
-        # 较早开始的只读事务可能较晚结束，不能覆盖已经提交的新版本。
-        if old is not None and old.tree.revision > snapshot.tree.revision:
+        # 改名不推进生成版本；同 revision 时按活动时间拒绝迟到的旧名称快照。
+        if old is not None and (old.tree.revision, old.tree.updated_at) > (
+                snapshot.tree.revision, snapshot.tree.updated_at):
             return
         self._entries[key] = snapshot
         self._entries.move_to_end(key)

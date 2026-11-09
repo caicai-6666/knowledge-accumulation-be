@@ -1,6 +1,7 @@
 """文件检索模型参数；身份、等级、访问令牌只存在宿主回调。"""
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.model.personnel import PlatformCode
+from ...json_codec import ModelActionRejected
 
 
 class RetrievalModel(BaseModel):
@@ -18,7 +19,8 @@ class SearchFilesArguments(RetrievalModel):
     @model_validator(mode='after')
     def unique_platforms(self):
         if self.platform_codes is not None and len(set(self.platform_codes))!=len(self.platform_codes):
-            raise ValueError('平台代码不能重复')
+            raise ModelActionRejected('platform_codes 包含重复平台代码，查询未执行。',
+                '去除重复平台代码后再调用；不改变用户要求的查询范围。')
         return self
 
 
@@ -51,7 +53,8 @@ class PassportQuery(RetrievalModel):
     @classmethod
     def nonblank_passport(cls, value):
         if not value.strip():
-            raise ValueError('通行证不能全为空白')
+            raise ModelActionRejected('通行证全部为空白，未执行查询。',
+                '提供已知的完整通行证原值；不要猜测或拆分通行证。')
         return value
 
 

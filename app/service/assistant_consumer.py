@@ -6,6 +6,8 @@ from uuid import uuid5,NAMESPACE_URL
 
 from app.agent.assistant.tool.send_assistant_message import send_registration
 from app.agent.assistant.tool.reminder import ReminderTools
+from app.agent.assistant.tool.search_calendar_events import build_calendar_query_pool, build_search_calendar_events_registration
+from app.agent.assistant.tool.view_calendar_query import CalendarQueryViewer, build_view_calendar_query_registration
 from app.agent.assistant.tool.search_assistants import build_assistant_query_pool, build_search_assistants_registration
 from app.agent.assistant.tool.view_assistant_query import AssistantQueryViewer, build_view_assistant_query_registration
 from app.agent.assistant.prompt.task import task_prompt
@@ -22,6 +24,9 @@ from app.repository.assistant_portrait import AssistantPortraitRepository
 from app.agent.assistant.tool.portrait_query import (build_portrait_query_pool, PortraitQueryViewer,
     build_search_portraits_registration, build_view_portrait_query_registration)
 from app.agent.assistant.tool.portrait_mutation import PortraitMutationTools
+from app.agent.assistant.tool.file_visibility import FileVisibilityTools
+from app.agent.assistant.tool.file_note import FileNoteTools
+from app.agent.assistant.tool.file_note_query import FileNoteQueryTools
 
 logger=logging.getLogger(__name__)
 
@@ -69,25 +74,35 @@ def task_question(record,*,user_name,source_name=None):
 
 
 class AssistantConsumer:
-    def __init__(self,settings,repository,queue,delivery,employees,files,agent_factory):
+    def __init__(self,settings,repository,queue,delivery,employees,files,agent_factory,*,calendar=None,file_registration=None,file_visibility=None,file_notes=None):
         self.settings,self.repository,self.queue,self.delivery=settings,repository,queue,delivery
         self.employees,self.files,self.agent_factory=employees,files,agent_factory
+        self.calendar=calendar
+        self.file_registration=file_registration
+        self.file_visibility=file_visibility
+        self.file_notes=file_notes
         self._closed=False;self._supervisor=None;self._workers={};self._eligible=set()
         self._slots=asyncio.Semaphore(settings.max_concurrent_users)
 
     async def _prepare_files(self,record,lease):
         types={'pdf':'images','mp3':'audio','mp4':'video'}
+        if record.input_payload.files and self.file_registration is None:
+            raise RuntimeError('助理附件需要装配文件元信息登记服务')
         for source in record.input_payload.files:
+            # 合并任务按各原始消息的可信接收时间登记，不能用消费/重试时间覆盖上传来源时间。
+            uploaded_at=next((message.created_at for message in record.input_payload.user_messages
+                if source in message.files),record.input_payload.created_at)
             existing=next((v for v in record.file_bindings if v.source==source),None)
             if existing:
                 await self.files.read(existing.attachment)
+                await self.file_registration.register(existing.attachment,record.userid,uploaded_at=uploaded_at)
                 continue
             if source.file_extension not in types:raise ValueError('助理附件暂只接受 PDF、MP3、MP4，不隐式转码')
             content=await self.queue.download(lease,source)
             if source.file_extension=='pdf':
                 import pymupdf
                 with pymupdf.open(stream=content,filetype='pdf') as document:
-                    if document.needs_pass or not document.page_count:raise ValueError('PDF 不可读取')
+                    if not document.is_pdf or document.needs_pass or not document.page_count:raise ValueError('PDF 不可读取')
             reference=AttachmentReference(type=types[source.file_extension],file_id=str(uuid5(NAMESPACE_URL,
                 'knowledge-assistant-file:'+json.dumps([record.task_id,source.file_id,source.file_extension]))))
             saving=asyncio.create_task(self.files.save_reference(UploadedFile(type=reference.type,content=content),reference))
@@ -95,6 +110,9 @@ class AssistantConsumer:
             except asyncio.CancelledError:
                 await saving
                 raise
+            # 此 UUID 才是模型长期使用的文件 ID；机器人转换暂存文件会被清理，不进入元信息表。
+            # 登记失败不标记 prepared、不启动生成；稳定 UUID 让下一次消费可安全补齐。
+            await self.file_registration.register(reference,record.userid,uploaded_at=uploaded_at)
             record=await self.repository.bind_file(record.task_id,TaskFileBinding(source=source,attachment=reference))
         return await self.repository.update(record.task_id,processing_status='prepared',error_code=None)
 
@@ -124,6 +142,8 @@ class AssistantConsumer:
         async def flush():
             await self.delivery.flush(record.task_id)
         reminder_tools=ReminderTools(self.repository.reminders,user.userid)
+        calendar_queries=build_calendar_query_pool()
+        file_note_queries=FileNoteQueryTools(self.file_notes,user.userid)
         assistant_directory=build_assistant_query_pool(capacity=self.settings.directory_cache_capacity,
             page_size=self.settings.directory_page_size)
         portrait_queries=build_portrait_query_pool(user.userid, capacity=self.settings.directory_cache_capacity,
@@ -139,6 +159,13 @@ class AssistantConsumer:
                build_view_portrait_query_registration(PortraitQueryViewer(portrait_queries)),
                *PortraitMutationTools(portrait_repository,user.userid).registrations(),
                *reminder_tools.registrations())
+        if self.file_visibility is not None:
+            tools=(*tools,*FileVisibilityTools(self.file_visibility,user.userid).registrations())
+        if self.file_notes is not None:
+            tools=(*tools,*FileNoteTools(self.file_notes,user.userid).registrations(),*file_note_queries.registrations())
+        if self.calendar is not None:
+            tools=(*tools,build_search_calendar_events_registration(pool=calendar_queries,service=self.calendar),
+                build_view_calendar_query_registration(CalendarQueryViewer(calendar_queries)))
         agent=self.agent_factory(nodes=nodes,file_service=_PreparedFiles(record,nodes,self.files),tools=tools,
                                  prompt_builder=task_prompt(record.task_type),
                                  context_loader=AssistantEmployeeContextLoader(self.employees))
@@ -175,6 +202,8 @@ class AssistantConsumer:
             reminder_tools.close()
             assistant_directory.close()
             portrait_queries.close()
+            calendar_queries.close()
+            file_note_queries.pool.close()
             await agent.close()
         latest=(await self.repository.get_task(record.task_id)).record
         if latest.processing_status=='failed':return True

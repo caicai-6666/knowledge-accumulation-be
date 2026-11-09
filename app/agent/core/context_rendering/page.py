@@ -9,6 +9,15 @@ from ..prompt.guidance import build_system_guidence_message
 def render_tool_receipt(result, *, visible=False, unavailable_pages=()):
     """持久化使用隐藏占位；完整正文只在当前请求装配时出现。"""
     result = ToolExecutionResult.model_validate(result)
+    if result.content.type == 'ordinary' and result.content.text is not None:
+        # 业务工具负责字段和文案，公共层只选用已校验的正文，不集中维护业务渲染规则。
+        return result.content.text
+    if result.content.type == 'foldable' and result.content.feedback is not None:
+        # 业务文案由工具钩子生成；公共层只按实际资料状态选择对应正文。
+        feedback = result.content.feedback
+        if any(ref.display_id in unavailable_pages for ref in result.content.pages):
+            return feedback.unavailable
+        return feedback.visible if visible else feedback.hidden
     payload = result.tool_result
     if result.content.type == 'foldable':
         payload = {'tool_result': payload, 'content': {'type': 'foldable', 'pages': [

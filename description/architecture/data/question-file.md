@@ -2,7 +2,7 @@
 
 ## 用途与边界
 
-沿用 contract-service-be 的“UUID 文件引用、任务内登记、固定文件名定位”方式，为内部问答生成入口提供文件保存、引用恢复及按归属读取。仍使用本项目 MySQL 和 asyncmy，不引入 SQLite 或独立文件表。
+沿用 contract-service-be 的“UUID 文件引用、任务内登记、固定文件名定位”方式，为内部问答生成入口提供文件保存、引用恢复及按归属读取。仍使用本项目 MySQL 和 asyncmy；仅个人助理接收的附件另登记[上传元信息](assistant-file-notes.md)，任务正文继续作为当前读取授权来源。
 
 文件存储本身不负责 HTTP 或格式转换；[探索任务 API](../../api/exploration.md#注册探索任务)已接入直接上传 PDF，首次 SSE 激活后校验实际内容、落盘并登记。[资源读取 API](../../api/resource.md#读取任务附件)已接入，通过中央身份及树内登记取得原始附件；普通用户只可读取本人树内附件。模型引用展示见[上下文渲染](../workflow/question-answering/context-rendering.md#当前任务附件)；Core 已独立接入[图像逐页阅读](../workflow/question-answering/image-reading.md)，音频和视频暂不支持查看。
 
@@ -25,7 +25,7 @@
 
 后缀由已登记类型推导，不另外保存路径、原文件名、摘要或哈希，也不让调用方提供服务器路径。模型只看到语义类型和 UUID，具体格式与目录不注入。
 
-引用保存在 `question_node_contents.content` 的 `TaskContent.attachments` 中，与节点、问题和初始工作区在同一事务提交；无需新增 SQL 表或列。无附件的既有任务读取为空列表。单个任务不允许重复 UUID；检查点、终态和相同节点 ID 重放不能删除或替换原附件。
+引用保存在 `question_node_contents.content` 的 `TaskContent.attachments` 中，与节点、问题和初始工作区在同一事务提交；个人助理附件元信息由其上传准备阶段独立登记，探索上传不登记元信息；元信息不替代任务引用。无附件的既有任务读取为空列表。单个任务不允许重复 UUID；检查点、终态和相同节点 ID 重放不能删除或替换原附件。
 
 ---
 
@@ -37,20 +37,26 @@
 
 | 方法 | 行为 |
 | --- | --- |
-| `prepare(tree_id, owner_userid, uploads=..., references=...)` | 整批验收输入及树归属，核实已有引用属于本树，然后为新文件生成 UUID 并落盘；返回等待任务登记的引用。 |
+| `prepare(tree_id, owner_userid, uploads=..., references=...)` | 整批验收输入及树归属，核实已有引用属于本树，然后为新文件生成 UUID、落盘并写入 uploaded_files；返回等待任务登记的引用。 |
 | `read_file(tree_id, owner_userid, file_id)` | 从该用户的指定树任务正文查出登记类型，读取固定后缀文件，结束后再次核实登记；返回引用与字节。 |
 
 应用组合根为资源路由与问答生成复用同一个文件服务；读取接口不加载模型，完整 HTTP 契约见[读取任务附件](../../api/resource.md#读取任务附件)。
+
+个人助理的 `view_image_file` 在原有归属检查之外，通过查看器的授权包装额外要求上传元信息为 `public`；所属用户本人的私密文件也拒绝查看。此限制不修改下述通用读取服务、HTTP 接口、探索模式或注册中心工具，详见[图像阅读](../workflow/question-answering/image-reading.md)。
 
 UUID 不是访问凭据。没有任务登记的磁盘文件、其他用户或其他树的文件均不能经文件服务读取。仓库按 UUID 精确查询任务 JSON；同一 UUID 的登记类型若不一致则拒绝读取。磁盘操作不持数据库锁，读取后校验防止继续使用已经删除或失效的登记。
 
 ```python
 from app.infrastructure.upload_file import UploadFileStore
 from app.service.question_file import QuestionFileService
+from app.repository.uploaded_file import UploadedFileRepository
+from app.service.uploaded_file import UploadedFileRegistrationService
 from app.service.question_agent import QuestionAgentService
 
 # nodes、core 与 user 由宿主按既有方式装配；调用方已将多图整理为 PDF。
-files = QuestionFileService(nodes, UploadFileStore())
+store = UploadFileStore()
+registration = UploadedFileRegistrationService(UploadedFileRepository(nodes.trees), store)
+files = QuestionFileService(nodes, store, file_registration=registration)
 agent = QuestionAgentService(nodes, core, file_service=files)
 result = await agent.generate(
     user=user, tree_id=tree_id, selected_node_id=selected_node_id,
@@ -71,9 +77,9 @@ reference, content = await files.read_file(
 
 ## 落盘、失败与安全边界
 
-本项目采用“先完整保存文件，再原子登记任务”，不等待会话归档；读取直接来自磁盘，不建立第二份常驻字节缓存。新文件以独占方式创建、权限为 `0600`，写入后同步；UUID 碰撞不会覆盖既有文件。根目录各路径分量和目标文件均拒绝符号链接；读取只接受非空普通文件并限制字节数，FIFO 不会造成阻塞。删除仅使用已校验 UUID 及固定类型后缀、目录描述符和不跟随链接的文件检查，不递归删除目录。
+本项目采用“探索上传先完整保存文件，再原子登记任务；个人助理上传在任务引用登记前额外写入元信息”，不等待会话归档；读取直接来自磁盘，不建立第二份常驻字节缓存。新文件以独占方式创建、权限为 `0600`，写入后同步；UUID 碰撞不会覆盖既有文件。根目录各路径分量和目标文件均拒绝符号链接；读取只接受非空普通文件并限制字节数，FIFO 不会造成阻塞。删除仅使用已校验 UUID 及固定类型后缀、目录描述符和不跟随链接的文件检查，不递归删除目录。
 
-文件系统与 MySQL 不具有共同事务。数据库失败、提交回执不确定、取消或进程退出时，可能保留尚未登记的 UUID 文件；它们不能被读取服务授权。一批文件部分保存失败时补偿已经保存的文件；任务登记前失败时，仅在数据库明确确认 UUID 未登记后补偿新文件；SQL 响应不确定时不盲删文件，避免误删已经提交但丢失回执的附件。已有任务附件不因重新登录、失败或取消而自动删除。[整树删除](question-tree.md#整树删除与附件清理)已接入，按任务正文收集已登记附件、数据库提交后逐个删除。`UploadFileStore.delete(reference)` 由清理编排调用，缺失文件视为已清理，不创建目录，拒绝符号链接和非普通文件；不读取文件正文，因此可清理空文件或超限残片。未登记孤立文件仍无法归属到具体树，本模块不做目录扫描或推测删除。
+文件系统与 MySQL 不具有共同事务。数据库失败、提交回执不确定、取消或进程退出时，可能保留尚未登记的 UUID 文件；它们不能被读取服务授权。探索批次部分保存失败时补偿已经保存的文件，不写入 `uploaded_files`；任务登记前失败时，仅在数据库明确确认 UUID 未登记后补偿新文件；SQL 响应不确定时不盲删文件，避免误删已经提交但丢失回执的附件。已有任务附件不因重新登录、失败或取消而自动删除。[整树删除](question-tree.md#整树删除与附件清理)已接入，按任务正文收集已登记附件、数据库提交后根据持久清单逐个清理元信息和磁盘；元信息外键或归属校验失败时保留原文件与清单以供重试。`UploadFileStore.delete(reference)` 由清理编排调用，缺失文件视为已清理，不创建目录，拒绝符号链接和非普通文件；不读取文件正文，因此可清理空文件或超限残片。未登记孤立文件仍无法归属到具体树，本模块不做目录扫描或推测删除。
 
 `prepare` 是可信宿主接口，返回后应通过 `generate` 或仓库创建任务完成登记，不能将其返回视为登记已经成功；底层 Store 只提供文件 I/O，用户可访问入口须经过文件服务。前端身份仍由中央 token 验证后传入，不从 UUID 推断用户。
 

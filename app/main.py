@@ -31,6 +31,8 @@ from app.infrastructure.avatar import AvatarStore
 from app.infrastructure.registry_file import RegistryFileClient
 from app.config.registry_file import load_registry_file_settings
 from app.infrastructure.dingtalk import DingTalkClient
+from app.infrastructure.dingtalk_calendar import DingTalkCalendarClient
+from app.service.calendar import CalendarService
 from app.router.auth import router as auth_router
 from app.router.resource import router as resource_router
 from app.router.platform import router as platform_router
@@ -39,6 +41,9 @@ from app.router.exploration_turn import router as exploration_turn_router
 from app.service.exploration_turn import ExplorationTurnService
 from app.repository.node_persistence import MySQLNodeRepository
 from app.service.question_file import QuestionFileService
+from app.repository.uploaded_file import UploadedFileRepository
+from app.repository.assistant_file_note import AssistantFileNoteRepository
+from app.service.uploaded_file import UploadedFileRegistrationService, FileVisibilityService
 from app.agent.exploration.factory import build_service
 from app.config.mllm import load_mllm_settings
 from app.service.auth import AuthService
@@ -79,6 +84,8 @@ from app.service.robot_inbound import RobotInboundService
 from app.repository.assistant_runtime import MySQLAssistantRepository
 from app.service.assistant_queue import AssistantQueueService
 from app.service.assistant_delivery import AssistantDeliveryService
+from app.service.robot_reply_file import RobotReplyFileResolver
+from app.service.assistant_file_delivery import AssistantFileDeliveryService
 from app.agent.assistant.message_rendering.hook import AssistantMessageRenderingHook
 from app.agent.assistant.message_rendering import DingTalkMessageRenderer
 from app.service.assistant_consumer import AssistantConsumer
@@ -174,9 +181,16 @@ def create_app(
             application.state.registry_file_access = None
             files = upload_files if upload_files is not None else UploadFileStore()
             nodes = MySQLNodeRepository(trees)
+            uploaded_file_repository = UploadedFileRepository(trees)
+            file_registration = UploadedFileRegistrationService(uploaded_file_repository, files)
+            file_visibility = FileVisibilityService(uploaded_file_repository)
+            file_delivery = AssistantFileDeliveryService(nodes, uploaded_file_repository, files)
+            application.state.uploaded_file_registration = file_registration
+            application.state.file_visibility_service = file_visibility
             file_service = QuestionFileService(nodes, files)
             application.state.question_file_service = file_service
-            exploration = ExplorationTreeService(trees, upload_files=files)
+            # 仅为早期探索附件残留元信息保留删除协调，不再为探索上传登记元信息。
+            exploration = ExplorationTreeService(trees, upload_files=files, file_registration=file_registration)
             application.state.exploration_tree_service = exploration
             stack.push_async_callback(exploration.close)
             def make_agent():
@@ -264,16 +278,22 @@ def create_app(
                         stack.push_async_callback(rendering_agent.close)
                         finish_hooks=(AssistantMessageRenderingHook(rendering_agent),)
                     delivery=AssistantDeliveryService(assistant_repository,queue,robot,
+                        file_delivery=file_delivery,employees=repository,
                         publication_retry_window_seconds=assistant_settings.publication_retry_window_seconds)
                     def make_assistant(**kwargs):
                         if assistant_agent_factory is not None:
                             return assistant_agent_factory(finish_hooks=finish_hooks,**kwargs)
                         return build_assistant_service(settings=assistant_mllm,finish_hooks=finish_hooks,memory_backend=memory_retrieval,
+                            file_visibility=file_visibility,file_delivery=file_delivery,
                             platform_directory=directory,file_retrieval=file_retrieval,registry_files=registry_files,
                             registry_file_access=application.state.registry_file_access,
                             platform_a2a=application.state.platform_a2a_service,**kwargs)
+                    calendar_client=DingTalkCalendarClient(employee_auth)
+                    stack.push_async_callback(calendar_client.close)
+                    calendar=CalendarService(repository,calendar_client)
                     consumer=AssistantConsumer(assistant_settings,assistant_repository,queue,delivery,repository,files,
-                        make_assistant)
+                        make_assistant,calendar=calendar,file_registration=file_registration,file_visibility=file_visibility,
+                        file_notes=AssistantFileNoteRepository(trees))
                     application.state.assistant_consumer=consumer
                     stack.push_async_callback(consumer.close)
                     await consumer.start()
@@ -286,7 +306,8 @@ def create_app(
                     stack.push_async_callback(heartbeat.close)
                     await heartbeat.start()
                     inbound=RobotInboundService(assistant_settings,RobotInboxRepository(trees),repository,
-                        queue,robot,files,onboarding=onboarding)
+                        queue,robot,files,onboarding=onboarding,
+                        reply_files=RobotReplyFileResolver(assistant_repository,nodes,files,platform_code=middleware.platform_code))
                     application.state.assistant_robot_inbound=inbound
                     stack.push_async_callback(inbound.close)
                     await inbound.start()

@@ -83,7 +83,7 @@ Docker 内监听 `8000`，Compose 默认映射到宿主 `24000`，见[Docker 部
 
 ## 验证
 
-用户会话 `POST /middleware-service/api/user/login-cache` 的响应现支持 `username` 与 `departments`：有效登录返回当前用户名及部门名称数组（无部门为 []），无效登录两者均为 `null`。查询使用独立的严格 DTO，兼容旧版本省略这些字段；类型错误、空名称、重复部门或资料与登录状态不一致视为契约异常。`PUT` 仍使用不含展示资料的原响应。用户名仅作展示资料，不替代可信 `userid`，不用于认定管理员或文件权限；本项目 `me` 仍读取人员数据库的完整身份。请求体依旧仅含用户 `access_token`，不新增资料写入。
+用户会话 `POST /middleware-service/api/user/login-cache` 的响应现支持 `username`、`departments` 与 `employment_status`：有效登录返回当前用户名、部门名称数组（无部门为 []）及任职状态 employed/resigned，无效登录这三项均为 `null`。查询使用独立的严格 DTO，兼容旧版本省略这些字段；类型错误、空名称、重复部门、非法任职状态或资料与登录状态不一致视为契约异常。离职可以与有效登录同时存在，不根据任职状态撤销或拒绝登录。`PUT` 仍使用不含展示资料的原响应。用户名仅作展示资料，不替代可信 `userid`，不用于认定管理员或文件权限；本项目 `me` 仍读取人员数据库的完整身份。请求体依旧仅含用户 `access_token`，不新增资料写入。
 
 [自动化测试](../../../tests/test_middleware.py)使用内存 HTTP Mock 和虚拟时钟，覆盖登录与无请求体心跳、响应校验、配置优先级及密钥保护、冲突与网络故障恢复、401 重登、过期判断、超时、禁用模式及 lifespan 清理。临时配置只写入 `tests/tmp/` 并清理，不读取真实 `.env` 或使用 `data/`。
 
@@ -102,7 +102,7 @@ python -m pip check
 
 | 范围 | 已核对接口 | 关键结论 |
 | --- | --- | --- |
-| 平台与用户（7 项） | 平台 login、heartbeat、list、admins/full-table；用户 full-table、PUT/POST login-cache | 根前缀、Bearer 认证、全表维护角色与字段一致；心跳无请求体；用户全表发送 departments 名称数组；登录查询可返回 username/departments，写入响应不含这些字段。 |
+| 平台与用户（7 项） | 平台 login、heartbeat、list、admins/full-table；用户 full-table、PUT/POST login-cache | 根前缀、Bearer 认证、全表维护角色与字段一致；心跳无请求体；用户全表发送 departments 名称数组及 employment_status，核对逐用户状态回执；登录查询可返回 username/departments/employment_status，写入响应不含这些字段。 |
 | 助理任务（5 项） | assistant/tasks 的 publish、pull、ack、status；resource/assistant-tasks/{file_id} | JSON 和 multipart 表单一致；空领取为 204；同平台重复 pull 续租；下载携带 file_extension；确认使用任务 ID 和交付凭证。 |
 | 平台 A2A（5 项） | requests/publish、replies/pull、replies/ack、direct-replies/pull、direct-replies/ack | 首次单平台请求也进入广播聚合；带历史响应 ID 的续聊进入单聊反馈流；领取携带 Idempotency-Key 和可选 renew_messages，不发送已移除的 limit 或 requests/ack。 |
 

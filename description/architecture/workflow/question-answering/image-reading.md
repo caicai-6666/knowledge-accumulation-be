@@ -1,10 +1,19 @@
 # Core 图像文件阅读
 
+轻量查看回执由工具独立末尾钩子使用多行模板生成，保留文件 ID、当前页和总页数；正文展示、隐藏及不可读三态分别反馈。持久化只保存隐藏回执，原生图像仍经资料消息注入。展示期引用失效转为 ToolPageUnavailable，不把旧图像当成当前可读内容；失败保留读取位置，不改变原授权和提交回调。 渲染及兼容边界见[工具反馈契约](tool-content-contract.md#core-工具反馈迁移清单)。
+
 ## 用途与入口
 
 独立的 `view_image_file` 只阅读用户多图附件中的图像页面。参考 contract-service-be 的文件模型、LRU 驻留、独立阅读位置和临时页面展示；不迁入合同库工具、文件门禁、HTTP 上传或其他业务流程。音频和视频有明确的 `unsupported_type` 反馈，本轮不实现其读取能力。
 
 工具定义位于 [tool/image_viewer.py](../../../../app/agent/core/tool/image_viewer.py)，图像执行器位于 [file/image_viewer.py](../../../../app/agent/core/file/image_viewer.py)。UUID 与磁盘文件沿用[任务附件登记](../../data/question-file.md)。装配 `QuestionAgentService(..., file_service=files)` 或模式工厂的 `file_service` 后，自动给本轮 Core 加入这一个图像工具；共享 Core 的基本工具集合不被修改。
+
+
+个人助理额外采用[附件授权包装](../../../../app/agent/assistant/tool/image_authorization.py)：先通过原有用户与任务树归属校验，再通过 `FileVisibilityService.get` 确认上传登记属于当前用户、类型一致且 `visibility=public`。私密文件一律拒绝，包括所属用户本人上传的附件；未登记、依赖不可用及登记不一致也不放行。反馈保留具体原因与修正方向，不诱导模型为了读取而自行公开文件。
+
+该包装通过 `QuestionAgentService.file_authorize_wrapper` 注入，仅作用于个人助理的 `view_image_file` 查看器。个人助理工厂接收 `file_visibility`，生产组合根注入已有服务；没有装配该依赖时，附件查看拒绝而不跳过校验。探索模式、注册中心文件工具、HTTP 附件下载及通用文件服务的授权规则不变，不开放他人的公开附件跨用户读取。Core 工具参数、读取实现及渲染钩子不变。
+
+查看器每次读取前、缓存命中、渲染完成及页面再次展示时都重新调用包装后的授权函数。因此公开改为私密后，后续读取和缓存页面再次展示均拒绝；无法撤回此前已经送入模型的图像。无需数据库迁移或新增配置。
 
 ---
 
@@ -125,3 +134,6 @@ core = AgentCore(model_settings, options=load_agent_core_settings())
 
 
 本地 UUID 缓存验证覆盖：同页多轮注入和翻页均不重复读盘、同作用域跨任务复用、不同作用域隔离、LRU 淘汰后重新读取，以及已缓存附件撤销授权后仍拒绝展示。测试只使用内存合成 PDF。
+
+
+2026-11-09 [个人助理附件授权测试](../../../../tests/test_assistant_image_authorization.py)使用内存 PDF 和依赖替身，覆盖本人私密拒绝、原归属检查优先、未登记/依赖故障关闭访问、缓存撤权、读取中变为私密、下一轮可读反馈及成功后纠错清理，并通过实际服务装配验证探索模式不受影响。未调用真实模型或修改业务文件可见范围。

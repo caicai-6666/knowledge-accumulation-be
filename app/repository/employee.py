@@ -19,7 +19,7 @@ _DEPARTMENTS_SELECT = (
     'WHERE JSON_CONTAINS(COALESCE(e.department_ids,JSON_ARRAY(e.department_id)),CAST(dep.id AS JSON))),JSON_ARRAY()) AS departments'
 )
 _EMPLOYEE_SELECT = (
-    'SELECT e.userid,e.name,e.avatar_url,e.department_id,e.platform_permissions,d.name AS department_name, '
+    'SELECT e.userid,e.name,e.employment_status,e.avatar_url,e.department_id,e.platform_permissions,d.name AS department_name, '
     + _DEPARTMENTS_SELECT + ', '
     # 同一条查询读取员工与管理员关联，避免文件权限等级被误用为管理身份。
     'COALESCE((SELECT JSON_ARRAYAGG(a.platform_code) FROM platform_admins AS a '
@@ -68,7 +68,7 @@ def _department_directory_query(username, department, limit, offset):
                  'AND EXISTS(SELECT 1 FROM department_matches) THEN e.userid '
                  'ELSE COALESCE(e.name,e.userid) END,e.userid')
         args = (username, username, username, literal(username), *args)
-    query = (prefix + 'SELECT e.userid,COALESCE(e.name,e.userid) AS username, ' + _DEPARTMENTS_SELECT
+    query = (prefix + 'SELECT e.userid,COALESCE(e.name,e.userid) AS username,e.employment_status, ' + _DEPARTMENTS_SELECT
         + ' FROM employees AS e JOIN ' + source + ' ON matched.userid=e.userid ORDER BY ' + order
         + ' LIMIT %s OFFSET %s')
     return query, (*args, limit, offset)
@@ -81,6 +81,7 @@ def _json_value(value):
 
 def _user(row: dict) -> AuthenticatedUser:
     return AuthenticatedUser(userid=row['userid'], name=row['name'],
+        employment_status=row['employment_status'],
         avatar_url=avatar_response_filename(row['avatar_url']), department_id=row['department_id'],
         department_name=row['department_name'], platform_permissions=_json_value(row['platform_permissions']),
         managed_platforms=_json_value(row['managed_platforms']),
@@ -163,7 +164,7 @@ class MySQLEmployeeRepository:
                     await cursor.execute(query, args)
                 elif username is None:
                     # 显式的无筛选查询，不用通配符模拟全量，也不依赖全文索引；仍受数量上限约束。
-                    await cursor.execute('SELECT e.userid,COALESCE(e.name,e.userid) AS username, '
+                    await cursor.execute('SELECT e.userid,COALESCE(e.name,e.userid) AS username,e.employment_status, '
                         + _DEPARTMENTS_SELECT + ' FROM employees AS e '
                         'ORDER BY username,e.userid LIMIT %s OFFSET %s', (limit, offset))
                 else:
@@ -172,7 +173,7 @@ class MySQLEmployeeRepository:
                     keyword = username.strip()
                     # 显式转义，姓名中的 %、_ 按字面匹配；值始终作为绑定参数。
                     text = keyword.replace('!', '!!').replace('%', '!%').replace('_', '!_')
-                    await cursor.execute("SELECT e.userid,e.name AS username, "
+                    await cursor.execute("SELECT e.userid,e.name AS username,e.employment_status, "
                         + _DEPARTMENTS_SELECT + ' FROM employees AS e '
                         "WHERE MATCH(e.name) AGAINST(%s IN NATURAL LANGUAGE MODE)>0 "
                         "OR LOWER(e.name) LIKE LOWER(%s) ESCAPE '!' "
@@ -233,7 +234,7 @@ class MySQLEmployeeRepository:
                             await cursor.execute(
                                 'INSERT INTO departments(id,name) VALUES(%s,%s) AS incoming '
                                 'ON DUPLICATE KEY UPDATE name=incoming.name', (department.dept_id, department.name))
-                        # 主键是并发初始化的最终仲裁：已有员工不改姓名、头像、部门或权限。
+                        # 主键仲裁并发初始化；新员工使用数据库默认在职状态，已有员工的离职标识等资料不覆盖。
                         await cursor.execute(
                             'INSERT INTO employees(userid,name,avatar_url,department_id,platform_permissions,work_profile,department_ids) '
                             'VALUES(%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE userid=employees.userid',

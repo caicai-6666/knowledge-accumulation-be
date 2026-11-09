@@ -1,11 +1,14 @@
 """工作区工具参数、路径解析、无副作用编辑及注册。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from textwrap import dedent
 from typing import Annotated, Literal
 from uuid import uuid4
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 from ..json_codec import load_model_json,normalize_model_json,ModelActionRejected
 from ..workspace import (WorkspaceObject,WorkspaceText,WorkspaceKey,WorkspacePayload,
     WorkspaceKnownInformation,WorkspaceRemainingDirection,WorkspaceExploredDirection)
+from .hooks import ToolHookContext
+from .result import OrdinaryToolContent, ToolExecution
 
 WorkspacePath = Annotated[str, StringConstraints(strict=True, pattern=r'^/[a-z][a-z0-9_]*(/[a-z][a-z0-9_]*)*$')]
 
@@ -146,18 +149,81 @@ def prepare_workspace_edit(snapshot: WorkspacePayload, name: str, raw_arguments:
     return WorkspaceEdit(payload=validated, path=path, removed_path=removed_path)
 
 
-_MODELS={'workspace_add':WorkspaceAddArguments,'workspace_replace':WorkspaceReplaceArguments,'workspace_delete':WorkspaceDeleteArguments}
+_MODELS = {
+    'workspace_add': WorkspaceAddArguments,
+    'workspace_replace': WorkspaceReplaceArguments,
+    'workspace_delete': WorkspaceDeleteArguments,
+}
+
+
+def render_workspace_feedback(
+    arguments: BaseModel,
+    execution: ToolExecution,
+    context: ToolHookContext,
+) -> ToolExecution:
+    # 参数及引用拒绝发生在预演阶段，由原校验分支反馈；此处不重做编辑或分配 ID。
+    if execution.result.status != 'succeeded':
+        return execution
+
+    if isinstance(arguments, WorkspaceAddArguments):
+        title, label = '工作区新增', '目标容器'
+    elif isinstance(arguments, WorkspaceReplaceArguments):
+        title, label = '工作区替换', '目标路径'
+    else:
+        title, label = '工作区删除', '目标路径'
+
+    # 独立调用注册表并不意味着已提交工作区，不能冒充完整宿主的成功反馈。
+    feedback = context.workspace_feedback or '状态：编辑已通过预演，等待宿主提交。'
+    text = dedent(f"""
+        ### {title}
+
+        {feedback}
+        {label}：{arguments.path}
+    """).strip()
+    if isinstance(arguments, WorkspaceAddArguments) and arguments.direction_id is not None:
+        text += f'\n探索方向 ID：{arguments.direction_id}'
+
+    return replace(
+        execution,
+        result=execution.result.model_copy(
+            update={'content': OrdinaryToolContent(text=text)},
+        ),
+    )
 
 
 def build_workspace_registrations():
     from functools import partial
+
     from .registry import RegisteredTool
-    descriptions={
-        'workspace_add':'当你需要保存后续步骤仍会使用的重要信息、任务补充、探索计划或探索结果时，使用这个工具。向指定工作区容器新增一个条目，新增位置以最新工作区为准。普通新增由程序生成 ID；新增已探索结果时必须指定剩余方向 ID，原子转移并保留原规划。',
-        'workspace_replace':'当你需要更新工作区中已有的信息、修正任务约束或整理已有条目时，使用这个工具。用新值替换已有字段或完整条目，保留稳定 ID 和其他内容；路径不存在、类型或引用不合法时整次拒绝。用户要求以实际陈述为准，不用自己的规划代替。',
-        'workspace_delete':'当你需要清理工作区中过时、重复或已无保留价值的条目，为后续信息腾出空间时，使用这个工具。删除指定条目，不级联删除其他信息；必要字段、容器、缺失条目或仍被引用的信息不能删除。',
+
+    descriptions = {
+        'workspace_add': (
+            '当你需要保存后续步骤仍会使用的重要信息、任务补充、探索计划或探索结果时，使用这个工具。'
+            '向指定工作区容器新增一个条目，新增位置以最新工作区为准。'
+            '普通新增由程序生成 ID；新增已探索结果时必须指定剩余方向 ID，原子转移并保留原规划。'
+        ),
+        'workspace_replace': (
+            '当你需要更新工作区中已有的信息、修正任务约束或整理已有条目时，使用这个工具。'
+            '用新值替换已有字段或完整条目，保留稳定 ID 和其他内容；路径不存在、类型或引用不合法时整次拒绝。'
+            '用户要求以实际陈述为准，不用自己的规划代替。'
+        ),
+        'workspace_delete': (
+            '当你需要清理工作区中过时、重复或已无保留价值的条目，为后续信息腾出空间时，使用这个工具。'
+            '删除指定条目，不级联删除其他信息；必要字段、容器、缺失条目或仍被引用的信息不能删除。'
+        ),
     }
-    def prepare(name,raw,workspace,arguments):
-        return prepare_workspace_edit(workspace,name,raw).payload
-    return [RegisteredTool(name,descriptions[name],model,prepare,partial(parse_workspace_tool_arguments,name))
-            for name,model in _MODELS.items()]
+
+    def prepare(name, raw, workspace, arguments):
+        return prepare_workspace_edit(workspace, name, raw).payload
+
+    return [
+        RegisteredTool(
+            name,
+            descriptions[name],
+            model,
+            prepare,
+            partial(parse_workspace_tool_arguments, name),
+            hooks=(render_workspace_feedback,),
+        )
+        for name, model in _MODELS.items()
+    ]

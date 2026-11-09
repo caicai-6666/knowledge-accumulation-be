@@ -1,11 +1,15 @@
 """无状态日历运算：年月按目标月末截断，随后叠加日时分秒。"""
 import calendar
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import re
+from textwrap import dedent
 
 from pydantic import Field, StrictInt, field_validator
+
 from ..workspace import WorkspaceObject
-from .result import ToolExecutionResult
+from .hooks import ToolHookContext
+from .result import OrdinaryToolContent, ToolExecution, ToolExecutionResult
 
 
 def parse_start_time(value: str) -> datetime:
@@ -28,13 +32,33 @@ class DateCalculateArguments(WorkspaceObject):
     本工具只进行日历运算，不计算工作日或节假日，也不判断业务期限的起止规则。
     """
 
-    start_time: str = Field(description='计算基准，须取自当前任务时间、用户明确输入或已知事实，不得猜测。格式为YYYY-MM-DD或YYYY-MM-DDTHH:MM:SS，可附小数秒及Z或±HH:MM时区。仅日期按00:00:00处理，未指定时区按北京时间UTC+08:00；必须是有效日期。')
-    years: StrictInt | None = Field(default=None, description='增加的年数，负数为减少，省略或null为0；与月份偏移合并计算后再处理月末。')
-    months: StrictInt | None = Field(default=None, description='增加的月数，负数为减少，可跨年，省略或null为0；目标月没有原日期时取该月最后一天。')
-    days: StrictInt | None = Field(default=None, description='年月调整完成后增加的自然日数，负数为减少，省略或null为0；不是工作日。')
-    hours: StrictInt | None = Field(default=None, description='年月调整后增加的小时数，负数为减少，省略或null为0；自动跨日。')
-    minutes: StrictInt | None = Field(default=None, description='年月调整后增加的分钟数，负数为减少，省略或null为0；自动进退位。')
-    seconds: StrictInt | None = Field(default=None, description='年月调整后增加的秒数，负数为减少，省略或null为0；自动进退位。')
+    start_time: str = Field(
+        description='计算基准，须取自当前任务时间、用户明确输入或已知事实，不得猜测。格式为YYYY-MM-DD或YYYY-MM-DDTHH:MM:SS，可附小数秒及Z或±HH:MM时区。仅日期按00:00:00处理，未指定时区按北京时间UTC+08:00；必须是有效日期。',
+    )
+    years: StrictInt | None = Field(
+        default=None,
+        description='增加的年数，负数为减少，省略或null为0；与月份偏移合并计算后再处理月末。',
+    )
+    months: StrictInt | None = Field(
+        default=None,
+        description='增加的月数，负数为减少，可跨年，省略或null为0；目标月没有原日期时取该月最后一天。',
+    )
+    days: StrictInt | None = Field(
+        default=None,
+        description='年月调整完成后增加的自然日数，负数为减少，省略或null为0；不是工作日。',
+    )
+    hours: StrictInt | None = Field(
+        default=None,
+        description='年月调整后增加的小时数，负数为减少，省略或null为0；自动跨日。',
+    )
+    minutes: StrictInt | None = Field(
+        default=None,
+        description='年月调整后增加的分钟数，负数为减少，省略或null为0；自动进退位。',
+    )
+    seconds: StrictInt | None = Field(
+        default=None,
+        description='年月调整后增加的秒数，负数为减少，省略或null为0；自动进退位。',
+    )
 
     @field_validator('start_time')
     @classmethod
@@ -51,25 +75,87 @@ def calculate_date(arguments: DateCalculateArguments) -> dict:
     year, month = month_index // 12 + 1, month_index % 12 + 1
     day = min(start.day, calendar.monthrange(year, month)[1])
     adjusted = start.replace(year=year, month=month, day=day)
-    result = adjusted + timedelta(days=arguments.days or 0, hours=arguments.hours or 0,
-                                  minutes=arguments.minutes or 0, seconds=arguments.seconds or 0)
-    return {'start_time': start.isoformat(), 'result_time': result.isoformat(),
-            'weekday': ('星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日')[result.weekday()],
-            'month_end_clamped': day != start.day}
+    result = adjusted + timedelta(
+        days=arguments.days or 0,
+        hours=arguments.hours or 0,
+        minutes=arguments.minutes or 0,
+        seconds=arguments.seconds or 0,
+    )
+    return {
+        'start_time': start.isoformat(),
+        'result_time': result.isoformat(),
+        'weekday': ('星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日')[result.weekday()],
+        'month_end_clamped': day != start.day,
+    }
 
 
 async def execute_date_calculation(arguments):
     try:
         result = calculate_date(arguments)
     except (ValueError, OverflowError):
-        return ToolExecutionResult(status='failed', tool_result={
-            'error': '日期运算超出支持范围（公元1至9999年），请缩小增减量；未生成结果。'})
+        return ToolExecutionResult(
+            status='failed',
+            tool_result={
+                'error': '日期运算超出支持范围（公元1至9999年），请缩小增减量；未生成结果。',
+                # 运算也可能在构造 timedelta 时溢出，不能断言已得到一个越界日期。
+                'reason': '日期或增减量超出运算支持范围，本次未生成结果。',
+                'required_action': (
+                    '请核对 start_time 并缩小 years、months、days、hours、minutes、seconds 中的增减量，'
+                    '确保年月调整及最终日期均在公元 1 至 9999 年内，再调用 calculate_date。'
+                ),
+            },
+        )
     return ToolExecutionResult(status='succeeded', tool_result=result)
+
+
+def render_date_calculation_feedback(
+    arguments: DateCalculateArguments,
+    execution: ToolExecution,
+    context: ToolHookContext,
+) -> ToolExecution:
+    # 只排版本次运算事实；错误原因与修正动作由上面的失败分支提供。
+    result = execution.result.tool_result
+    if execution.result.status == 'succeeded':
+        adjustment = '已调整为目标月份最后一天' if result['month_end_clamped'] else '未发生'
+        text = dedent(f"""
+            ### 日期计算
+
+            状态：计算成功
+            开始时间：{result["start_time"]}
+            计算结果：{result["result_time"]}
+            结果星期：{result["weekday"]}
+            年月阶段月末调整：{adjustment}
+        """).strip()
+    elif execution.result.status == 'failed':
+        text = dedent(f"""
+            ### 日期计算
+
+            状态：计算失败
+            原因：{result["reason"]}
+            下一步：{result["required_action"]}
+        """).strip()
+    else:
+        return execution
+
+    return replace(
+        execution,
+        result=execution.result.model_copy(
+            update={'content': OrdinaryToolContent(text=text)},
+        ),
+    )
 
 
 def build_date_calculation_registration():
     from .registry import RegisteredTool
+
     def prepare(name, raw, workspace, arguments):
         return workspace
-    return RegisteredTool('calculate_date', DateCalculateArguments.__doc__,
-                          DateCalculateArguments, prepare, executor=execute_date_calculation)
+
+    return RegisteredTool(
+        'calculate_date',
+        DateCalculateArguments.__doc__,
+        DateCalculateArguments,
+        prepare,
+        executor=execute_date_calculation,
+        hooks=(render_date_calculation_feedback,),
+    )

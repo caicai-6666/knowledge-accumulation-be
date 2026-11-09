@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from app.model.personnel import PlatformCode, Department
+from app.model.personnel import PlatformCode, Department, EmploymentStatus
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -12,6 +12,8 @@ class AuthenticatedUser(BaseModel):
 
     userid: str = Field(min_length=1, max_length=128, strict=True, description="可信的员工 userid；开发模式来自服务端配置。")
     name: str | None = Field(default=None, max_length=200, description="员工姓名；历史资料未知时为空。")
+    employment_status: EmploymentStatus = Field(default='employed',
+        description='员工在职状态：employed 在职，resigned 离职；首次创建默认为在职。')
     departments: list[Department] = Field(default_factory=list, description='完整一级部门列表；多部门并列归属，不代表主次。')
     department_id: int | None = Field(default=None, ge=0, description="旧版兼容部门 ID，不代表唯一或主要部门；完整归属使用 departments。")
     department_name: str | None = Field(default=None, max_length=200, description="顶级部门名称。")

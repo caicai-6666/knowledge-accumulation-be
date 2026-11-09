@@ -1,4 +1,4 @@
-"""上传字节准备与已登记附件读取；任务正文是唯一归属登记来源。"""
+"""探索附件保存与读取；元信息登记仅由个人助理上传流程负责。"""
 import asyncio
 import logging
 from pydantic import TypeAdapter
@@ -38,9 +38,13 @@ class QuestionFileService:
                     raise
         except BaseException:
             for reference in created:
-                await self.store.delete(reference)
+                try:
+                    await self.store.delete(reference)
+                except Exception as error:
+                    # 文件删除失败时保留初始异常，避免补偿错误覆盖上传失败原因。
+                    logger.warning('上传文件补偿未确认：error_type=%s',type(error).__name__)
             raise
-        # 此处仅落盘，调用方随后与创建任务一起登记；没有 SQL 登记的文件不可通过 read_file 读取。
+        # 探索附件不写 uploaded_files；调用方仍须与任务一起登记附件引用。
         return unique_references([*references,*created])
 
     async def cleanup_unregistered(self,tree_id,owner_userid,references):

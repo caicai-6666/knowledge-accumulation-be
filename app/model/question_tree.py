@@ -97,12 +97,19 @@ class QuestionNode(TreeModel):
         return self
 
 
+class CommittedToolResult(TreeModel):
+    name: str = Field(min_length=1)
+    result: dict[str, JsonValue]
+
+
 class TaskContent(TreeModel):
     kind: Literal['task'] = 'task'
     question: str = Field(strict=True, min_length=1)
     attachments: list[AttachmentReference] = Field(default_factory=list)
     # 保存已接受的 assistant/tool 对与 context_summary 检查点；私有生成独立保存。
     exchanges: list[dict[str, JsonValue]] = Field(default_factory=list)
+    # 供事务钩子消费的结构化回执，独立于模型可见 exchanges；旧节点默认为空。
+    tool_results: dict[str, CommittedToolResult] = Field(default_factory=dict)
     answer: str = Field(default='', strict=True)
 
     _unique_attachments=field_validator('attachments')(unique_references)

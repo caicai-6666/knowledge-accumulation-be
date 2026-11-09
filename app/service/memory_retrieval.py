@@ -7,7 +7,7 @@ from llama_index.core.llms import MockLLM
 from app.agent.core.prompt.embedding import render_text_embedding_input
 from app.agent.core.subgraph.memory_retrieval.schema import RankedTask, RetrievalPlan
 from app.infrastructure.myvector import MyVectorStore
-from app.repository.memory_retrieval import read_memory_tasks
+from app.repository.memory_retrieval import MemoryWindowError, read_memory_tasks
 
 KINDS = {'user_input': 'question', 'intermediate_output': 'intermediate', 'final_output': 'final'}
 
@@ -118,6 +118,31 @@ class AncestorMemoryRetrieval:
         if self._closed:
             raise RuntimeError('记忆召回服务已关闭')
         return await read_memory_tasks(self.repository, tree_id, owner, current_node_id, ids)
+
+    async def window(self, tree_id, owner, current_node_id, *, task_id, before=0, after=0):
+        """沿完整祖先链定位相邻任务；不依赖助理压缩窗口、向量状态或时间排序。"""
+        if self._closed:
+            raise RuntimeError('记忆召回服务已关闭')
+        if (type(before) is not int or type(after) is not int or before < 0 or after < 0
+                or not 1 <= before + after <= 20):
+            raise MemoryWindowError('任务窗口数量不合法，尚未建立结果集。',
+                'before 和 after 必须为非负整数，合计为 1 至 20；不包含锚点任务本身。')
+        snapshot = await self.repository.load_tree(tree_id, owner)
+        if snapshot.tree.kind != 'assistant':
+            raise MemoryWindowError('任务窗口查找仅适用于个人助理，本次未建立结果集。',
+                '请使用 search_memory 查找当前会话的历史任务。')
+        tasks = snapshot.ancestor_tasks(current_node_id)
+        anchor = next((index for index, node in enumerate(tasks) if node.id == task_id), None)
+        if anchor is None:
+            # 不区分不存在与越权，避免通过报错探测其他用户或分支的任务。
+            raise MemoryWindowError('该任务 ID 不在当前可读取的历史任务范围内，本次未建立结果集。',
+                '请核对并改用已知正确的历史任务 ID，原样填写 task_id；已有正确 ID 时可直接重试，无须先搜索。没有可用 ID 时，可通过 search_memory 和 view_memory_query 定位；不能使用查询 ID 或记录序号。')
+        selected = tasks[max(0, anchor-before):anchor] + tasks[anchor+1:anchor+1+after]
+        ids = tuple(node.id for node in selected)
+        # 发布前确认原文可读，翻页时还会回查归属与范围；读取失败不能伪装为空结果。
+        if ids:
+            await self.read(tree_id, owner, current_node_id, ids)
+        return ids
 
     async def close(self):
         async with self._lock:

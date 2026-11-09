@@ -18,7 +18,9 @@ class ResultModel(BaseModel):
 
 
 class OrdinaryToolContent(ResultModel):
-    type: Literal['ordinary'] = Field(default='ordinary', description='普通结果，只展示 tool_result，不注入临时页面。')
+    type: Literal['ordinary'] = Field(default='ordinary', description='普通结果，不注入临时页面。')
+    text: ReferenceText | None = Field(default=None,
+        description='工具就地渲染的轻量反馈正文；提供时直接作为模型的工具消息正文，否则沿用 tool_result 的 JSON 展示。不包含私有审计或大容量资料。')
 
 
 class ToolPageReference(ResultModel):
@@ -29,9 +31,19 @@ class ToolPageReference(ResultModel):
     description: ReferenceText = Field(description='模型可见的简短业务来源说明，不包含整页正文、缓存信息或内部工程标识。')
 
 
+class FoldableReceiptText(ResultModel):
+    visible: ReferenceText = Field(description='资料正文当前可展示时的轻量回执，不包含资料正文。')
+    hidden: ReferenceText = Field(description='资料未展示或已折叠时的轻量回执；用于持久化及历史恢复。')
+    unavailable: ReferenceText = Field(description='至少一页资料当前无法读取时的轻量回执，不声称正文已展示。')
+
+
 class FoldableToolContent(ResultModel):
     type: Literal['foldable'] = Field(default='foldable', description='可折叠结果，只保存页面引用，大容量正文不进入工具回执。')
     pages: list[ToolPageReference] = Field(min_length=1, description='本次打开的页面引用，每项对应一次独立展示。')
+    feedback: FoldableReceiptText | None = Field(
+        default=None,
+        description='工具钩子生成的三种展示状态回执；缺省沿用旧 JSON 回执，不改变页面引用与提交语义。',
+    )
 
     @model_validator(mode='after')
     def unique_displays(self):
@@ -61,7 +73,7 @@ class ToolGuidance(ResultModel):
 class ToolExecutionResult(ResultModel):
     status: Literal['succeeded', 'failed', 'unknown'] = Field(description='执行事实：成功、明确未成功或结果不确定；不确定时停止且禁止自动重放。')
     content: ToolContent = Field(default_factory=OrdinaryToolContent, description='程序消费的普通或可折叠内容，与执行状态独立。')
-    tool_result: dict[str, JsonValue] = Field(description='模型可见的轻量结果，不包含私有审计、页面正文或图片 Base64。')
+    tool_result: dict[str, JsonValue] = Field(description='结构化轻量结果，默认向模型展示为 JSON；普通内容提供 text 或可折叠内容提供 feedback 时展示对应正文。不包含私有审计、页面正文或图片 Base64。')
     system_guidence: list[ToolGuidance] = Field(default_factory=list, description='可信工具产生的全部提示，按顺序保留，不用后一个覆盖前一个。')
 
     @model_validator(mode='after')

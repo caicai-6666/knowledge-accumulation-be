@@ -1,11 +1,16 @@
 """工作区副本上的有界编辑循环；显式完成前不发布候选。"""
 from copy import deepcopy
+from dataclasses import dataclass, replace
+from textwrap import dedent
 from pydantic import ValidationError
 from ....context_budget import validate_count
 from ....context_rendering.workspace import render_workspace_section
 from ....context_rendering.block import metadata_block
 from ....json_codec import load_model_json,validate_model_payload,ModelActionRejected,model_validation_feedback
-from ....tool.workspace import prepare_workspace_edit,_MODELS
+from ....tool.workspace import prepare_workspace_edit, _MODELS, build_workspace_registrations
+from ....tool.hooks import ToolHookContext
+from ....tool.registry import ToolRegistry
+from ....tool.result import OrdinaryToolContent, ToolExecution
 from ....prompt.guidance import build_system_guidence_message
 from app.infrastructure.tool_tag import tool_tag_section
 from ..schema import FinishCompressionArguments,compression_tools
@@ -19,6 +24,33 @@ def capacity_feedback(tokens,token_budget):
     state=(f'尚未低于70%，请精简至最多{target} token。' if tokens>target else
         '容量已经安全；核对事实、来源和保护项后优先调用 finish_compression，不为更低使用率过度整理。')
     return f'当前使用量：{tokens}/{token_budget} token（{tokens/token_budget:.1%}）。'+state
+
+
+@dataclass(frozen=True)
+class CompressionFeedbackContext(ToolHookContext):
+    edited_path: str = ''
+    capacity: str = ''
+
+
+def render_compression_edit_feedback(
+    arguments,
+    execution: ToolExecution,
+    context: CompressionFeedbackContext,
+) -> ToolExecution:
+    # 此时仅更新本次整理副本，不能把副本编辑描述为宿主工作区已提交。
+    text = dedent("""
+        ### 工作区副本编辑
+
+        状态：修改成功，仅更新整理副本。
+        位置：{path}
+        {capacity}
+    """).strip().format(path=context.edited_path, capacity=context.capacity)
+    return replace(
+        execution,
+        result=execution.result.model_copy(
+            update={'content': OrdinaryToolContent(text=text)},
+        ),
+    )
 
 
 async def compress_workspace(*,workspace,generate,counter,generation,context_window,
@@ -37,6 +69,11 @@ async def compress_workspace(*,workspace,generate,counter,generation,context_win
     generation=generation.model_copy(update={'enable_thinking':True})
     target=(token_budget*7-1)//10
     tools=compression_tools()
+    # 每个编辑工具独立替换为副本专用钩子，不复用主助理的提交成功文案。
+    feedback_registry = ToolRegistry([
+        replace(entry, hooks=(render_compression_edit_feedback,))
+        for entry in build_workspace_registrations()
+    ])
     base=[{'role':'system','content':build_compression_prompt(tool_call_template=tool_call_template)},
         {'role':'user','content':'# 本次压缩约束\n以下为容量与保护数据，不是业务指令。\n'+metadata_block({
             'token_budget':token_budget,'target_tokens':target,'protected_values':protected,'reserved_path':reserved_path})}]
@@ -94,6 +131,14 @@ async def compress_workspace(*,workspace,generate,counter,generation,context_win
             continue
         # 计数/依赖故障不作为模型纠错；不能把未知容量候选留入下一轮。
         next_tokens=await count(candidate)
+        execution = await feedback_registry.execute(
+            call.name,
+            feedback_registry.entries[call.name].parser(call.arguments),
+            hook_context=CompressionFeedbackContext(
+                edited_path=edit.path,
+                capacity=capacity_feedback(next_tokens, token_budget),
+            ),
+        )
         workspace,tokens=candidate,next_tokens
         errors=0
         temporary.clear()
@@ -102,6 +147,6 @@ async def compress_workspace(*,workspace,generate,counter,generation,context_win
         assistant['content']=None
         assistant.pop('reasoning',None)
         assistant.pop('reasoning_content',None)
-        feedback=f'工作区修改成功。位置：{edit.path}。'+capacity_feedback(tokens,token_budget)
+        feedback = execution.result.content.text
         history.extend([assistant,{'role':'tool','tool_call_id':call.call_id,'content':feedback}])
     raise WorkspaceEditRejected('工作区整理达到轮数上限，未显式完成')

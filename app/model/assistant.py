@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, Field, JsonValue, field_validator, model_validator
-from app.model.question_file import AttachmentReference
+from app.model.question_file import AttachmentReference, FileID
 from app.model.question_tree import TreeID, TreeModel, new_tree_id, utc_now
 
 UserID = Annotated[str, Field(strict=True, min_length=1, max_length=128, pattern=r'\S')]
@@ -258,6 +258,7 @@ class AssistantDelivery(AssistantModel):
     reminder_id: TreeID | None = None
     action_key: ExternalID
     scheduled_for: AwareDatetime | None = None
+    file_id: FileID | None = None
     destination: Literal['user', 'assistant']
     recipient_userid: UserID
     task_type: Literal['assistant_message', 'reminder'] | None = None
@@ -277,6 +278,9 @@ class AssistantDelivery(AssistantModel):
             raise ValueError('投递必须且只能关联一个任务或提醒')
         if (self.reminder_id is not None) != (self.scheduled_for is not None):
             raise ValueError('提醒投递必须绑定本次计划触发时间')
+        if self.file_id is not None and (self.destination != 'user' or self.task_id is None
+                                         or self.recipient_userid != self.userid):
+            raise ValueError('附件交付仅用于任务向所属用户发送文件')
         if (self.destination == 'user') != (self.task_type is None):
             raise ValueError('只有助理队列投递需要任务类型')
         if self.reminder_id is not None and (self.destination, self.task_type, self.recipient_userid) != ('assistant', 'reminder', self.userid):

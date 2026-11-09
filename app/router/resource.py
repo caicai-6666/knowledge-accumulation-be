@@ -1,10 +1,11 @@
 """已登录用户读取头像和本人任务附件；不创建登录或按客户端路径访问文件。"""
 
 import asyncio
+import hashlib
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response
 
 from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer
 from app.schema.auth import AuthErrorResponse
@@ -21,13 +22,15 @@ _HEADERS = {'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'}
 @router.get('/avatar/{filename:path}', response_class=Response,
             summary='读取头像', dependencies=[Depends(user_bearer)], responses={
                 200: {'description': 'WebP 头像原始字节', 'content': {'image/webp': {'schema': {'type': 'string', 'format': 'binary'}}}},
+                304: {'description': '头像内容未变化，使用浏览器缓存；无响应正文'},
                 401: {'description': '用户 token 无效或中央会话失效', 'model': AuthErrorResponse},
                 404: {'description': '头像不存在', 'model': AuthErrorResponse},
                 422: {'description': '头像名称或请求参数不合法', 'model': AuthErrorResponse},
                 503: {'description': '认证未启用、依赖不可用或头像读取失败', 'model': AuthErrorResponse},
             })
 async def avatar(request: Request, user: AuthenticatedUserDependency,
-                 filename: Annotated[str, Path(min_length=37, max_length=37, pattern=r'^[a-f0-9]{32}\.webp$', description='32 位小写十六进制标识加 .webp；不得包含目录或其他后缀。')]):
+                 filename: Annotated[str, Path(min_length=37, max_length=37, pattern=r'^[a-f0-9]{32}\.webp$', description='32 位小写十六进制标识加 .webp；不得包含目录或其他后缀。')],
+                 if_none_match: Annotated[list[str] | None, Header(description='缓存的 ETag；支持逗号分隔列表、弱标签或 *，匹配当前头像时返回 304。')] = None):
     await reject_extra_input(request)
     # 部分路由正则可忽略末尾换行；对照解码后的原始路径，禁止参数截断后绕过名称校验。
     if request.scope['path'].rsplit('/', 1)[-1] != filename:
@@ -44,7 +47,16 @@ async def avatar(request: Request, user: AuthenticatedUserDependency,
     except Exception as error:
         logger.warning('头像读取失败：error_type=%s', type(error).__name__)
         raise HTTPException(503, '头像读取暂不可用', headers=_HEADERS) from None
-    return Response(content, media_type='image/webp', headers=_HEADERS)
+    # 新头像使用新文件名；仅允许浏览器私有缓存，并按凭据隔离账号间的缓存复用。
+    etag = '"' + hashlib.sha256(content).hexdigest() + '"'
+    headers = {**_HEADERS, 'Cache-Control': 'private, max-age=86400',
+               'Vary': 'Authorization', 'ETag': etag}
+    # 条件响应必须在认证及文件读取成功后判断，不能用缓存标签绕过失效会话或文件删除。
+    # GET 的 If-None-Match 使用弱比较；本服务标签为十六进制摘要，不包含逗号。
+    tags = [tag.strip() for value in (if_none_match or ()) for tag in value.split(',')]
+    if any(tag == '*' or tag.removeprefix('W/') == etag for tag in tags):
+        return Response(status_code=304, headers=headers)
+    return Response(content, media_type='image/webp', headers=headers)
 
 
 

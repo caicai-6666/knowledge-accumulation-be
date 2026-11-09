@@ -55,6 +55,16 @@ exploration 中所有列表查看工具统一发布 `task.progress.type=thinking
 
 探索包沿用 contract-service-be 的输出工具流式展示：MLLM 收到分片后构造累计工具消息，[`exploration/output_stream.py`](../../../../app/agent/exploration/output_stream.py) 的 `InteractionOutputStream` 只解码 `emit_progress/finish_task` 参数中已经完整到达的 `content` 字符，立即发送 `message.delta`。不等待整次生成结束，不通过 sleep 模拟流式。JSON 转义、中文及 UTF-16 代理对跨片时，等字符完整后再发送；单个事件最多携带 512 个字符，短分片不等待凑满。
 
+`emit_progress` 在工具自身注册末尾 `FeedbackOnlyHook`，仅渲染模型工具回执，阶段正文保持原样并继续支持流式预览。成功提交后，下一轮模型及保存的工具历史收到以下正文：
+
+```text
+### 阶段进展
+
+状态：阶段正文已保存，任务继续执行。
+```
+
+结构化结果仍保留 `status=accepted`，回执不代表客户端已收到消息。参数错误继续由 Core 就近校验并提供修正提示，成功后清除失败轨迹、保留私有审计；提交失败则停止，不发布成功回执或重放输出。最终 `finish_task` 继承 Core 的结束回执。实现见 [emit_progress.py](../../../../app/agent/exploration/tool/emit_progress.py)，共同约束见[工具反馈规范](../../../standard/tool-feedback.md)。
+
 前端按 `message_id` 追加 delta，此时消息状态为 `streaming`。完整调用通过协议、参数及执行校验，并完成节点 SQL 提交后，才发送 `message.completed(status=completed)`；前端以其 `text` 覆盖正文。预览 ID 直接用于节点公开消息落盘，避免完成后出现第二条重复答案。中途输出后继续执行，最终输出后再发布任务终态。
 
 生成截断、非法调用、停止或改变方向时，已展示正文通过 `message.completed(status=interrupted)` 收束。纠正后的输出使用新 ID。预览及中断正文只属于展示历史，不写入权威答案、有效工具交互、工作区或记忆向量。原生推理、普通模型文本、非输出工具参数、私有生成和图片 base64 均不进入 SSE。提交回执不明或交付取消时，宿主先回查 SQL：已提交的公开消息恢复为 completed，不能误判为中断答案；其余预览在任务终态前标记 interrupted。

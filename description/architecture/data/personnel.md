@@ -15,6 +15,7 @@
 | `Department` / `departments` | `id`、`name` | 公司顶级部门；真实 ID 沿用钉钉部门 ID，开发模拟部门可使用 0。 |
 | `AuthenticatedUser` / `employees` | `userid` | 员工唯一标识，区分大小写，不能为空或包含首尾空白。 |
 | 员工身份 | `name` | 员工姓名，历史未知可为 null；同步中间件时回退为 userid。 |
+| 员工身份 | `employment_status` | 在职状态：`employed` 在职、`resigned` 离职；首次创建默认在职。 |
 | 员工身份 | `department_id`、`department_name` | 旧版兼容部门 ID 和名称；完整归属见 departments 列表。 |
 | 员工身份 | `avatar_url` | 对外资料中仅为 32 位小写十六进制标识加 `.webp` 文件名，无头像为 null。 |
 | 员工身份 | `platform_permissions` | 平台代码到非负整数文件读取权限等级的映射，未配置的平台无授权。 |
@@ -50,18 +51,41 @@
 
 ---
 
+## 员工在职状态
+
+[022 在职状态迁移](../../../schema/022-employee-employment-status.sql)为 `employees` 增加独立的 `employment_status` 列，不并入任职 JSON。值仅允许 `employed`、`resigned`，数据库默认 `employed`，拒绝 null 和其他值；身份模型使用同样的枚举与默认值。新员工插入时采用数据库默认值；重复建档只确认既有记录，不会将离职状态重置为在职。
+
+**部署前须先在权威人员库手工执行 022，应用不自动迁移。** 迁移将现有员工初始化为在职，这是兼容默认值，不代表已核实历史任职情况；实际已离职人员需要根据权威名单维护为 `resigned`。本项目没有新增管理编辑 API，可由现有人员库维护流程按精确 userid 更新该字段。例如：
+
+```sql
+UPDATE employees SET employment_status='resigned' WHERE userid='目标员工userid';
+```
+
+员工查询、全表读取及登录/me 身份返回该字段；个人助理按宿主每轮读取的 SQL 员工身份显示“在职状态：在职／离职”，详见[员工事实资料](../workflow/question-answering/assistant-personal-context.md#员工事实资料)。开发模拟员工默认在职。缺字段或非法存储值属于部署或数据错误，仓库不会静默伪装为在职。
+
+状态用于资料展示及个人助理最终通知校验：所属员工离职时，`finish_task.send_to_user=true` 在提交前被拒绝，须改为 false 静默保存，详见[交付门禁](../../capability/application/assistant-consumption.md#finish_task)。不自动禁用登录、助理间通信或跨平台 A2A；同步边界见[中间件资料映射](#中间件资料映射)。本次不修改注册中心、中间件或 deploy 项目。
+
+2026-11-02 验证：员工状态、建档、助理背景、多部门及用户同步隔离测试共 33 项通过，覆盖四类助理任务的实际上下文构建、离职员工保留在同步集合中和现有出站 DTO 边界。[专项测试](../../../tests/test_employee_employment_status.py)另准备 3 项显式启用的 MySQL 用例；一次性 MySQL 8.4 容器因 Docker OCI runtime 创建失败而未启动，实库迁移及数据库约束尚未验证。失败容器已清理，未连接业务数据库，未执行真实 022 迁移或重启服务。
+
+2026-11-02T12:04:03+08:00 经用户授权，已在本项目当前配置的 `127.0.0.1:13306 / registry`（MySQL 8.4.13）执行 `022-employee-employment-status.sql`。迁移前字段不存在，迁移后核验为 `VARCHAR(16)`、`ascii_bin`、非空、默认 `employed`，`chk_employees_employment_status` 已启用。现有 7 名员工均按默认值初始化为在职，未根据推测标记离职人员。实际员工全表与助理目录仓库读取均返回 7 条，状态一致；未向业务库插入测试记录，未修改其他项目文件、重启服务或主动发布中间件用户总表。该记录仅说明此数据库已迁移，不代表其他环境已同步。
+
+---
+
 ## 中间件资料映射
 
-专用 [MiddlewareUserInfo](../../../app/model/middleware_user.py) 只允许四个字段：
+用户全表同步继续包含在职和离职员工；`employment_status` 使用本地与中间件共享的取值 `employed` / `resigned`，原样发送，不做状态映射。
+
+专用 [MiddlewareUserInfo](../../../app/model/middleware_user.py) 只允许五个字段：
 
 | 字段 | 来源 |
 | --- | --- |
 | `userid` | 员工 userid，保持大小写。 |
 | `username` | 员工 name；历史未知时使用 userid。 |
 | `permissions` | 员工 platform_permissions。 |
+| `employment_status` | 员工 employment_status，原样发送 employed（在职）或 resigned（离职）。 |
 | `departments` | 全部一级部门名称数组；完整列表优先，缺少时回退旧 department_name，仍未知则为 []。 |
 
-部门名称按本地部门 ID 排序后去除首尾空白并按名称去重；中间件不解释 ID、层级或主部门，同名不同 ID 在本地仍分别保留。DTO 强制提供 departments，拒绝 null、空白名称与重复名称，避免漏传导致中央部门被清空。部门归属不自动授予权限。部门 ID、头像、管理身份和任何用户 token 均不进入该 DTO。全表从与 registry 权限编辑相同的权威人员源读取，镜像已有权限，不从登录对象或模拟配置重算旧员工等级；资料增量、权限与 SQL 管理员关系编辑及管理员增量维护只在 registry；管理员启动全量镜像已由知识后端承担，见[管理员同步契约](../../capability/application/startup-admin-sync.md#外部调用契约)。权威源确认及跨后端旧快照覆盖限制见[职责与运维边界](../system/user-auth.md#中间件维护方授权与运维状态)。平台 Bearer 仅用于服务端 HTTP 认证头，不属于用户对象。
+部门名称按本地部门 ID 排序后去除首尾空白并按名称去重；中间件不解释 ID、层级或主部门，同名不同 ID 在本地仍分别保留。DTO 强制提供 departments 和 employment_status，避免全表省略字段导致中央部门被清空或任职状态重置为在职；部门列表拒绝 null、空白名称与重复名称，任职状态仅接受上述两个值。部门归属不自动授予权限。部门 ID、头像、管理身份和任何用户 token 均不进入该 DTO。全表从与 registry 权限编辑相同的权威人员源读取，镜像已有权限，不从登录对象或模拟配置重算旧员工等级；资料增量、权限与 SQL 管理员关系编辑及管理员增量维护只在 registry；管理员启动全量镜像已由知识后端承担，见[管理员同步契约](../../capability/application/startup-admin-sync.md#外部调用契约)。权威源确认及跨后端旧快照覆盖限制见[职责与运维边界](../system/user-auth.md#中间件维护方授权与运维状态)。平台 Bearer 仅用于服务端 HTTP 认证头，不属于用户对象。
 
 ---
 
@@ -74,7 +98,7 @@
 
 ## 助理姓名目录
 
-`MySQLEmployeeRepository.search_user_names(username=None, department=None, offset=0, limit=11)` 返回 userid、展示姓名与完整一级部门 departments（id/name）列表；复用员工身份查询的部门投影，历史 department_ids 为 NULL 时回退旧 department_id。按员工限量，部门聚合不会增加结果人数；部门按 ID 排列，不按名称合并。姓名和部门均为空时列出全部员工，按展示姓名、userid稳定排序，姓名为null时回退userid；姓名和一级部门名称各自使用全文及字面包含查询；双路取并集并按用户去重、等权排名融合。省略、null、空串、全空白跳过对应条件；非法类型、超长条件和非法分页参数在查询前拒绝。模型工具的数量上限、分页快照与LRU使用规则统一见[助理目录](../../capability/application/assistant-consumption.md#按用户名查找助理)。
+`MySQLEmployeeRepository.search_user_names(username=None, department=None, offset=0, limit=11)` 返回 userid、展示姓名、employment_status（employed/resigned）与完整一级部门 departments（id/name）列表；在职和离职员工均保留，状态必须来自 SQL，缺失或非法时拒绝结果，不默认推测为在职；复用员工身份查询的部门投影，历史 department_ids 为 NULL 时回退旧 department_id。按员工限量，部门聚合不会增加结果人数；部门按 ID 排列，不按名称合并。姓名和部门均为空时列出全部员工，按展示姓名、userid稳定排序，姓名为null时回退userid；姓名和一级部门名称各自使用全文及字面包含查询；双路取并集并按用户去重、等权排名融合。省略、null、空串、全空白跳过对应条件；非法类型、超长条件和非法分页参数在查询前拒绝。模型工具的数量上限、分页快照与LRU使用规则统一见[助理目录](../../capability/application/assistant-consumption.md#按用户名查找助理)。
 
 
 ---

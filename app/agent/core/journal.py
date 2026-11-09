@@ -1,7 +1,7 @@
 """权威提交与输出展示分离；内存宿主和节点仓库使用同一运行协议。"""
 from copy import deepcopy
 from app.model.node_persistence import GenerationPayload, NodeGeneration, NodeMessage
-from app.model.question_tree import WorkspaceVersion, new_tree_id
+from app.model.question_tree import WorkspaceVersion, new_tree_id, CommittedToolResult
 from app.repository.question_tree import QuestionTreeConflict
 
 
@@ -11,6 +11,7 @@ class MemoryJournal:
         self.generations=[]
         self.audit=[]
         self.exchanges=[]
+        self.tool_results={}
         self.outputs=[]
         self.workspace=None
         self.status='generating'
@@ -68,11 +69,14 @@ class MemoryJournal:
         self.generations.append(generation)
         await self._save_generation(generation)
 
-    async def commit(self,*,workspace,exchanges,output=None,final=False,output_id=None):
+    async def commit(self,*,workspace,exchanges,output=None,final=False,output_id=None,tool_results=None):
         if self.status!='generating':
             raise RuntimeError('运行已结束')
         self.workspace=workspace.model_copy(deep=True)
         self.exchanges=deepcopy(exchanges)
+        if tool_results is not None:
+            self.tool_results.update({key: CommittedToolResult.model_validate(value).model_copy(deep=True)
+                                      for key, value in tool_results.items()})
         if output is not None:
             self.outputs.append(('final' if final else 'intermediate',output))
         if final:
@@ -94,6 +98,7 @@ class NodeJournal(MemoryJournal):
         self.tree_id=restored.tree.id
         self.status=restored.node.status
         self.exchanges=deepcopy(restored.content.exchanges)
+        self.tool_results=deepcopy(restored.content.tool_results)
         self.cancellation_status=cancellation_status
 
     async def _save_generation(self,event):
@@ -108,7 +113,7 @@ class NodeJournal(MemoryJournal):
             self.restored=await self.repository.append_terminal_generation(self.tree_id,self.owner,self.node_id,event)
             self.status=self.restored.node.status
 
-    async def commit(self,*,workspace,exchanges,output=None,final=False,output_id=None):
+    async def commit(self,*,workspace,exchanges,output=None,final=False,output_id=None,tool_results=None):
         if self.status!='generating':
             raise RuntimeError('运行已结束')
         version=None
@@ -117,6 +122,8 @@ class NodeJournal(MemoryJournal):
         event=NodeMessage(node_id=self.node_id,kind='final' if final else 'intermediate',text=output,
             **({'id':output_id} if output_id is not None else {})) if output is not None else None
         kwargs={'expected_revision':self.restored.tree.revision,'workspace':version,'exchanges':exchanges}
+        if tool_results is not None:
+            kwargs['tool_results'] = {**self.tool_results, **tool_results}
         if final:
             if event is None:
                 raise ValueError('最终提交必须包含公开消息')
@@ -125,7 +132,7 @@ class NodeJournal(MemoryJournal):
             updated=await self.repository.checkpoint(self.tree_id,self.owner,self.node_id,events=(event,) if event else (),**kwargs)
         self.restored=updated
         # 数据库确认后才更新内存和发布回执；提交不确定时上抛并停止，不重放。
-        await super().commit(workspace=workspace,exchanges=exchanges,output=output,final=final,output_id=output_id)
+        await super().commit(workspace=workspace,exchanges=exchanges,output=output,final=final,output_id=output_id,tool_results=tool_results)
 
     async def abort(self,status):
         if status=='cancelled' and self.cancellation_status is not None:

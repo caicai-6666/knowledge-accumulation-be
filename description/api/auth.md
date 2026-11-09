@@ -52,6 +52,7 @@ OpenAPI 的 body/Bearer 均为条件可选，实际按上述模式严格校验�
   "user":{
     "userid":"employee-a",
     "name":"员工甲",
+    "employment_status":"employed",
     "department_id":2,
     "department_name":"财务部",
     "avatar_url":null,
@@ -122,10 +123,10 @@ curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/auth/login' \
 `200 application/json`：
 
 ```json
-{"userid":"developer","name":"开发模拟用户","department_id":0,"department_name":"开发模拟部门","avatar_url":null,"platform_permissions":{"registry":0},"managed_platforms":[]}
+{"userid":"developer","name":"开发模拟用户","employment_status":"employed","department_id":0,"department_name":"开发模拟部门","avatar_url":null,"platform_permissions":{"registry":0},"managed_platforms":[]}
 ```
 
-真实员工当前权限和管理列表每次从权威仓库读取；开发 userid 已落库时同样读取 SQL，仅在中央可信 userid 匹配且 SQL 无记录时返回配置展示值，不写管理员表。头像只有文件名或 null，字段定义见[人员数据契约](../architecture/data/personnel.md#部门员工与管理员)。
+employment_status 表示在职状态：employed 为在职、resigned 为离职。真实员工当前状态、权限和管理列表每次从权威仓库读取；开发 userid 已落库时同样读取 SQL，仅在中央可信 userid 匹配且 SQL 无记录时返回配置展示值，不写管理员表。头像只有文件名或 null，字段定义见[人员数据契约](../architecture/data/personnel.md#部门员工与管理员)。
 
 ### 错误响应
 

@@ -1,6 +1,6 @@
 """提醒查询、工具事务提交和到期排期；不在事务内调用中间件。"""
 from datetime import datetime, timedelta, timezone
-import json
+from .tool_result import committed_tool_result
 
 from app.model.assistant import AssistantReminder, AssistantDelivery
 from app.model.question_tree import utc_now
@@ -38,7 +38,6 @@ class MySQLReminderRepository:
     async def commit_actions(self, cursor, record, content):
         # 只消费节点已接受的工具对；失败轨迹不在 exchanges，不能产生任何提醒写入。
         from app.agent.assistant.tool.reminder import CreateReminderArguments, DeleteReminderArguments
-        receipts = {message['tool_call_id']: message['content'] for message in content.exchanges if message.get('role') == 'tool'}
         for message in content.exchanges:
             if message.get('role') != 'assistant':
                 continue
@@ -46,7 +45,7 @@ class MySQLReminderRepository:
                 name = call['function']['name']
                 if name == 'create_reminder':
                     args = CreateReminderArguments.model_validate_json(call['function']['arguments'])
-                    receipt = json.loads(receipts[call['id']])
+                    receipt = committed_tool_result(content, call)
                     reminder = AssistantReminder(userid=record.userid, created_by_task_id=record.task_id,
                         id=receipt['reminder_id'], next_fire_at=receipt['next_fire_at'], **args.model_dump())
                     await self._create(cursor, reminder)

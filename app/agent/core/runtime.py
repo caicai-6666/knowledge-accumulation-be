@@ -151,7 +151,11 @@ class AgentCore:
     async def run(self,request: AgentInput,*,journal=None,publish=None,publish_progress=None,output_observer: OutputObserver | None = None) -> AgentResult:
         if output_observer is not None and any(t.deliver_output is not None for t in self.registry.entries.values()):
             raise ValueError('条件交付工具不支持流式预览，须在完整参数验收后决定发送')
-        if output_observer is not None and any(t.output_kind is not None and t.hooks for t in self.registry.entries.values()):
+        from .tool.hooks import FeedbackOnlyHook
+        if output_observer is not None and any(
+            t.output_kind is not None and any(not isinstance(hook, FeedbackOnlyHook) for hook in t.hooks)
+            for t in self.registry.entries.values()
+        ):
             raise ValueError('带钩子的输出工具不支持流式预览，须等待最终正文验收')
         request=AgentInput.model_validate(request.model_dump())
         journal=journal if journal is not None else MemoryJournal()
@@ -371,8 +375,17 @@ class AgentCore:
                 continue
             # 执行或提交故障直接停止，不当作模型参数错误反复调用外部服务。
             try:
-                execution=await self.registry.execute(call.name,arguments,publish_progress=publish_progress,call_id=call.call_id,
-                    hook_context=ToolHookContext(record_generation=journal.record_payload))
+                execution = await self.registry.execute(
+                    call.name,
+                    arguments,
+                    publish_progress=publish_progress,
+                    call_id=call.call_id,
+                    hook_context=ToolHookContext(
+                        record_generation=journal.record_payload,
+                        workspace_feedback=workspace_feedback,
+                        compacted_turns=summary_size if summary_result is not None else None,
+                    ),
+                )
                 result=execution.result
                 if execution.output is not None:
                     # 钩子只替换输出正文，不修改已经执行的动作参数或工作区候选。
@@ -417,7 +430,9 @@ class AgentCore:
             # 提交异常属于状态不明或依赖故障，不能按参数纠错重试。
             output_id=await output_observer.prepare_commit(call,output) if is_output and output_observer is not None else None
             await journal.commit(workspace=candidate,exchanges=proposed,output=output,final=final,
-                **({'output_id':output_id} if output_id is not None else {}))
+                **({'output_id':output_id} if output_id is not None else {}),
+                **({'tool_results': {call.call_id: {'name':call.name, 'result':result.tool_result}}}
+                   if self.registry.entries[call.name].persist_result else {}))
             # 阅读位置与展示只在权威提交成功后生效；数据库错误不会提前推进游标。
             if execution.after_commit is not None:
                 # 外部交付必须在权威检查点提交后进行；同步页面游标仍沿用原有回调。

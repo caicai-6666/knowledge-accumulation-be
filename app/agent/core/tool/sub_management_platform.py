@@ -1,6 +1,7 @@
 """子管理平台目录阅读：即时查询，五项业务资料通过可折叠页面展示。"""
 import asyncio
 import logging
+from textwrap import dedent
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
@@ -8,6 +9,39 @@ from ..json_codec import load_model_json
 from app.model.platform import MiddlewarePlatformInfo
 from .registry import RegisteredTool
 from .progress import ToolProgress
+from .feedback import with_feedback
+
+
+def render_directory_feedback(arguments, execution, context):
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        text = dedent("""
+            ### 子管理平台目录
+
+            状态：查询失败
+            原因及处理方向：{message}
+        """).strip().format(**result)
+        return with_feedback(execution, text)
+    if result['count'] == 0:
+        return with_feedback(execution, dedent("""
+            ### 子管理平台目录
+
+            状态：查询完成，当前目录没有子管理平台。
+            平台数量：0 个
+        """).strip())
+    template = dedent("""
+        ### 子管理平台目录
+
+        状态：查询记录已提交
+        平台数量：{count} 个
+        资料状态：{state}
+    """).strip()
+    return with_feedback(
+        execution,
+        template.format(**result, state='目录见随后提供的资料，包含离线平台。'),
+        hidden=template.format(**result, state='目录当前未展示，需要核对平台信息时重新查询。'),
+        unavailable=template.format(**result, state='这次目录已无法读取，请重新查询，不推断平台状态。'),
+    )
 from .result import FoldableToolContent, ToolExecution, ToolExecutionResult, ToolPageReference, ToolPageUnavailable
 
 logger = logging.getLogger(__name__)
@@ -57,7 +91,7 @@ class SubManagementPlatformViewer:
 
     async def execute(self, arguments):
         if self._closed:
-            return ToolExecutionResult(status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束。'})
+            return ToolExecutionResult(status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束，请在有效任务中重新查询目录。'})
         try:
             rows = TypeAdapter(list[MiddlewarePlatformInfo]).validate_python(await self._directory.list_platforms())
             if len({row.code for row in rows}) != len(rows):
@@ -67,9 +101,9 @@ class SubManagementPlatformViewer:
         except Exception as error:
             logger.warning('子管理平台查询失败：error_type=%s', type(error).__name__)
             return ToolExecutionResult(status='failed', tool_result={
-                'code':'platform_directory_unavailable','message':'子管理平台目录暂不可用，不能据此判断没有子管理平台。'})
+                'code':'platform_directory_unavailable','message':'子管理平台目录暂不可用，请稍后重试；不能据此判断没有子管理平台。'})
         if self._closed:
-            return ToolExecutionResult(status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束。'})
+            return ToolExecutionResult(status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束，请在有效任务中重新查询目录。'})
         # 只依据中间件明确的子管理标记，不从用户等级、管理员关系、在线或A2A标记推断。
         platforms = [row for row in rows if row.is_sub_management_platform]
         if not platforms:
@@ -98,4 +132,5 @@ def build_sub_management_platform_registration(viewer):
     return RegisteredTool('list_sub_management_platforms', ListSubManagementPlatformsArguments.__doc__,
         ListSubManagementPlatformsArguments, lambda name, raw, workspace, args: workspace,
         parser=parse_directory_arguments, executor=viewer.execute, return_types=('ordinary','foldable'), page_resolver=viewer.resolve_page,
-        progress=ToolProgress(type='thinking', message='正在查看子管理平台'))
+        progress=ToolProgress(type='thinking', message='正在查看子管理平台'),
+        hooks=(render_directory_feedback,))

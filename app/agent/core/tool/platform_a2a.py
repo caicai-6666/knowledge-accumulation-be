@@ -95,6 +95,13 @@ def render_platform_a2a(result, *, continuation=False):
     return '\n'.join(lines)
 
 
+def render_a2a_feedback(arguments, execution, context):
+    from .feedback import with_feedback
+    # 执行分支已经按发送事实、超时和续等语义渲染；只去除 JSON 外壳。
+    # unknown 仍由 Core 终止，不声称此正文已发送给下一轮模型。
+    return with_feedback(execution, execution.result.tool_result['message'])
+
+
 def build_platform_a2a_registrations(service, *, userid, tree_id, node_id):
     async def execute(args):
         try:
@@ -151,5 +158,5 @@ def build_platform_a2a_registrations(service, *, userid, tree_id, node_id):
     return [RegisteredTool(name, model.__doc__.strip(), model, lambda name, raw, workspace, args: workspace,
         executor=execute, progress=(ToolProgress(type='boardcast', message='正在广播求助')
             if name == 'broadcast_platform_a2a' else ToolProgress(type='a2a', message='正在与平台协作')),
-        progress_factory=progress)
+        progress_factory=progress, hooks=(render_a2a_feedback,))
         for name, model in entries]

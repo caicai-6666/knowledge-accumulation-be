@@ -1,7 +1,41 @@
 """独立图像文件阅读工具；只查看多图附件的页面，不处理音频或视频。"""
 from pydantic import BaseModel,ConfigDict,Field
+from textwrap import dedent
 from app.model.question_file import FileID
 from .registry import RegisteredTool
+from .feedback import with_feedback
+from .result import ToolPageUnavailable
+
+
+def render_image_feedback(arguments, execution, context, *, title='图像附件查看'):
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        text = dedent("""
+            ### {title}
+
+            状态：查看未完成，阅读位置未推进。
+            原因及处理方向：{error}
+        """).strip().format(title=title, error=result['error'])
+        return with_feedback(execution, text)
+    template = dedent("""
+        ### {title}
+
+        状态：查看记录已提交
+        文件 ID：{file_id}
+        当前页：第 {page_number} / {page_count} 页
+        资料状态：{state}
+        下一步：{action}
+    """).strip()
+    values = {**result['result'], 'title': title}
+    return with_feedback(
+        execution,
+        template.format(**values, state='本页图像见随后提供的资料。',
+                        action='需要时继续翻页，或指定 page_number 重看；末页不循环。'),
+        hidden=template.format(**values, state='本页图像当前未展示，不能从查看记录推断原文。',
+                               action='需要核对时使用此文件 ID 和页码重新查看。'),
+        unavailable=template.format(**values, state='本页图像当前无法读取，不能推断原文。',
+                                    action='请重新核对文件引用并调用查看工具。'),
+    )
 
 
 class ViewImageFileArguments(BaseModel):
@@ -15,5 +49,12 @@ class ViewImageFileArguments(BaseModel):
 def build_image_view_registration(viewer):
     def prepare(name,raw,workspace,arguments):return workspace
     async def execute(arguments):return await viewer.view(**arguments.model_dump())
+    async def resolve(reference):
+        try:
+            return await viewer.resolve_page(reference)
+        except Exception:
+            # 已提交引用在展示期失效时仅隐藏资料，不把旧图像当成当前可读内容。
+            raise ToolPageUnavailable('图像资料当前无法读取。') from None
     return RegisteredTool('view_image_file',ViewImageFileArguments.__doc__.strip(),ViewImageFileArguments,
-        prepare,executor=execute,return_types=('foldable',),page_resolver=viewer.resolve_page)
+        prepare,executor=execute,return_types=('foldable',),page_resolver=resolve,
+        hooks=(render_image_feedback,))

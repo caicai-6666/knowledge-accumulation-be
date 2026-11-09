@@ -172,6 +172,43 @@ class DingTalkRobotClient:
     async def send_markdown(self, userid: str, title: str, text: str) -> RobotSendReceipt:
         return await self._send(userid, 'sampleMarkdown', {'title': _nonempty(title), 'text': _nonempty(text)})
 
+    async def send_file(self, userid: str, filename: str, content: bytes) -> RobotSendReceipt:
+        """上传 PDF 媒体后单独发送文件；媒体上传失败不等于用户消息结果不明。"""
+        if (not filename.endswith('.pdf') or not content.startswith(b'%PDF-')
+                or len(content) > 20 * 1024 * 1024):
+            raise RobotUnavailable('upload', reason='invalid_pdf')
+        token = await self._application_token()
+        try:
+            async with asyncio.timeout(self.settings.timeout_seconds):
+                async with self._http.stream(
+                    'POST', 'https://oapi.dingtalk.com/media/upload',
+                    params={'access_token': token}, data={'type': 'file'},
+                    files={'media': (filename, content, 'application/pdf')},
+                ) as response:
+                    if response.status_code != 200:
+                        raise RobotUnavailable('upload', status=response.status_code)
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(data) + len(chunk) > 1048576:
+                            raise ValueError('响应超限')
+                        data.extend(chunk)
+                payload = json.loads(data)
+                if not isinstance(payload, dict) or payload.get('errcode') != 0:
+                    raise ValueError('媒体上传未成功')
+                media_id = _nonempty(payload.get('media_id'))
+        except RobotUnavailable as error:
+            if error.status == 401:
+                async with self._token_lock:
+                    if self._token is not None and self._token.get_secret_value() == token:
+                        self._token = None
+            raise
+        except (httpx.HTTPError, ValueError, TypeError, TimeoutError) as error:
+            # 此阶段没有调用发送接口，可以安全重试；不回显含凭据的异常原文。
+            raise RobotUnavailable('upload', reason=type(error).__name__) from None
+        return await self._send(userid, 'sampleFile', {
+            'mediaId': media_id, 'fileName': filename, 'fileType': 'pdf',
+        })
+
     async def _send(self, userid, key, params):
         _nonempty(userid)
         if userid != userid.strip() or len(userid) > 128 or any(c.isspace() for c in userid):

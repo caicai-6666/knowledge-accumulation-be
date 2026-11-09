@@ -84,7 +84,7 @@ class MiddlewareClient:
         response.raise_for_status()
         if response.status_code != 200:
             raise ValueError('用户登录操作必须返回 200')
-        # 查询返回 username/departments，写入响应不含这些字段；各自保持严格校验。
+        # 查询含名称、部门与任职状态，写入仍返回最小登录回执；离职不等于登录无效。
         response_model = MiddlewareUserLoginQueryStatus if method == 'POST' else MiddlewareUserLoginStatus
         result = response_model.model_validate(response.json())
         if method == 'PUT' and (result.userid != userid or not result.is_logged_in):
@@ -114,16 +114,20 @@ class MiddlewareClient:
         response = await self._http.post(
             'middleware-service/api/user/full-table',
             headers={'Authorization': f'Bearer {token.get_secret_value()}'},
-            # 专用 DTO 只发送身份、部门名称及文件权限，不夹带头像、部门 ID 或管理身份。
+            # 专用 DTO 发送身份、部门名称、任职状态及文件权限，不夹带头像、部门 ID 或管理身份。
             json={'users': [user.model_dump() for user in users]},
         )
         response.raise_for_status()
         if response.status_code != 200:
             raise ValueError('用户总表同步必须返回 200')
-        count = MiddlewareUserTableResult.model_validate(response.json()).count
-        if count != len(users):
+        result = MiddlewareUserTableResult.model_validate(response.json())
+        if result.count != len(users):
             raise ValueError('用户总表响应数量与提交数量不一致')
-        return count
+        # 总数相同不代表保存了正确用户或任职状态；逐项核对后才确认本次登记。
+        expected = [(user.userid, user.employment_status) for user in users]
+        if [(user.userid, user.employment_status) for user in result.users] != expected:
+            raise ValueError('用户总表响应的用户顺序或任职状态与提交内容不一致')
+        return result.count
 
     async def replace_platform_admin_table(self, admins: dict[str, list[str]], token: SecretStr) -> int:
         table = PlatformAdminTable(admins=admins)

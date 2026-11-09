@@ -3,6 +3,7 @@ from datetime import date as calendar_date, datetime, time, timedelta, timezone
 from typing import Literal
 
 from pydantic import Field, model_validator
+from ...json_codec import ModelActionRejected
 
 from .schema import (
     FieldQuery, MemoryRetrievalRequest, MemoryRetrievalResult, RetrievalModel,
@@ -26,9 +27,11 @@ class RetrievalConditions(RetrievalModel):
     @model_validator(mode='after')
     def validate_filters(self):
         if self.created_from is not None and self.created_before is not None and self.created_from >= self.created_before:
-            raise ValueError('时间下界必须小于上界')
+            raise ModelActionRejected('时间下界不小于上界，时间条件未更新。',
+                '将 created_from 设为早于 created_before 的 UTC Unix 毫秒时间；不需要某个边界时传 null。')
         if self.statuses is not None and (not self.statuses or len(set(self.statuses)) != len(self.statuses)):
-            raise ValueError('任务终态不能是空集合或包含重复项；清除限制请传null')
+            raise ModelActionRejected('任务终态为空列表或存在重复项，状态条件未更新。',
+                '传入至少一个且不重复的合法终态；清除状态限制时传 null。')
         return self
 
 
@@ -57,9 +60,9 @@ class MemoryRetrievalSession:
 
     def _replace(self, **changes) -> RetrievalConditions:
         if self._executing:
-            raise ValueError('查询正在执行，不能修改条件')
+            raise ModelActionRejected('查询正在执行，条件未修改。', '等待当前查询结束，不重复修改或执行同一查询。')
         if self._result is not None:
-            raise ValueError('查询已经成功结束，不能继续修改条件')
+            raise ModelActionRejected('本次查询已经成功结束，条件未修改。', '使用本次查询结果；新的需求应另行发起检索。')
         # 完整校验候选副本后再提交，失败时原条件保持不变。
         candidate = RetrievalConditions.model_validate({**self._conditions.model_dump(), **changes})
         self._conditions = candidate
@@ -106,11 +109,14 @@ class MemoryRetrievalSession:
         if self._result is not None:
             return self._result
         if self._executing:
-            return MemoryRetrievalResult(status='error', error_code='query_busy', error='查询正在执行。')
+            return MemoryRetrievalResult(status='error', error_code='query_busy',
+                error='查询正在执行，尚未得到结果；请等待当前查询结束，不重复发起相同查询。')
         queries = tuple(FieldQuery(field=field, query=getattr(self._conditions, field))
                         for field in _QUERY_FIELDS if getattr(self._conditions, field) is not None)
         if not queries:
-            return MemoryRetrievalResult(status='error', error_code='missing_query', error='请至少设置一个检索字段。')
+            return MemoryRetrievalResult(status='error', error_code='missing_query',
+                error='尚未启用检索字段，本次未执行查询。请通过 set_user_input_query、'
+                      'set_intermediate_output_query 或 set_final_output_query 设置至少一个非空查询，再调用 execute_query。')
         plan = RetrievalPlan(queries=queries, created_from=self._conditions.created_from,
             created_before=self._conditions.created_before, statuses=self._conditions.statuses)
         self._executing = True

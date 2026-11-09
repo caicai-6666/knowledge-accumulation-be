@@ -9,9 +9,10 @@ logger=logging.getLogger(__name__)
 
 
 class AssistantDeliveryService:
-    def __init__(self,repository,queue,robot,*,publication_retry_window_seconds=3600):
+    def __init__(self,repository,queue,robot,*,publication_retry_window_seconds=3600,file_delivery=None,employees=None):
         self.repository,self.queue,self.robot=repository,queue,robot
         self.publication_retry_window_seconds=publication_retry_window_seconds
+        self.file_delivery,self.employees=file_delivery,employees
 
     async def flush(self,task_id):
         for item in await self.repository.deliveries(task_id):
@@ -28,7 +29,27 @@ class AssistantDeliveryService:
         if not await self.repository.delivery_attempt(item,**attempt_options):return False
         try:
             if item.destination=='user':
-                response=await self.robot.send_markdown(item.recipient_userid,'助理回复',item.message)
+                # 提交与消费之间员工状态可能变化；交付前再核对，离职后不发送。
+                try:
+                    if self.employees is not None:
+                        employee = await self.employees.find_by_userid(item.recipient_userid)
+                        if employee is None or employee.employment_status == 'resigned':
+                            raise ValueError('接收员工不允许通知')
+                    attachment = None
+                    if item.file_id is not None:
+                        if self.file_delivery is None or item.recipient_userid != item.userid:
+                            raise ValueError('附件交付未绑定或接收者不匹配')
+                        stored = await self.repository.get_task(item.task_id)
+                        if stored.record.userid != item.userid:
+                            raise ValueError('附件任务归属不匹配')
+                        attachment = await self.file_delivery.load(item.userid, stored.record.tree_id, item.file_id)
+                except Exception:
+                    # 本分支尚未调用机器人，明确未发送，不保留误导性的 unknown。
+                    raise RobotUnavailable('file_prepare' if item.file_id else 'recipient') from None
+                if attachment is None:
+                    response=await self.robot.send_markdown(item.recipient_userid,'助理回复',item.message)
+                else:
+                    response=await self.robot.send_file(item.recipient_userid,*attachment)
                 receipt={'processQueryKey':response.processQueryKey}
             else:
                 response=await self.queue.publish(PublishAssistantTask(userid=item.recipient_userid,

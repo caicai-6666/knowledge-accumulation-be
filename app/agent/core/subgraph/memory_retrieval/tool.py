@@ -1,10 +1,15 @@
 """检索子Agent的条件设置与最终查询工具；参数、描述和执行映射共用同一份定义。"""
 from datetime import date as calendar_date, timedelta
+from dataclasses import replace
+from textwrap import dedent
 from typing import Annotated, TYPE_CHECKING
 
 from pydantic import Field, StringConstraints, ValidationError, model_validator
 
-from ...json_codec import ModelActionRejected, load_model_json, validate_model_payload
+from ...json_codec import ModelActionRejected, load_model_json, validate_model_payload, model_validation_feedback
+from ...context_rendering.block import metadata_block
+from ...tool.registry import RegisteredTool, ToolRegistry
+from ...tool.result import OrdinaryToolContent, ToolExecutionResult
 from .schema import RetrievalModel
 from .session import RetrievalConditions, TaskEndStatus
 
@@ -24,12 +29,14 @@ class SetTimeFilterArguments(RetrievalModel):
     def validate_time(self):
         if self.date is not None:
             if self.created_from is not None or self.created_before is not None:
-                raise ValueError('date与时间范围互斥，请只保留一种设置方式')
+                raise ModelActionRejected('date 与时间范围同时设置，时间条件未更新。',
+                    '指定 date 时清除 created_from 和 created_before；使用时间范围时将 date 设为 null。')
             try:
                 day = calendar_date.fromisoformat(self.date)
                 day + timedelta(days=1)
             except (ValueError, OverflowError) as exc:
-                raise ValueError('date必须是有效自然日，且可以计算次日边界') from exc
+                raise ModelActionRejected('date 不是有效自然日或无法计算次日边界，时间条件未更新。',
+                    '使用有效的 YYYY-MM-DD 日期；9999-12-31 无法计算次日边界，请调整日期或改用合法时间范围。') from None
         RetrievalConditions(created_from=self.created_from, created_before=self.created_before)
         return self
 
@@ -108,12 +115,76 @@ async def execute_memory_retrieval_tool(session: 'MemoryRetrievalSession', name:
         return {'status': 'error', 'error_code': 'invalid_arguments',
                 'message': exc.reason, 'required_action': exc.required_action}
     except ValidationError as exc:
-        details = [{'field': '.'.join(map(str, item['loc'])) or 'arguments', 'message': item['msg']}
-                   for item in exc.errors(include_url=False, include_input=False, include_context=False)]
+        feedback = model_validation_feedback(exc, model)
         return {'status': 'error', 'error_code': 'invalid_arguments',
-                'message': '参数不合法，原查询条件保持不变；请按字段说明修正后重试。', 'details': details}
+                'message': feedback.reason, 'required_action': feedback.required_action}
     except ValueError as exc:
         return {'status': 'error', 'error_code': 'invalid_operation',
                 'message': '条件不合法或查询已结束，请按字段说明修正；原条件保持不变。'}
     return {'status': 'success', 'message': '查询条件已更新，尚未执行检索。',
             'conditions': conditions.model_dump(mode='json')}
+
+
+def render_memory_retrieval_feedback(arguments, execution, context):
+    feedback = execution.result.tool_result
+    if execution.result.status == 'failed':
+        # 原因与修正动作来自工具或会话的校验分支，不在渲染器按错误码推测。
+        text = dedent("""
+            ### 记忆检索工具
+
+            状态：操作未完成
+            原因及处理方向：{reason}
+        """).strip().format(reason=feedback.get('message') or feedback['error'])
+        if feedback.get('required_action'):
+            text += '\n下一步：' + feedback['required_action']
+    elif 'conditions' in feedback:
+        conditions = feedback['conditions']
+        data = {
+            '创建时间下界（UTC Unix 毫秒，包含；空值不限）': conditions['created_from'],
+            '创建时间上界（UTC Unix 毫秒，不包含；空值不限）': conditions['created_before'],
+            '任务终态（空值不限）': conditions['statuses'],
+            '用户输入检索（空值不启用）': conditions['user_input'],
+            '中途输出检索（空值不启用）': conditions['intermediate_output'],
+            '最终结论检索（空值不启用）': conditions['final_output'],
+        }
+        text = dedent("""
+            ### 记忆检索条件
+
+            状态：条件已更新，尚未执行检索。
+            当前完整条件：
+            {conditions}
+        """).strip().format(conditions=metadata_block(data))
+    else:
+        # execute_query 成功直接结束子循环，此正文不发送给下一轮子模型。
+        text = dedent("""
+            ### 记忆检索
+
+            状态：查询完成。
+        """).strip()
+    return replace(
+        execution,
+        result=execution.result.model_copy(update={'content': OrdinaryToolContent(text=text)}),
+    )
+
+
+def build_memory_retrieval_registry(session):
+    def executor_for(name):
+        async def execute(arguments):
+            feedback = await execute_memory_retrieval_tool(session, name, arguments.model_dump(mode='json'))
+            return ToolExecutionResult(
+                status='failed' if feedback['status'] == 'error' else 'succeeded',
+                tool_result=feedback,
+            )
+        return execute
+
+    return ToolRegistry([
+        RegisteredTool(
+            name,
+            model.__doc__,
+            model,
+            lambda name, raw, workspace, arguments: workspace,
+            executor=executor_for(name),
+            hooks=(render_memory_retrieval_feedback,),
+        )
+        for name, model in _TOOL_MODELS.items()
+    ])

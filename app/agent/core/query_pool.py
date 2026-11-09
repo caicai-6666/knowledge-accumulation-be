@@ -11,6 +11,15 @@ class QueryEntry:
     current_page: int = 0
 
 
+class QueryViewRejected(ValueError):
+    """查询池就近校验提供的定向反馈；调用方不解析异常字符串。"""
+
+    def __init__(self, reason, required_action):
+        super().__init__(reason)
+        self.reason = reason
+        self.required_action = required_action
+
+
 class QueryResultPool:
     """只负责快照、分页和生命周期；正文读取/渲染由业务注入，不共享任何池实例。"""
     def __init__(self, render_page, *, capacity=10, page_size=3):
@@ -41,17 +50,20 @@ class QueryResultPool:
         async with self._lock:
             entry = self._entries.get(query_id)
             if self.closed or entry is None:
-                raise ValueError('查询结果已释放，请重新检索。')
+                raise QueryViewRejected('查询结果不存在或已释放，未读取页面，页码未推进。',
+                    '请重新查找并使用返回的完整查询 ID，不复用其他任务或已失效的查询 ID。')
             total = len(entry.items)
             pages = (total + self.page_size - 1) // self.page_size
             target = entry.current_page + 1 if page is None else page
             if type(target) is not int or not 1 <= target <= pages:
-                raise ValueError('已到末页或页码无效，请指定有效页码重新查看。')
+                raise QueryViewRejected('请求页码超出结果集范围，未读取页面，页码未推进。',
+                    f'请指定 1 至 {pages} 之间的整数页码重看；省略页码且已到末页时，不要继续请求下一页。')
             start = (target - 1) * self.page_size
             text = await self.render_page(entry.items[start:start+self.page_size],
                 page=target, total_pages=pages, total=total, start_rank=start+1)
             if self.closed or self._entries.get(query_id) is not entry:
-                raise ValueError('查询结果已释放，请重新检索。')
+                raise QueryViewRejected('读取期间查询结果已释放，本次页面未接受，页码未推进。',
+                    '请重新查找并使用新返回的查询 ID 查看。')
             def commit():
                 if not self.closed and self._entries.get(query_id) is entry:
                     entry.current_page = target

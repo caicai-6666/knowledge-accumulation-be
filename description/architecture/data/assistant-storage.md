@@ -179,3 +179,10 @@ GROUP BY owner_userid HAVING COUNT(*) > 1;
 ## 当前工作区与驻留窗口
 
 个人助理的最新工作区改为 `assistant_workspaces` 单行存储，节点不再绑定历史工作区版本。该行同时保存最新压缩摘要和未覆盖任务的读取下界，事务提交后更新跨任务驻留窗口。新版本启用前须执行 021 DDL 和显式迁移器，清理已有 assistant 历史工作区；exploration 不参与此迁移。完整契约与验证见[助理记忆驻留](../workflow/question-answering/assistant-memory.md)。
+
+
+---
+
+## 用户附件交付记录
+
+027 迁移在 `assistant_deliveries` 增加可空 `file_id`。NULL 保持原正文/队列消息语义；非空仅允许任务向所属用户本人交付用户附件，使用 `file:<UUID>` 动作键，与正文 `final` 分别去重。没有对上传表增加外键：交付账本需要保留文件被删除后的历史，发送前由业务服务重新检查附件可用性。事务登记、类型限制与恢复规则统一见[最终回复附件交付](../../capability/application/assistant-consumption.md#最终回复的用户附件交付)。

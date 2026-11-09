@@ -23,6 +23,7 @@ class AssistantEmployeeContextLoader:
             '',
             '姓名：' + display(user.name),
             '用户ID：' + display(user.userid),
+            '在职状态：' + {'employed': '在职', 'resigned': '离职'}[user.employment_status],
             '',
             render_departments(user.departments, legacy_name=user.department_name),
             '职位：' + display(profile.title),

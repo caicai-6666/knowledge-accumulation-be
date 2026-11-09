@@ -1,6 +1,8 @@
 """增量规划 → 并行生成 → 全量验收；任一失败不产生部分摘要。"""
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
+from textwrap import dedent
 from pydantic import ValidationError
 from app.infrastructure.tool_tag import tool_tag_section
 from ....context_budget import validate_count
@@ -11,6 +13,28 @@ from .schema import (SummaryTopic, FinishPlanningArguments, TopicGenerationOutpu
 from .prompt import build_topic_planning_prompt, TOPIC_GENERATION_PROMPT
 from .rendering import prepare_sources, render_material, render_topic
 from .sampling import summary_generation
+from ....tool.registry import RegisteredTool, ToolRegistry
+from ....tool.result import OrdinaryToolContent, ToolExecution
+
+
+def render_topic_selection_feedback(
+    arguments,
+    execution: ToolExecution,
+    context,
+) -> ToolExecution:
+    # 主题名称等资料先以既有 YAML 边界展示；回执不重复资料或声称摘要已经生成。
+    text = dedent("""
+        ### 主题选择
+
+        状态：主题选择已接受，最新主题集合见本轮提供的资料。
+        下一步：继续选择或更新主题；筛选完成后调用 finish_topic_planning。
+    """).strip()
+    return replace(
+        execution,
+        result=execution.result.model_copy(
+            update={'content': OrdinaryToolContent(text=text)},
+        ),
+    )
 
 
 async def checked_generate(messages, tools, generation, *, generate, counter, context_window, **kwargs):
@@ -28,17 +52,28 @@ def validate_topic(topic, tasks, previous):
 async def plan_topics(tasks, previous, *, focus, generate, counter, generation, context_window,
                       max_errors, tool_call_template):
     tools = planning_tools()
+    selection = next(tool['function'] for tool in tools if tool['function']['name'] == 'extract_topic')
+    feedback_registry = ToolRegistry([
+        RegisteredTool(
+            'extract_topic',
+            selection['description'],
+            SummaryTopic,
+            lambda name, raw, workspace, arguments: workspace,
+            hooks=(render_topic_selection_feedback,),
+        ),
+    ])
     base = [{'role': 'system', 'content': build_topic_planning_prompt(tool_call_template)},
         {'role': 'user', 'content': render_material(tasks, previous)+'\n\n整理重点：'+focus}]
     topics = {}
     temporary = []
     errors = 0
+    accepted_feedback = []
     for _ in range(96):
         # 权威主题集合每轮重建；合法动作后清除整段错误调用及反馈。
         from ....context_rendering.block import metadata_block
         state = {'role': 'user', 'content': '已接受的主题选择：\n'+metadata_block(
             [t.model_dump() for t in topics.values()])}
-        response = await checked_generate(base+[state]+temporary, tools, generation,
+        response = await checked_generate(base+accepted_feedback+[state]+temporary, tools, generation,
             generate=generate, counter=counter, context_window=context_window)
         argument_model=SummaryTopic
         try:
@@ -60,7 +95,21 @@ async def plan_topics(tasks, previous, *, focus, generate, counter, generation, 
                 validate_topic(topic, tasks, previous)
                 if topic.topic_id not in topics and len(topics) >= 32:
                     raise ModelActionRejected('已有32个主题，不能继续新增。', '合并重叠主题，或使用已有 topic_id 更新主题；规划足够时调用 finish_topic_planning。')
+                execution = await feedback_registry.execute('extract_topic', topic)
                 topics[topic.topic_id] = topic
+                # 仅保留最近成功回执，权威主题集合每轮重建，不累积已被替换的旧选择。
+                accepted_feedback = [
+                    {
+                        'role': 'assistant',
+                        'content': None,
+                        'tool_calls': [{
+                            'id': call.call_id,
+                            'type': 'function',
+                            'function': {'name': call.name, 'arguments': topic.model_dump_json()},
+                        }],
+                    },
+                    {'role': 'tool', 'tool_call_id': call.call_id, 'content': execution.result.content.text},
+                ]
                 errors = 0
                 temporary.clear()
             elif call.name == 'finish_topic_planning':

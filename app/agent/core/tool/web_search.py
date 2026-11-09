@@ -16,7 +16,7 @@ import httpx
 from app.config.deepseek import load_deepseek_settings
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 from .result import FoldableToolContent, ToolPageReference, ToolExecution
-from .result import ToolExecutionResult
+from .result import ToolExecutionResult, ToolPageUnavailable
 from .registry import RegisteredTool
 from .progress import ToolProgress
 
@@ -112,6 +112,65 @@ def render_web_search_results(result_id, snapshot, page, page_size):
     return '\n'.join(lines)
 
 
+def render_search_feedback(arguments, execution, context):
+    from textwrap import dedent
+    from .feedback import with_feedback
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        text = dedent("""
+            ### 网页搜索
+
+            状态：查询失败
+            原因及处理方向：{message}
+        """).strip().format(**result)
+    elif result['count'] == 0:
+        text = dedent("""
+            ### 网页搜索
+
+            状态：查询完成，未找到符合条件的结果。
+            搜索结果：0 条
+            未生成结果集 ID，请调整搜索需求或换用其他来源。
+        """).strip()
+    else:
+        text = dedent("""
+            ### 网页搜索
+
+            状态：查询成功
+            结果集 ID：{result_id}
+            搜索结果：{count} 条
+            下一步：调用 view_web_search_results 查看候选及来源标识。
+        """).strip().format(**result)
+    return with_feedback(execution, text)
+
+
+def render_search_view_feedback(arguments, execution, context):
+    from textwrap import dedent
+    from .feedback import with_feedback
+    result = execution.result.tool_result
+    if execution.result.status != 'succeeded':
+        return with_feedback(execution, dedent("""
+            ### 网页搜索结果查看
+
+            状态：查看失败，页码未推进。
+            原因及处理方向：{message}
+        """).strip().format(**result))
+    template = dedent("""
+        ### 网页搜索结果查看
+
+        状态：查看记录已提交
+        结果集 ID：{result_id}
+        当前页：第 {page} / {total_pages} 页
+        搜索结果：{count} 条
+        资料状态：{state}
+    """).strip()
+    return with_feedback(
+        execution,
+        template.format(**result, state='候选见随后资料；可继续翻页或明确指定有效页码重看，末页不循环。'),
+        hidden=template.format(**result, state='候选正文未展示；需要核对时重新查看，引用失效则重新搜索。'),
+        unavailable=template.format(**result, state='候选资料无法读取，请重新搜索。'),
+    )
+
+
 def _failure(code, message):
     return ToolExecutionResult(status='failed', tool_result={'code': code, 'message': message})
 
@@ -186,7 +245,7 @@ class WebSearchPool:
         target = snapshot.page + 1 if page is None else page
         if type(target) is not int or target < 1 or target > pages:
             return _failure('end_of_results' if page is None else 'invalid_page',
-                f'已到最后一页，当前第{snapshot.page}/{pages}页。' if page is None else f'页码非法，可用页码为1至{pages}。')
+                f'已到最后一页，当前第{snapshot.page}/{pages}页；如需重看，请明确指定有效页码。' if page is None else f'页码非法，请指定1至{pages}之间的整数。')
         def commit():
             if not self.closed and self._items.get(result_id) is snapshot:
                 snapshot.page = target
@@ -338,11 +397,17 @@ def build_web_search_registrations(*, pool, service, authorize):
         return ToolExecutionResult(status='succeeded', tool_result=payload)
 
     async def view(args):
-        await authorize()
+        try:
+            await authorize()
+        except PermissionError:
+            return _failure('session_expired', '当前会话无法继续查看，请在有效会话中重新搜索。')
         return await pool.view(**args.model_dump(), defer_commit=True)
 
     async def resolve(reference):
-        await authorize()
+        try:
+            await authorize()
+        except PermissionError:
+            raise ToolPageUnavailable('当前会话已不能读取搜索资料。') from None
         return await pool.resolve_page(reference)
 
     def search_progress(args):
@@ -357,9 +422,11 @@ def build_web_search_registrations(*, pool, service, authorize):
 
     return (
         RegisteredTool('search_web', SearchWebArguments.__doc__, SearchWebArguments, prepare, executor=search,
-            progress=ToolProgress(type='online-search',message='正在搜索网页'),progress_factory=search_progress),
+            progress=ToolProgress(type='online-search',message='正在搜索网页'),progress_factory=search_progress,
+            hooks=(render_search_feedback,)),
         RegisteredTool('view_web_search_results', ViewWebSearchResultsArguments.__doc__, ViewWebSearchResultsArguments,
-            prepare, executor=view, return_types=('ordinary', 'foldable'), page_resolver=resolve,progress=ToolProgress(type='thinking',message='正在查看搜索结果')),
+            prepare, executor=view, return_types=('ordinary', 'foldable'), page_resolver=resolve,progress=ToolProgress(type='thinking',message='正在查看搜索结果'),
+            hooks=(render_search_view_feedback,)),
     )
 
 

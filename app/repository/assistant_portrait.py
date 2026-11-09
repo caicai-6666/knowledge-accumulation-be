@@ -1,6 +1,7 @@
 """私有画像检索、数字 key 预留和检查点同事务写入。"""
 import hashlib
 import json
+from .tool_result import committed_tool_result
 
 from app.model.assistant_portrait import PortraitGroup, PortraitRecord, PortraitSubject
 
@@ -51,7 +52,6 @@ class AssistantPortraitRepository:
         """仅处理权威已接受工具对；变更与动作账本由调用方的检查点事务一起提交。"""
         from app.agent.assistant.tool.portrait_contract import (
             AddPortraitArguments, AddPortraitResult, DeletePortraitArguments, DeletePortraitResult)
-        receipts = {item['tool_call_id']: item['content'] for item in content.exchanges if item.get('role') == 'tool'}
         for message in content.exchanges:
             if message.get('role') != 'assistant':
                 continue
@@ -61,7 +61,7 @@ class AssistantPortraitRepository:
                     continue
                 arguments = (AddPortraitArguments if name == 'add_portrait' else DeletePortraitArguments
                              ).model_validate_json(call['function']['arguments'])
-                payload = json.loads(receipts[call['id']])
+                payload = committed_tool_result(content, call)
                 # Core 可追加工作区提示；只投影业务回执字段，不把其当作画像内容。
                 fields = ('subject', 'portrait') if name == 'add_portrait' else ('key', 'deleted')
                 receipt = (AddPortraitResult if name == 'add_portrait' else DeletePortraitResult

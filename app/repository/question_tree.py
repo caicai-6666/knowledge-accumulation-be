@@ -2,7 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import timezone
+from datetime import timedelta, timezone
 import json
 
 import asyncmy
@@ -207,14 +207,22 @@ class MySQLQuestionTreeRepository:
         async with self._transaction() as cursor:
             tree = await self._owned_tree(cursor, tree_id, owner_userid, lock=True)
             self._revision(tree, expected_revision)
-            updated = QuestionTree.model_validate({**tree.model_dump(), 'name': name,
-                'revision': tree.revision + 1, 'updated_at': utc_now()})
-            await cursor.execute('UPDATE question_trees SET name=%s,revision=%s,updated_at=%s WHERE id=%s',
-                (updated.name, updated.revision, _date(updated.updated_at), tree.id))
-            snapshot = self.structure_cache.get(tree)
-            if snapshot is not None:
-                self._update_snapshot(cursor, snapshot, updated)
-            return updated
+            return await self._rename_locked_tree(cursor, tree, name)
+
+    async def _rename_locked_tree(self, cursor, tree, name):
+        updated = QuestionTree.model_validate({**tree.model_dump(), 'name': name})
+        if tree.name == name:
+            return tree
+        # 名称是展示元数据，不推进生成检查点使用的 revision；行锁仍保证并发改名有序。
+        # 同 revision 的缓存用活动时间判新旧，保证同刻改名或时钟回拨时仍严格递增。
+        updated = updated.model_copy(update={
+            'updated_at': max(utc_now(), tree.updated_at + timedelta(microseconds=1))})
+        await cursor.execute('UPDATE question_trees SET name=%s,updated_at=%s WHERE id=%s',
+            (updated.name, _date(updated.updated_at), tree.id))
+        snapshot = self.structure_cache.get(tree)
+        if snapshot is not None:
+            self._update_snapshot(cursor, snapshot, updated)
+        return updated
 
     async def rename_exploration_tree(self, tree_id: str, owner_userid: str, name: str) -> QuestionTreeListItem:
         """在同一行锁事务中校验归属、用途并改名；列表调用方不需要持有节点版本。"""
@@ -225,15 +233,7 @@ class MySQLQuestionTreeRepository:
             tree = await self._owned_tree(cursor, tree_id, owner_userid, lock=True)
             if tree.kind != 'exploration':
                 raise QuestionTreeNotFound('问答树不存在')
-            # 重复提交相同名称不改变活动时间或版本；并发改名以取得行锁的顺序生效。
-            if tree.name != name:
-                now = utc_now()
-                await cursor.execute('UPDATE question_trees SET name=%s,revision=%s,updated_at=%s WHERE id=%s',
-                    (name, tree.revision + 1, _date(now), tree.id))
-                snapshot = self.structure_cache.get(tree)
-                if snapshot is not None:
-                    self._update_snapshot(cursor, snapshot, tree.model_copy(update={
-                        'name': name, 'revision': tree.revision + 1, 'updated_at': now}))
+            await self._rename_locked_tree(cursor, tree, name)
         return result
 
     @staticmethod

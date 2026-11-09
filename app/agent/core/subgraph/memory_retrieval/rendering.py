@@ -1,4 +1,4 @@
-"""历史资料独立包络；不注入内部节点号、运行ID、私有推理或失败调用。"""
+"""历史资料独立包络；任务 ID 用于记忆定位，不注入其他工程标识或私有推理。"""
 from datetime import timezone, timedelta
 from ...context_rendering.block import text_block as render_text_block
 from ...context_rendering.attachment import render_attachments
@@ -14,7 +14,7 @@ def render_memory_page(tasks, *, page, total_pages, total, start_rank):
     for rank, task in enumerate(tasks, start_rank):
         node, content = task.write.node, task.write.content
         stamp = node.created_at.astimezone(timezone(timedelta(hours=8))).isoformat(timespec='seconds')
-        lines += ['',f'◆ 召回记录 {rank}',f'创建时间：{stamp}（北京时间）',f'任务终态：{STATUSES[node.status]}',
+        lines += ['',f'◆ 召回记录 {rank}',f'任务 ID：{node.id}',f'创建时间：{stamp}（北京时间）',f'任务终态：{STATUSES[node.status]}',
             '', '### 历史用户输入', render_text_block(content.question)]
         if content.attachments:
             lines.append(render_attachments(content.attachments))

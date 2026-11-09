@@ -5,6 +5,14 @@ from app.model.question_tree import NodeWrite
 from app.repository.question_tree import _decode, _row
 
 
+class MemoryWindowError(ValueError):
+    """只传递窗口校验分支给出的安全原因和修正动作，不回显底层异常。"""
+
+    def __init__(self, reason, required_action):
+        super().__init__(reason)
+        self.reason, self.required_action = reason, required_action
+
+
 @dataclass(frozen=True)
 class MemoryTask:
     write: NodeWrite

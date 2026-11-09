@@ -25,6 +25,7 @@
 | --- | --- | --- | --- | --- |
 | path | `filename` | string | 是 | 精确 32 位小写十六进制标识加 `.webp`，总长 37；禁止目录、其他后缀、尾随换行及控制字符。 |
 | header | `Authorization` | string | 是 | 唯一用户 Bearer，不是中间件平台 token。 |
+| header | `If-None-Match` | string | 否 | 上次响应的 ETag；支持逗号分隔列表、弱标签及 `*`，匹配时返回 304。 |
 
 无 query、无 body；任何非空请求体或 query 返回 422。编码斜杠、子目录和无效名称不用于打开文件；客户端或代理预先规范化为其他路由的路径可能直接返回路由 404。
 
@@ -33,11 +34,19 @@
 `200 image/webp`，body 为存储文件原始二进制字节，包含：
 
 ```text
-Cache-Control: no-store
+Cache-Control: private, max-age=86400
+Vary: Authorization
+ETag: "<头像内容的 SHA-256 十六进制摘要>"
 X-Content-Type-Options: nosniff
 ```
 
-不提供重定向、公开静态目录或缓存条件响应，不将内部路径写入响应。读取字节受 `AVATAR_MAX_DOWNLOAD_BYTES` 限制，总读取超时使用 `AVATAR_TIMEOUT_SECONDS`；配置和实现见[头像下载与安全存储](../capability/infrastructure/user-infrastructure.md#头像下载与安全存储)。
+浏览器可以私有缓存 24 小时，共享代理不得缓存；按 `Authorization` 区分缓存，凭据变化后不能直接复用旧凭据的缓存项。新头像保存时生成新文件名，前端取得新的头像 URL 后即可请求新图。缓存有效期内浏览器可以不访问后端，服务端会话失效或文件删除不会主动清除已经缓存的图片。
+
+缓存过期或客户端主动重新验证时，可发送 `If-None-Match`。后端先完成身份校验及文件读取，再对内容计算 ETag；匹配返回 `304`，无正文，包含与 200 相同的缓存头、ETag 和 `Vary`，客户端复用缓存图片；不匹配返回 `200` 及完整图片。304 节省图片传输，不跳过后端认证和文件读取。不提供 `Last-Modified` 条件校验。
+
+前端正常请求同一 URL 即可利用浏览器 HTTP 缓存，勿使用 `cache: 'no-store'` 或每次追加随机 URL 参数；本接口不接受 query。此变更不包含前端自行维护的 Blob 或应用内缓存。
+
+不提供重定向或公开静态目录，不将内部路径写入响应。读取字节受 `AVATAR_MAX_DOWNLOAD_BYTES` 限制，总读取超时使用 `AVATAR_TIMEOUT_SECONDS`；配置和实现见[头像下载与安全存储](../capability/infrastructure/user-infrastructure.md#头像下载与安全存储)。
 
 ### 错误响应
 

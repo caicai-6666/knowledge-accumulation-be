@@ -79,7 +79,7 @@
 
 [build_tree_context](../../../../app/agent/context.py) 从已经选定的路径读取 TaskContent.exchanges，填入 HistoryTurn.native_messages。继续使用已有 JSON 正文，无需新增表、列、启动任务或第二份缓存。
 
-[原生消息校验](../../../../app/agent/core/native_messages.py) 沿用参考项目契约：每条 assistant 恰有一个工具调用；反馈必须紧邻并匹配；调用标识不能重复；参数必须是无重复键、无非法数值的 JSON 对象。普通文本和私有推理不能混入工具消息。已接受的参数字符串、工具名称和回执按提交结果恢复，不从公开输出重建参数。输出工具若注册执行后钩子，先转换再提交；助理已接受的 `finish_task.content` 为转换后的正文，原始生成仅保存在私有审计，见[正文转换](assistant-message-rendering.md)。
+[原生消息校验](../../../../app/agent/core/native_messages.py) 沿用参考项目契约：每条 assistant 恰有一个工具调用；反馈必须紧邻并匹配；调用标识不能重复；参数必须是无重复键、无非法数值的 JSON 对象。模型随工具调用附带的普通文本和私有推理不能混入已接受的 assistant 消息；tool 回执允许程序渲染的可读文本，具体格式见[工具返回契约](tool-content-contract.md#执行结果与失败边界)。已接受的参数字符串、工具名称和回执按提交结果恢复，不从公开输出重建参数。输出工具若注册执行后钩子，先转换再提交；助理已接受的 `finish_task.content` 为转换后的正文，原始生成仅保存在私有审计，见[正文转换](assistant-message-rendering.md)。
 
 历史封闭时去除已完成任务的程序操作提示，但不按正文关键字删除资料。context_summary 是宿主保存的整理检查点，带 covered_turns 的新检查点先应用祖先覆盖投影，随后从原生消息中排除，不能用它掩盖一半的工具调用。原始完整 exchanges 保留在数据库；需要进一步缩短历史时仍由树摘要和容量规则处理。
 

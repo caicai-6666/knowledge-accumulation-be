@@ -1,13 +1,48 @@
 """主助手只提交自然语言检索需求；祖先范围及参考时间由宿主绑定。"""
 import asyncio
 from contextlib import AsyncExitStack
+from dataclasses import replace
+from textwrap import dedent
 from langgraph.errors import NodeCancelledError
 from pydantic import Field
 from ..subgraph.memory_retrieval.schema import RetrievalModel, MemoryRetrievalRequest
 from ..subgraph.memory_retrieval import build_memory_retrieval_subgraph
 from .registry import RegisteredTool
-from .result import ToolExecution, ToolExecutionResult
+from .result import OrdinaryToolContent, ToolExecution, ToolExecutionResult
 from .progress import ToolProgress
+
+
+def render_memory_search_feedback(arguments, execution, context):
+    result = execution.result.tool_result
+    if execution.result.status == 'failed':
+        text = dedent("""
+            ### 记忆检索
+
+            状态：查询失败，未生成可查看的结果集。
+            原因及处理方向：{message}
+        """).strip().format(message=result['message'])
+    elif result['total'] == 0:
+        text = dedent("""
+            ### 记忆检索
+
+            状态：查询完成，未找到匹配任务。
+            匹配任务：0 条
+            未生成查询 ID，无需调用 view_memory_query。
+        """).strip()
+    else:
+        text = dedent("""
+            ### 记忆检索
+
+            状态：查询成功
+            查询 ID：{query_id}
+            匹配任务：{total} 条
+            总页数：{total_pages} 页
+            下一步：使用此查询 ID 调用 view_memory_query 查看。
+        """).strip().format(**result)
+    return replace(
+        execution,
+        result=execution.result.model_copy(update={'content': OrdinaryToolContent(text=text)}),
+    )
 
 
 class SearchMemoryArguments(RetrievalModel):
@@ -47,4 +82,5 @@ def build_memory_search_registration(*, pool, search, reference_time, core, jour
             'message':'查询已完成，请调用view_memory_query查看。'}), after_commit=commit)
     return RegisteredTool('search_memory', SearchMemoryArguments.__doc__, SearchMemoryArguments,
         lambda name,raw,workspace,args:workspace, executor=execute,
-        progress=ToolProgress(type='thinking',message='正在检索历史记忆'))
+        progress=ToolProgress(type='thinking',message='正在检索历史记忆'),
+        hooks=(render_memory_search_feedback,))
