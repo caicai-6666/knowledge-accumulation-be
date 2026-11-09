@@ -1,5 +1,7 @@
 # 问答树存储与内存索引
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与当前边界
 
 本模块准备问答树的 MySQL 存储、用户归属隔离、内存结构和上下文路径解析，已供 Agent Core 的内部生成入口读取和追加。应用按需连接仓库，现有登录、头像及平台接口保持原有行为。
@@ -36,11 +38,11 @@ S1 → C → D
 
 ## MySQL 数据结构
 
-迁移文件为 [001-question-tree.sql](../../../schema/001-question-tree.sql)，包含四张 InnoDB 表。
+迁移文件为 [001-question-tree.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/001-question-tree.sql)，包含四张 InnoDB 表。
 
-另有 [002-question-node-memories.sql](../../../schema/002-question-node-memories.sql)新增节点向量关联表，字段和使用边界见[节点记忆向量存储](question-memory.md)。
+另有 [002-question-node-memories.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/002-question-node-memories.sql)新增节点向量关联表，字段和使用边界见[节点记忆向量存储](question-memory.md)。
 
-[003-question-memory-index.sql](../../../schema/003-question-memory-index.sql)另建 MyVector 可重建缓存，仅在部署插件并显式接入检索时使用，不改变树的父链、摘要或工作区版本。七张业务表与一张索引缓存分开管理，检索说明见 [MyVector 适配](../../capability/infrastructure/myvector.md)。
+[003-question-memory-index.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/003-question-memory-index.sql)另建 MyVector 可重建缓存，仅在部署插件并显式接入检索时使用，不改变树的父链、摘要或工作区版本。七张业务表与一张索引缓存分开管理，检索说明见 [MyVector 适配](../../capability/infrastructure/myvector.md)。
 
 | 表 | 主要字段与职责 |
 | --- | --- |
@@ -49,15 +51,15 @@ S1 → C → D
 | `question_node_contents` | `node_id` 与 JSON 正文；任务保存问题、已接受交互和回答，摘要保存文本与覆盖起止节点。 |
 | `question_workspaces` | 独立不可变工作区版本，保存 `id`、`tree_id`、JSON 内容与创建时间；节点引用版本。 |
 
-[006-question-tree-kind.sql](../../../schema/006-question-tree-kind.sql)为树表补充用途字段，不新增业务表：
+[006-question-tree-kind.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/006-question-tree-kind.sql)为树表补充用途字段，不新增业务表：
 
 | 字段 | SQL 定义 | 语义 |
 | --- | --- | --- |
 | `kind` | `ENUM('assistant','exploration') NOT NULL DEFAULT 'exploration'` | `assistant` 为个人助理，`exploration` 为复杂任务探索；已有树默认归为探索类型。 |
 
-新增索引 `(owner_userid, kind, updated_at, id)`，仓库已支持按用户、用途列树；原有按用户列树的索引保留。类型字段表达用途；探索保留选点、快照继承与分支规则，助理由专用服务和仓库强制线性追加，使用[当前工作区与压缩窗口](../workflow/question-answering/assistant-memory.md)。后续 [011 助理存储迁移](../../../schema/011-assistant-storage.sql)另加仅作用于 assistant 树的用户唯一索引及助理绑定外键，落实每位用户至多一棵助理树；探索树数量不变。迁移前须核查历史重复树，完整约束和当前实现范围见[助理存储](assistant-storage.md)。
+新增索引 `(owner_userid, kind, updated_at, id)`，仓库已支持按用户、用途列树；原有按用户列树的索引保留。类型字段表达用途；探索保留选点、快照继承与分支规则，助理由专用服务和仓库强制线性追加，使用[当前工作区与压缩窗口](../workflow/question-answering/assistant-memory.md)。后续 [011 助理存储迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/011-assistant-storage.sql)另加仅作用于 assistant 树的用户唯一索引及助理绑定外键，落实每位用户至多一棵助理树；探索树数量不变。迁移前须核查历史重复树，完整约束和当前实现范围见[助理存储](assistant-storage.md)。
 
-[007-question-node-path-type.sql](../../../schema/007-question-node-path-type.sql)为节点表补充路径类型，不新增表或索引；全树读取仍使用现有树内序号索引。
+[007-question-node-path-type.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/007-question-node-path-type.sql)为节点表补充路径类型，不新增表或索引；全树读取仍使用现有树内序号索引。
 
 | 字段 | SQL 定义 | 语义 |
 | --- | --- | --- |
@@ -67,7 +69,7 @@ S1 → C → D
 
 **迁移状态：** 模型、仓库、上下文加载与生成服务已适配，测试使用包含 `006`、`007` 的新结构，未执行真实业务库迁移。`001` 保留基础定义，新库也需补执行 `006`、`007`，旧应用不能提前使用新增字段（其模型禁止额外字段，仓库使用 `SELECT *`）。`007` 的默认 `main` 不会识别历史分支，非空旧表仍需在部署前准备按 `main_leaf_id` 父链回填主干、其余节点标记分支的配套迁移；不能把默认值视为历史分类结果，应用也不会隐式回填或修复。
 
-当前节点模型还要求 [008 生命周期迁移](../../../schema/008-question-node-lifecycle.sql)，新增 superseded、结束时间、同树接替关联和消息完成/中断状态。字段、终态控制与派生标记统一见[节点生命周期](../workflow/question-answering/node-lifecycle.md)，不由客户端分别维护状态与上下文标签。
+当前节点模型还要求 [008 生命周期迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/008-question-node-lifecycle.sql)，新增 superseded、结束时间、同树接替关联和消息完成/中断状态。字段、终态控制与派生标记统一见[节点生命周期](../workflow/question-answering/node-lifecycle.md)，不由客户端分别维护状态与上下文标签。
 
 ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大小写，不外键关联 `employees`，以支持已认证的开发模拟用户。底层工作区以 JSON 对象存储，Agent 入口按[四区域工作区契约](../workflow/question-answering/context-management.md#四区域工作区)校验；不把任意旧 JSON 当作可用工作区。
 
@@ -132,7 +134,7 @@ ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大�
 
 ---
 
-完整消息、原生生成记录与事务检查点使用[节点落盘与恢复](node-persistence.md)，新增 [004 迁移](../../../schema/004-node-persistence.sql)。本页底层结构接口不替代运行日志接口。
+完整消息、原生生成记录与事务检查点使用[节点落盘与恢复](node-persistence.md)，新增 [004 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/004-node-persistence.sql)。本页底层结构接口不替代运行日志接口。
 
 ---
 
@@ -161,7 +163,7 @@ ID 由后端生成，为 32 位小写十六进制 UUID。用户标识区分大�
 | `question_memory_index` | 已部署时删除本树向量/全文检索缓存；未部署该可选表时跳过 |
 | `question_tree_deletions` | 文件清理全部成功后删除本次清单 |
 
-[009-question-tree-deletion.sql](../../../schema/009-question-tree-deletion.sql)新增清理清单表，字段为 `tree_id`、`owner_userid`、`attachments` JSON、`created_at`。它没有指向树的外键，以便树删除后仍能恢复文件清理；仅短期保存待清理引用，不作为另一份树或附件归属表。部署须手工执行此迁移，应用不自动建表。已有 001–008 的存储定义保持不变。
+[009-question-tree-deletion.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/009-question-tree-deletion.sql)新增清理清单表，字段为 `tree_id`、`owner_userid`、`attachments` JSON、`created_at`。它没有指向树的外键，以便树删除后仍能恢复文件清理；仅短期保存待清理引用，不作为另一份树或附件归属表。部署须手工执行此迁移，应用不自动建表。已有 001–008 的存储定义保持不变。
 
 数据库和文件系统不具备共同事务。SQL 阶段失败不会触碰文件；SQL 已提交后，文件错误、清单删除失败、取消、响应丢失或进程退出，均可通过原用户重试相同 DELETE 继续完成，不能把缺失的树误当成清理完成。数据库提交结果不确定时同样保留可重试语义。成功清理后重复请求返回不存在；不新增后台轮询或孤立文件扫描。
 

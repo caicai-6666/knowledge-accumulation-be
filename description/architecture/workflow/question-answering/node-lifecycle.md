@@ -1,5 +1,7 @@
 # 节点生命周期与用户控制
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 职责与参考边界
 
 参考 contract-service-be 的 Communication 状态管理，区分用户手动停止、用户调整方向、技术失败和正常交付，并分别约束上下文、落盘与生产协程。树父链、独立摘要、节点快照与 MySQL 事务沿用本项目实现，不迁入合同门禁、SQLite 或线性会话存储。
@@ -34,7 +36,7 @@
 
 ## 持久化与原子替代
 
-手工执行 [008-question-node-lifecycle.sql](../../../../schema/008-question-node-lifecycle.sql)，为节点增加 superseded、finished_at、superseded_by_node_id，为消息增加 completed / interrupted。新旧节点关系使用同树外键及唯一约束，构树时进一步校验接替者必须是旧节点的任务子节点。旧结束时间保留 NULL，不伪造历史执行时长。应用不自动执行 DDL，真实业务库未迁移。
+手工执行 [008-question-node-lifecycle.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/008-question-node-lifecycle.sql)，为节点增加 superseded、finished_at、superseded_by_node_id，为消息增加 completed / interrupted。新旧节点关系使用同树外键及唯一约束，构树时进一步校验接替者必须是旧节点的任务子节点。旧结束时间保留 NULL，不伪造历史执行时长。应用不自动执行 DDL，真实业务库未迁移。
 
 [MySQLNodeRepository](../../../../app/repository/node_persistence.py)提供：
 

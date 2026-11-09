@@ -1,5 +1,7 @@
 # 助理记忆驻留与工作区
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 目的与范围
 
 个人助理使用无分支的线性树。进程为每棵已使用的助理树保留一个有效记忆窗口：**最新已提交的上下文压缩摘要＋未被覆盖的后续任务节点＋一个最新工作区**。初始没有摘要时保留已有任务；空树只有空工作区。用户消费工作循环初始化时就恢复启用助理的窗口，空闲等待队列时继续驻留；停用助理释放其窗口。任务结束关闭本轮 Agent 和工具查询池，不清空该助理的记忆窗口。
@@ -24,7 +26,7 @@
 
 ## 冷启动与数据库存储
 
-[021 迁移](../../../../schema/021-assistant-current-workspace.sql)新增 `assistant_workspaces`，每棵树只有一行：
+[021 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/021-assistant-current-workspace.sql)新增 `assistant_workspaces`，每棵树只有一行：
 
 | 字段 | 含义 |
 | --- | --- |

@@ -1,5 +1,7 @@
 # 登录与会话管理
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 范围与职责
 
 本认证模块提供新用户中心的两个入口：[用户认证 API](../../api/auth.md)。本阶段提供登录和当前身份；原下游 verify 路由已移除，下游直接向中间件查询用户 token，不再依赖知识后端验证。头像读取使用同一普通中央 token 校验，见[用户资源 API](../../api/resource.md)。平台列表也复用普通认证，见[平台信息 API](../../api/platform.md)。当前不迁移管理员鉴权、注册中心资源或审核业务。
@@ -176,4 +178,4 @@ registry 主开发助手报告：其可选 `tests/test_shared_login_token.py` �
 
 知识后端初始化与注册中心刷新统一归并所有一级部门，同事务更新部门表和员工 `department_ids`。旧 `department_id`使用按ID排序的首项，只是兼容投影，不表示主部门。历史JSON列NULL时读取为旧单部门列表；新建员工写完整非空数组，重复初始化不覆盖已建档资料。
 
-认证身份新增 `departments: [{id,name}, ...]`，助理个人背景展示全部名称；中央全表现增加部门名称列表，见[中间件资料映射](../data/personnel.md#中间件资料映射)；本地仍保留部门 ID 和名称，不能被中央名称数组替代。迁移源为 [019-employee-departments.sql](../../../schema/019-employee-departments.sql)，共享人员库仅执行一次，再部署两端代码。初始化不执行DDL；测试使用 `tests/test_multi_departments.py` 和 `experiment/multi-departments/verify_mysql.py`，后者创建并清理隔离MySQL测试库。
+认证身份新增 `departments: [{id,name}, ...]`，助理个人背景展示全部名称；中央全表现增加部门名称列表，见[中间件资料映射](../data/personnel.md#中间件资料映射)；本地仍保留部门 ID 和名称，不能被中央名称数组替代。迁移源为 [019-employee-departments.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/019-employee-departments.sql)，共享人员库仅执行一次，再部署两端代码。初始化不执行DDL；测试使用 `tests/test_multi_departments.py` 和 `experiment/multi-departments/verify_mysql.py`，后者创建并清理隔离MySQL测试库。

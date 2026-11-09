@@ -1,5 +1,7 @@
 # 节点记忆全文检索
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与边界
 
 在已有 `question_memory_index` 检索缓存中保存原文副本，为用户提问、完整阶段输出和最终答案提供关键词检索。使用 MySQL 8.4 内置 `FULLTEXT`、`ngram` 和 `MATCH ... AGAINST`；无需额外安装全文插件或更换 asyncmy。原生推理不进入全文缓存。
@@ -12,7 +14,7 @@
 
 ## 数据与迁移
 
-[005-question-memory-fulltext.sql](../../../schema/005-question-memory-fulltext.sql)在 `001` 至 `004` 后手工执行，为检索缓存增加：
+[005-question-memory-fulltext.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/005-question-memory-fulltext.sql)在 `001` 至 `004` 后手工执行，为检索缓存增加：
 
 | 字段或索引 | 用途 |
 | --- | --- |

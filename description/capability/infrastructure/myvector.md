@@ -1,5 +1,7 @@
 # 节点记忆的 MyVector 检索
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与实现来源
 
 沿用同级 registry-be 已验证的 MyVector 四参数 UDF、HNSW/Cosine、候选扩展和精确兜底实现，适配本项目 asyncmy、节点记忆和用户归属。Embedding 沿用其 LlamaIndex `OpenAILikeEmbedding` 对接 vLLM 的异步方式，不使用全局 `Settings.embed_model`。
@@ -18,7 +20,7 @@
 | [记忆检索服务](../../../app/service/question_memory.py) | 读取权威记忆、生成范围过滤、刷新缓存、搜索并回查权威记录。 |
 | [节点仓库](../../../app/repository/question_tree.py) | `load_searchable_memory_documents` 读取本人指定树内成功记忆和原文，可限定候选 ID 回查。 |
 
-业务表 [question_node_memories](../../architecture/data/question-memory.md)仍保存原始 float32 向量，不新增原文、哈希、模型或维度字段。[003-question-memory-index.sql](../../../schema/003-question-memory-index.sql)新增独立 `question_memory_index` 缓存，必须在前两份迁移之后手工执行。
+业务表 [question_node_memories](../../architecture/data/question-memory.md)仍保存原始 float32 向量，不新增原文、哈希、模型或维度字段。[003-question-memory-index.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/003-question-memory-index.sql)新增独立 `question_memory_index` 缓存，必须在前两份迁移之后手工执行。
 
 缓存字段为自增 `id`、唯一 `memory_id`、`owner_userid`、`tree_id`、`node_id`、`kind`、插件编码的 `embedding` 和原文副本 `text`。不依赖 registry 的 `myvector_documents`，也不以缓存代替权威消息及记忆。原始 float32 BLOB 不能直接当作插件格式，写入缓存时使用 `myvector_construct` 重新编码；返回的 LlamaIndex TextNode 携带原文副本及记忆引用，返回前仍需权威回查。
 

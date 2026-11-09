@@ -1,5 +1,7 @@
 # 员工个人信息与助理私有画像
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与范围
 
 个人助理结合所属员工的事实资料理解工作场景，并按照明确边界形成对交互对象的理解与偏好。每个助理维护自己的画像视角，只记录所属用户本人及其他用户的 AI 助理；不为其他员工本人另建一套画像，也不自动共享画像库。
@@ -216,7 +218,7 @@
 
 ### 同事务提交与恢复
 
-[017 画像动作迁移](../../../../schema/017-assistant-portrait-actions.sql)增加私有序号表和已提交动作去重账本。序号表初始化同时保留画像表的存量最大值及真实自增高水位，避免最高条目删除后回退。迁移读取高水位时临时关闭本连接的统计缓存，随后恢复，不修改全局配置。
+[017 画像动作迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/017-assistant-portrait-actions.sql)增加私有序号表和已提交动作去重账本。序号表初始化同时保留画像表的存量最大值及真实自增高水位，避免最高条目删除后回退。迁移读取高水位时临时关闭本连接的统计缓存，随后恢复，不修改全局配置。
 
 工具预验只独立推进数字序号，不提前写画像正文；失败或取消允许留空号。`AssistantPortraitRepository.commit_actions`复用既有提醒工具的方式，在 `MySQLAssistantRepository.commit_hook`中消费节点的已接受工具对：
 
@@ -233,7 +235,7 @@
 
 ## 配置、依赖与验证
 
-员工背景依赖已有人员仓库及 `schema/015-employee-work-profile.sql`；画像查询另需在同一权威人员库手工执行[016 画像表迁移](../../../../schema/016-assistant-portraits.sql)，并确认[013 姓名索引](../../../../schema/013-assistant-directory-fulltext.sql)已存在。查询仓库复用消费宿主的 SQL 事务连接，部署须确保该连接与员工仓库指向同一权威人员库。完整增删还需在 011/016 之后手工执行[017 画像动作迁移](../../../../schema/017-assistant-portrait-actions.sql)。助理启动会检查画像表、序号及动作账本；应用不自动迁移；本地容器库已于 2026-10-26 补齐 015—017，执行范围和验证见[助理存储迁移状态](../../data/assistant-storage.md#迁移与验证)。不增加配置开关，也不主动请求钉钉。已有用户的空任职字段保持未知，不补采岗位说明书。
+员工背景依赖已有人员仓库及 `schema/015-employee-work-profile.sql`；画像查询另需在同一权威人员库手工执行[016 画像表迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/016-assistant-portraits.sql)，并确认[013 姓名索引](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/013-assistant-directory-fulltext.sql)已存在。查询仓库复用消费宿主的 SQL 事务连接，部署须确保该连接与员工仓库指向同一权威人员库。完整增删还需在 011/016 之后手工执行[017 画像动作迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/017-assistant-portrait-actions.sql)。助理启动会检查画像表、序号及动作账本；应用不自动迁移；本地容器库已于 2026-10-26 补齐 015—017，执行范围和验证见[助理存储迁移状态](../../data/assistant-storage.md#迁移与验证)。不增加配置开关，也不主动请求钉钉。已有用户的空任职字段保持未知，不补采岗位说明书。
 
 [个人背景与契约测试](../../../../tests/test_assistant_personal_context.py)共 12 项通过，覆盖 SQL 字段最小投影、多用户并发隔离、每次刷新、缺失及失败、真实助理工厂消息中的 system/user 边界、消费宿主注入、四类任务提示词、默认无身份的 Core 不装配画像工具、消费宿主按身份装配四项工具、候选 JSON Schema 的递归字段说明，以及纯文本原文、确认状态、空分组、六行信息与补充资料的保真。测试不调用真实模型或数据库，不写入应用数据目录；测试文件按项目追踪规则保留在本地工作区。
 

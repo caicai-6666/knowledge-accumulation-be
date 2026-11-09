@@ -1,5 +1,7 @@
 # 跨平台广播与续聊
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 广播与续聊分别注册末尾渲染钩子，直接展示已按协作事实生成的正文，不再套 message JSON。完整响应 ID、超时后的 action=wait 指引、未确认发布不得重发等语义保持不变；unknown 仍终止，没有下一轮反馈。成功后的账本 accept 仍由原 after_commit 执行，失败轨迹清理和私有审计不变。 渲染及兼容边界见[工具反馈契约](tool-content-contract.md#core-工具反馈迁移清单)。
 
 ## 共用平台世界观与文件身份
@@ -18,7 +20,7 @@
 
 本模块独立于[员工助理通信](../../../capability/application/assistant-consumption.md)，两者的目标、队列及交付语义不同。平台目录和职责沿用[子管理平台查看](sub-management-platform.md)。中间件契约以部署的 middleware-service `description/api/platform-a2a.md` 为准。
 
-本项目已实现工具、传输、私有 SQL 账本和共享调度，默认关闭。启用前须显式迁移 [018 账本](../../../../schema/018-platform-a2a.sql)。当前只支持本项目既有单进程/单 worker 部署；进程重启能继续处理账本及清理反馈，不会恢复已经中断的模型调用。
+本项目已实现工具、传输、私有 SQL 账本和共享调度，默认关闭。启用前须显式迁移 [018 账本](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/018-platform-a2a.sql)。当前只支持本项目既有单进程/单 worker 部署；进程重启能继续处理账本及清理反馈，不会恢复已经中断的模型调用。
 
 ---
 

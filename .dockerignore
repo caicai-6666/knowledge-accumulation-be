@@ -9,8 +9,6 @@
 !assets/
 !assets/tool-tag/
 !assets/tool-tag/*.txt
-!schema/
-!schema/*.sql
 **/__pycache__/
 **/*.py[cod]
 **/.env

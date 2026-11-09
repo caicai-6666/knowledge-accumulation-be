@@ -1,5 +1,7 @@
 # 人员与权限数据契约
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 适用范围与来源
 
 本契约用于新后端的用户基础设施及全表注册。沿用来源项目的人员字段语义，不迁入注册中心的资源、审核表或工作流。仓库和运行配置见[用户基础设施](../../capability/infrastructure/user-infrastructure.md)，注册发布规则见[用户全表注册协调](../../capability/application/startup-user-sync.md)。
@@ -36,7 +38,7 @@
 
 ## 任职资料与初始化
 
-[015 任职资料迁移](../../../schema/015-employee-work-profile.sql)在权威人员库为 `employees` 增加 `work_profile` JSON 字段。部署新版初始化代码前需手工执行一次；本轮未对真实数据库执行迁移。数据库与 `EmployeeWorkProfile` 同时约束两个固定键，历史员工的默认值均为 null。
+[015 任职资料迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/015-employee-work-profile.sql)在权威人员库为 `employees` 增加 `work_profile` JSON 字段。部署新版初始化代码前需手工执行一次；本轮未对真实数据库执行迁移。数据库与 `EmployeeWorkProfile` 同时约束两个固定键，历史员工的默认值均为 null。
 
 ```json
 {
@@ -53,7 +55,7 @@
 
 ## 员工在职状态
 
-[022 在职状态迁移](../../../schema/022-employee-employment-status.sql)为 `employees` 增加独立的 `employment_status` 列，不并入任职 JSON。值仅允许 `employed`、`resigned`，数据库默认 `employed`，拒绝 null 和其他值；身份模型使用同样的枚举与默认值。新员工插入时采用数据库默认值；重复建档只确认既有记录，不会将离职状态重置为在职。
+[022 在职状态迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/022-employee-employment-status.sql)为 `employees` 增加独立的 `employment_status` 列，不并入任职 JSON。值仅允许 `employed`、`resigned`，数据库默认 `employed`，拒绝 null 和其他值；身份模型使用同样的枚举与默认值。新员工插入时采用数据库默认值；重复建档只确认既有记录，不会将离职状态重置为在职。
 
 **部署前须先在权威人员库手工执行 022，应用不自动迁移。** 迁移将现有员工初始化为在职，这是兼容默认值，不代表已核实历史任职情况；实际已离职人员需要根据权威名单维护为 `resigned`。本项目没有新增管理编辑 API，可由现有人员库维护流程按精确 userid 更新该字段。例如：
 

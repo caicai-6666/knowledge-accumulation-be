@@ -1,5 +1,7 @@
 # 助理消费、消息工具与交付
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与入口
 
 后台按权威 SQL 员工 userid 领取中央任务，定位唯一 assistant 树，以持久化压缩窗口与当前工作区生成，保存结果并交付消息，最后确认中央任务。新消息不打断当前执行，优先级、用户短消息合并和中央租约由[中间件队列](../infrastructure/assistant-queue.md)负责。
@@ -43,7 +45,7 @@
 
 提交后交付服务先发送正文，再按登记顺序分别发送文件。发送前重新核对员工状态、附件归属及可读性，文件名使用已保存的 `<UUID>.pdf`，不恢复原上传名称。上传媒体或准备阶段明确失败可恢复交付；发送接口结果不明不自动重发，已成功的正文或文件不会重发。部分交付失败不撤回已送达的正文，不重新生成答案；最终历史表示已登记交付，不能作为员工已收到文件的证明。
 
-依赖 [027 迁移](../../../schema/027-assistant-file-delivery.sql)，为 `assistant_deliveries` 增加可空 `file_id` 及所属用户约束；不新增文件副本或独立附件账本。本地数据库已同步，其他环境需先迁移再启动新版服务，应用不会自动迁移。
+依赖 [027 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/027-assistant-file-delivery.sql)，为 `assistant_deliveries` 增加可空 `file_id` 及所属用户约束；不新增文件副本或独立附件账本。本地数据库已同步，其他环境需先迁移再启动新版服务，应用不会自动迁移。
 
 2026-11-09 验证：专项及相关回归 76 项通过，包括真实 Core 下一轮失败反馈和成功清理、转换后 ID 保留、模拟钉钉 multipart / `sampleFile`、隔离 MySQL 迁移、交付回滚、去重及部分失败恢复。没有调用真实模型或向真实员工发送文件；实际钉钉权限、接收效果仍待业务联调。
 
@@ -118,7 +120,7 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 
 容量、每页条数和单次结果上限由下方配置控制。SQL 一次读取上限加一条以判断截断；超过上限时显式返回 truncated=true，不冒充完整结果，应缩小关键词重新查询。仅缓存身份、姓名、在职状态与部门字段，不缓存权限或在线状态。
 
-部署须在同一权威人员库显式执行[姓名全文索引迁移](../../../schema/013-assistant-directory-fulltext.sql)，应用不自动迁移，也不复制员工表。已有等价索引时先核对再执行，关键词查询缺失索引时按查询故障处理，不伪装成空结果；未启用的条件不执行对应 MATCH 查询，也不依赖该路全文索引；全局浏览不依赖全文索引。部门检索需显式执行 [020 部门全文索引迁移](../../../schema/020-department-directory-fulltext.sql)，使用 `departments.name` 的 ngram 索引。在职状态读取依赖 [022 员工在职状态迁移](../../../schema/022-employee-employment-status.sql)，统一使用 `employed`（在职）和 `resigned`（离职），两种状态均可查到。部门读取依赖 [019 多部门迁移](../../../schema/019-employee-departments.sql)，历史单部门在 SQL 内兼容，不触发用户资料刷新。姓名、部门检索依赖 MySQL 内置 ngram，默认双字符切分及停用词边界见[原生全文检索](../infrastructure/fulltext.md)。分数只用于排序，不返回给模型，不承诺标准 BM25 分值或错别字纠正；字面补充分支可能扫描姓名或部门名称列，人员量很大时需要另行评估性能。
+部署须在同一权威人员库显式执行[姓名全文索引迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/013-assistant-directory-fulltext.sql)，应用不自动迁移，也不复制员工表。已有等价索引时先核对再执行，关键词查询缺失索引时按查询故障处理，不伪装成空结果；未启用的条件不执行对应 MATCH 查询，也不依赖该路全文索引；全局浏览不依赖全文索引。部门检索需显式执行 [020 部门全文索引迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/020-department-directory-fulltext.sql)，使用 `departments.name` 的 ngram 索引。在职状态读取依赖 [022 员工在职状态迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/022-employee-employment-status.sql)，统一使用 `employed`（在职）和 `resigned`（离职），两种状态均可查到。部门读取依赖 [019 多部门迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/019-employee-departments.sql)，历史单部门在 SQL 内兼容，不触发用户资料刷新。姓名、部门检索依赖 MySQL 内置 ngram，默认双字符切分及停用词边界见[原生全文检索](../infrastructure/fulltext.md)。分数只用于排序，不返回给模型，不承诺标准 BM25 分值或错别字纠正；字面补充分支可能扫描姓名或部门名称列，人员量很大时需要另行评估性能。
 
 正文按用户分组，使用 text 类型的可折叠页面；部门逐行列出，不展示部门 ID。每个用户只占一个分页名额，单个用户的多个部门不拆页。示例：
 
@@ -218,7 +220,7 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 
 ## 数据库与启用配置
 
-先完成既有 001—011 迁移，再手工执行 [012-assistant-consumption.sql](../../../schema/012-assistant-consumption.sql) 与 [014 入站迁移](../../../schema/014-assistant-robot-inbox.sql)。启动只检查所需列和索引，不自动执行 DDL。
+先完成既有 001—011 迁移，再手工执行 [012-assistant-consumption.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/012-assistant-consumption.sql) 与 [014 入站迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/014-assistant-robot-inbox.sql)。启动只检查所需列和索引，不自动执行 DDL。
 
 012 将“每个用户最多一个未确认任务”的索引改为“每个用户最多一个 received/prepared/running 任务”，允许已完成、等待中央重领确认的记录保留。另增加独立 delivery_token 与 lease_expires_at，用于重试 ack；不放入 input_payload、模型上下文、日志或 HTTP 响应，成功确认后清除。业务存储见[助理存储](../../architecture/data/assistant-storage.md)。
 

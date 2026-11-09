@@ -1,5 +1,7 @@
 # 钉钉消息入站与整条校验
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与边界
 
 [入站服务](../../../app/service/robot_inbound.py)把可信钉钉单聊消息转换为中间件 `user_message` 任务，随后由既有[助理消费者](assistant-consumption.md)领取、执行和交付。这里负责校验、首次员工初始化、可靠接收和发布，不调用模型，不创建中央登录，不覆盖已有员工权限。
@@ -78,7 +80,7 @@
 
 ## 接收账本与恢复
 
-手工迁移 [014-assistant-robot-inbox.sql](../../../schema/014-assistant-robot-inbox.sql) 创建 `assistant_robot_inbox`，模型为 [RobotInboxRecord](../../../app/model/robot_inbox.py)，仓库为 [RobotInboxRepository](../../../app/repository/robot_inbox.py)。这张表记录 Stream 接收去重、同用户入站发布顺序和未完成交付；助理任务队列、任务合并与优先级仍由中间件维护。新版另需在停止接收与发布的维护窗口执行 [028 入站顺序迁移](../../../schema/028-robot-inbox-order.sql)，旧记录按接收时间回填，新记录由数据库递增编号。应用不会自动迁移。
+手工迁移 [014-assistant-robot-inbox.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/014-assistant-robot-inbox.sql) 创建 `assistant_robot_inbox`，模型为 [RobotInboxRecord](../../../app/model/robot_inbox.py)，仓库为 [RobotInboxRepository](../../../app/repository/robot_inbox.py)。这张表记录 Stream 接收去重、同用户入站发布顺序和未完成交付；助理任务队列、任务合并与优先级仍由中间件维护。新版另需在停止接收与发布的维护窗口执行 [028 入站顺序迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/028-robot-inbox-order.sql)，旧记录按接收时间回填，新记录由数据库递增编号。应用不会自动迁移。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -159,7 +161,7 @@
 
 ## 人工终止遗留接收
 
-[029 迁移](../../../schema/029-robot-inbox-cancellation.sql)新增 `cancelled` 终态及数据库约束，不自动终止任何记录。启动时校验状态枚举，缺少迁移会明确提示执行 029。它不是“发布成功”或“拒绝通知已发送”。
+[029 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/029-robot-inbox-cancellation.sql)新增 `cancelled` 终态及数据库约束，不自动终止任何记录。启动时校验状态枚举，缺少迁移会明确提示执行 029。它不是“发布成功”或“拒绝通知已发送”。
 
 运维调用 `RobotInboxRepository.cancel_received(request_id, userid=..., reason=...)`：必须明确指定消息、所属用户及具体原因；按接收/发布相同的消息锁、用户锁和行锁核对状态，仅允许 `received` 且 `publish_started_at IS NULL`。正在处理、归属不符、待发布及结果未知等情况均拒绝终止，不因为记录过旧就自动跳过。重复终止保留首次原因与时间；普通更新入口不能恢复、重放或覆盖终止记录。原消息、附件引用、顺序号保持不变；不清理原附件，不调用钉钉或队列发送接口。
 

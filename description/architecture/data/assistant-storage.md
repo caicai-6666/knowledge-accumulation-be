@@ -1,10 +1,12 @@
 # 个人助理、任务与提醒存储
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与实现范围
 
 为“一位用户、一个助理、一棵 assistant 树”准备数据库约束、已领取任务记录、可靠交付记录及定时/周期提醒的数据契约。助理按任务串行执行，复用既有[问答树](question-tree.md)、[节点落盘](node-persistence.md)、工作区、记忆与 [Core 附件查看工具](../workflow/question-answering/image-reading.md)。
 
-存储基础设施提供 [011-assistant-storage.sql](../../../schema/011-assistant-storage.sql) 和 [assistant.py](../../../app/model/assistant.py) 中的持久化模型。不自动建表，不创建真实助理或提醒。另已提供[助理局部上下文读取](../workflow/question-answering/assistant-memory.md)和[中间件队列传输及单次消费编排](../../capability/infrastructure/assistant-queue.md)；绑定、执行账本、交付仓库及[后台消费与发送器](../../capability/application/assistant-consumption.md)已经实现，默认关闭；[提醒查看、创建、删除和调度器](../../capability/application/assistant-reminders.md)已接入，未开始消费真实中间件任务。
+存储基础设施提供 [011-assistant-storage.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/011-assistant-storage.sql) 和 [assistant.py](../../../app/model/assistant.py) 中的持久化模型。不自动建表，不创建真实助理或提醒。另已提供[助理局部上下文读取](../workflow/question-answering/assistant-memory.md)和[中间件队列传输及单次消费编排](../../capability/infrastructure/assistant-queue.md)；绑定、执行账本、交付仓库及[后台消费与发送器](../../capability/application/assistant-consumption.md)已经实现，默认关闭；[提醒查看、创建、删除和调度器](../../capability/application/assistant-reminders.md)已接入，未开始消费真实中间件任务。
 
 另已接入[私有画像存储与增删事务](../workflow/question-answering/assistant-personal-context.md#同事务提交与恢复)：016 保存逐条偏好，017 提供私有数字序号与动作去重账本。助理启动会校验相关表；增删与节点检查点同事务提交，旧动作重放不会重复新增或复活已删除条目。需在启用消费者前完成迁移，应用不自动执行 DDL。
 
@@ -151,11 +153,11 @@ Python 模型要求时间包含时区并转换为 UTC，SQL `DATETIME(6)` 存 UT
 
 ## 迁移与验证
 
-2026-10-26 已在本地容器 `phenosolar-knowledge-dev-mysql-1` 的 `registry` 库补齐 [015 员工任职资料](../../../schema/015-employee-work-profile.sql)、[016 画像表](../../../schema/016-assistant-portraits.sql)和 [017 画像动作](../../../schema/017-assistant-portrait-actions.sql)，`dev_schema_migrations` 已记录全部 17 份迁移及文件 SHA256。原有员工字段与原有业务表记录数保持不变，历史员工新增任职字段采用未知值，未调用钉钉补采。
+2026-10-26 已在本地容器 `phenosolar-knowledge-dev-mysql-1` 的 `registry` 库补齐 [015 员工任职资料](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/015-employee-work-profile.sql)、[016 画像表](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/016-assistant-portraits.sql)和 [017 画像动作](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/017-assistant-portrait-actions.sql)，`dev_schema_migrations` 已记录全部 17 份迁移及文件 SHA256。原有员工字段与原有业务表记录数保持不变，历史员工新增任职字段采用未知值，未调用钉钉补采。
 
 本地验证通过：`MySQLAssistantRepository.validate_schema()`、`RobotInboxRepository.validate_schema()`、画像索引、任职资料约束、姓名 ngram 查询及全部员工任职 JSON 校验；画像序列已初始化为 `id=1,next_key=1`。该状态仅对应上述本地数据库，不代表其他部署环境已迁移。助理运行开关仍关闭，未重启服务，也未执行真实钉钉消息收发。
 
-先完成既有问答业务迁移，再手动执行 011；启用消费者还需执行 [012 消费迁移](../../../schema/012-assistant-consumption.sql)，增加独立的 ack 凭证/租约列并调整活动执行唯一约束。不自动修改真实配置或数据。011 自身不依赖 MyVector 函数，检索插件按既有[部署说明](../../capability/infrastructure/myvector.md)独立准备。
+先完成既有问答业务迁移，再手动执行 011；启用消费者还需执行 [012 消费迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/012-assistant-consumption.sql)，增加独立的 ack 凭证/租约列并调整活动执行唯一约束。不自动修改真实配置或数据。011 自身不依赖 MyVector 函数，检索插件按既有[部署说明](../../capability/infrastructure/myvector.md)独立准备。
 
 上线前先检查历史重复助理树：
 

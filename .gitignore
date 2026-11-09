@@ -10,12 +10,10 @@
 !/Dockerfile
 !/.dockerignore
 
-# 应用源码、数据库迁移、模型工具调用模板。
+# 应用源码、模型工具调用模板。
 !/app/
 !/app/**/
 !/app/**/*.py
-!/schema/
-!/schema/*.sql
 !/assets/
 !/assets/tool-tag/
 !/assets/tool-tag/*.txt

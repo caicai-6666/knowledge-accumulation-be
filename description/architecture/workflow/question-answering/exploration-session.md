@@ -1,5 +1,7 @@
 # 探索任务注册与 SSE 执行
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 职责与入口
 
 探索问答复用 contract-service-be 的两阶段交互：先注册任务并返回 `turn_id`，前端首次订阅该任务 SSE 才激活执行。路由在 `app/router/exploration_turn.py`，输入与公开快照在 `app/schema/exploration_turn.py`，进程内任务、回放和生命周期在 `app/service/exploration_turn.py`。请求路径和示例见[探索 API](../../../api/exploration.md#注册探索任务)。
@@ -84,7 +86,7 @@ Core 的 `publish_stream(event, data)` 是独立的展示回调，由 `QuestionA
 
 展示过程沿用 contract-service-be 的精简事件投影：独立于有界回放队列保存 `turn.status/task.progress/message.completed/error`，过滤 delta、心跳和连接级错误，但保留原始事件序号及最后游标。正在生成的正文另存为 `streaming_messages` 累计快照，完成或中断时移出快照并归档为 message.completed。字段定义见[打开问答树](../../../api/exploration.md#打开问答树)。任务快照另返回最近动作 `progress`，终态保留仅供展示。
 
-本项目使用 MySQL 的 `question_node_contents.display_history` JSON 列，部署需手工执行 [010 迁移](../../../../schema/010-question-node-display.sql)。该列与上下文 `content` 独立，节点检查点不会覆盖它，也不会把动作记录注入模型或生成向量；整树删除随正文行一起清理。保存时校验用户、树和节点归属，并持树行锁拒绝游标回退、历史改写及已记录终态后的追加；展示写入不推进模型 revision。
+本项目使用 MySQL 的 `question_node_contents.display_history` JSON 列，部署需手工执行 [010 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/010-question-node-display.sql)。该列与上下文 `content` 独立，节点检查点不会覆盖它，也不会把动作记录注入模型或生成向量；整树删除随正文行一起清理。保存时校验用户、树和节点归属，并持树行锁拒绝游标回退、历史改写及已记录终态后的追加；展示写入不推进模型 revision。
 
 有 SQL 节点后，事件快照先保存成功再进入 SSE 队列；节点登记之前的 pending/processing 暂存在内存，节点就绪时一起保存。没有创建 SQL 节点便终止的待激活或准备失败任务仍只驻留内存，不制造空节点。写入等待最长 5 秒，取消须等待本次提交或回滚完成；数据库故障停止任务，实时发送脱敏失败通知，已保存前缀与 SQL 消息保留。失败通知本身可能无法保存，打开树以节点当前状态为准，不伪造缺失事件。登记、节点终态和展示快照分属事务，崩溃也可能留下末尾不完整的展示记录；不宣称与 SQL 状态跨事务原子提交。
 

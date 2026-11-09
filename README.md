@@ -60,7 +60,7 @@ fi
 
 主模型服务需支持原生工具调用和 `/tokenize`，主题总结还使用 JSON Schema；助理正文转换通过提示生成 JSON 并在本地使用 Pydantic 校验；模型名、上下文容量和工具模板需与实际服务一致，见[模型配置](description/capability/infrastructure/vllm-models.md)。仅启动身份接口且关闭助理时，主模型地址可以暂留空。
 
-中间件接入后会自动同步用户及管理员全表，启动前应准备完整权威人员源。数据库结构由部署侧显式初始化或迁移，应用不会自动建表；迁移清单与旧库升级前提见[数据与迁移](description/capability/application/docker.md#数据与迁移)。不要将全部 SQL 无差别重复执行到已有数据库。
+中间件接入后会自动同步用户及管理员全表，启动前应准备完整权威人员源。数据库结构由部署侧显式初始化或迁移，应用不会自动建表；最新初始化入口与已有数据库边界见[数据与迁移](description/capability/application/docker.md#数据与迁移)。不要将全部 SQL 无差别重复执行到已有数据库。
 
 如只查看 Web 入口和 OpenAPI，可同时清空中间件地址及密钥，保持助理、A2A 关闭并留空 Embedding 地址；这不提供可用的登录和完整问答服务。
 
@@ -92,7 +92,7 @@ OpenAPI 可访问仅说明 Web 入口正常；登录、数据库和模型仍需�
 
 准备中间件队列、已迁移的助理存储及可用模型服务后，配置 `DINGTALK_CORP_ID`、`DINGTALK_APP_KEY`、`DINGTALK_APP_SECRET` 和 `DINGTALK_ROBOT_CODE`，并设置 `ASSISTANT_ENABLED=true`。应用会同时装配 Stream 入站、任务消费、提醒及空闲心跳调度。生产登录另需设置 `APP_ENV=production`。
 
-钉钉后台需完成机器人发布、可见范围及权限配置，具体步骤见[机器人接入](description/capability/infrastructure/dingtalk-robot.md)。助理当前工作区升级涉及 `021` 迁移和显式数据迁移器，操作前提见[助理记忆迁移](description/architecture/workflow/question-answering/assistant-memory.md#显式迁移与部署)。
+钉钉后台需完成机器人发布、可见范围及权限配置，具体步骤见[机器人接入](description/capability/infrastructure/dingtalk-robot.md)。新空库统一使用 deploy 的 `mysql/init/001-schema.sql`，不需要历史迁移或工作区数据迁移器。
 
 最终正文转换使用同一 MLLM 服务，默认开启 `medium` 原生推理（`ASSISTANT_RENDERING_THINKING_EFFORT=medium`），通过提示生成 JSON 并由本地 Pydantic 严格校验，不发送接口级 `response_format`；该配置与主助理推理档位独立。转换失败不会自动降级发送原文；任务失败、确认与交付恢复的当前规则见[助理消费](description/capability/application/assistant-consumption.md#失败与恢复)。
 
@@ -126,7 +126,6 @@ app/
 ├── router/              # HTTP 与 SSE 路由
 ├── schema/              # API 请求与响应模型
 └── service/             # 业务编排、后台任务与交付
-schema/                  # 显式执行的数据库迁移
 assets/tool-tag/         # 模型工具格式模板
 description/             # 项目说明、API、架构与运行文档
 data/                    # 真实运行数据
@@ -140,7 +139,7 @@ experiment/              # 实验产物与分析记录
 
 开发前阅读 [AGENTS.md](AGENTS.md) 和[项目总览](description/project.md)。功能变更需同步维护 `description/` 中对应专题；提示词、工具 Schema 和多轮上下文分别遵循[提示词规范](description/standard/prompt-engineering.md)与[上下文规范](description/standard/agent-context-management.md)。
 
-当前仓库采用 Git 白名单：源码、迁移、部署资源和正式文档纳入追踪，真实 `.env`、运行数据、测试代码与实验产物不纳入追踪。因此新检出的副本可能只有测试目录占位，不能把未发现测试当作验证通过。拥有完整本地测试集时，按各专题准备隔离依赖后执行：
+当前仓库采用 Git 白名单：源码、部署资源和正式文档纳入追踪，真实 `.env`、运行数据、测试代码与实验产物不纳入追踪。因此新检出的副本可能只有测试目录占位，不能把未发现测试当作验证通过。拥有完整本地测试集时，按各专题准备隔离依赖后执行：
 
 ```bash
 python -m unittest discover -s tests

@@ -1,5 +1,7 @@
 # 探索模式问答树 API
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 为 exploration 模式提供已认证用户的问答树创建、列表、改名、完整打开、删除及两阶段问答任务。仅处理 exploration 类型。
 
 ## 接口目录
@@ -194,7 +196,7 @@ curl -i -X PATCH http://127.0.0.1:24000/knowledge-accumulation/api/exploration/t
 
 前端以 `content` 展示输入、以 `display.events` 恢复过程；`messages` 保留已有消息读取契约，不能再与事件重复追加。历史中的动作只代表当时发生的操作，当前是否结束以节点 `status` 为准。摘要节点不具有任务展示过程。
 
-部署前须手工执行 [010-question-node-display.sql](../../schema/010-question-node-display.sql)，应用不自动执行迁移。本次未修改真实数据库；旧记录不会补造此前未保存的动作。进程重启后可重新打开树读取展示历史，但不会恢复旧 SSE 连接或自动执行遗留任务。
+部署前须手工执行 [010-question-node-display.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/010-question-node-display.sql)，应用不自动执行迁移。本次未修改真实数据库；旧记录不会补造此前未保存的动作。进程重启后可重新打开树读取展示历史，但不会恢复旧 SSE 连接或自动执行遗留任务。
 
 **创建模式**：推进（`mode=main`）生成主干节点，探索（`mode=branch`）生成分支节点。当前主干末尾同时允许推进和探索，历史主干或分支节点只允许探索。前端结合 `path_type` 与 `main_leaf_id` 判断模式，不增加“允许开启分支”字段；生成中的任务不能作为继续提问起点，摘要是内部节点而非用户任务入口。
 
@@ -263,7 +265,7 @@ curl -i -X DELETE http://127.0.0.1:24000/knowledge-accumulation/api/exploration/
 
 数据库删除和文件系统没有共同事务：数据库阶段失败会回滚且不删除附件；数据库已经提交、文件清理失败时，树已从列表和打开入口消失，但待清理的文件清单仍在数据库。客户端应重试相同 DELETE，服务端按本人清单继续清理，已缺失文件按已完成处理。全部清理成功后移除清单；之后再次删除返回 `404`，不伪造另一份成功记录。
 
-部署前须手工执行 [009-question-tree-deletion.sql](../../schema/009-question-tree-deletion.sql)，应用不自动建表，本轮没有修改真实数据库。完整数据范围、安全边界与并发约束见[整树删除与附件清理](../architecture/data/question-tree.md#整树删除与附件清理)。不新增定时扫描任务；重启后同一 DELETE 仍可恢复清理。
+部署前须手工执行 [009-question-tree-deletion.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/009-question-tree-deletion.sql)，应用不自动建表，本轮没有修改真实数据库。完整数据范围、安全边界与并发约束见[整树删除与附件清理](../architecture/data/question-tree.md#整树删除与附件清理)。不新增定时扫描任务；重启后同一 DELETE 仍可恢复清理。
 
 ---
 

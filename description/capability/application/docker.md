@@ -2,7 +2,7 @@
 
 ## 镜像与启动
 
-根目录 [Dockerfile](../../../Dockerfile) 使用 Python 3.12.15 slim bookworm，安装 [固定直接依赖](../../../requirement.txt) 并执行 `pip check`。只复制 `app/`、模型工具模板 `assets/tool-tag/` 和 `schema/`；[.dockerignore](../../../.dockerignore) 排除实际配置、数据、测试和实验文件。
+根目录 [Dockerfile](../../../Dockerfile) 使用 Python 3.12.15 slim bookworm，安装 [固定直接依赖](../../../requirement.txt) 并执行 `pip check`。只复制 `app/`和模型工具模板 `assets/tool-tag/`；[.dockerignore](../../../.dockerignore) 排除实际配置、数据、测试和实验文件。
 
 ```bash
 docker build -t knowledge-accumulation-be:dev .
@@ -56,7 +56,7 @@ Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取
 
 统一部署的新空卷由 [最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql) 一次创建注册中心和知识后端当前全部业务表，包含 `schema/001–029` 的最终结构、全文索引、MyVector 缓存及画像序号初值。无需逐条执行历史迁移，也无需运行旧工作区迁移器。知识后端与 registry 使用同一权威人员库。
 
-本项目 `schema/` 历史迁移继续保留用于开发库升级和追溯，镜像中的 `/workspace/schema/` 不自动执行。已有卷不会因重建镜像而变化；必须根据实际结构安排升级，不能重跑空库初始化，详见[部署数据库边界](../../../../knowledge-accumulation-deploy/mysql/readme.md#初始化与数据边界)。
+本项目已移除历史迁移 SQL，镜像不携带数据库脚本；历史定义仅从 Git 记录追溯。正式部署只使用 deploy 的最新初始化脚本。已有卷不会因重建镜像而变化；必须根据实际结构安排升级，不能重跑空库初始化，详见[部署数据库边界](../../../../knowledge-accumulation-deploy/mysql/readme.md#初始化与数据边界)。
 
 上传文件元信息仅由个人助理登记，探索上传不登记到 `uploaded_files`。个人备忘新增、删除、查询、结果查看及个人助理附件访问校验已接入；没有历史批量回填。最终附件交付及钉钉入站顺序、取消状态均已纳入最新初始化。
 

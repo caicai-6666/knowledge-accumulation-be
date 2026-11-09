@@ -19,8 +19,6 @@ RUN groupadd --gid 10001 app \
 
 COPY --chown=app:app app ./app
 COPY --chown=app:app assets/tool-tag ./assets/tool-tag
-# 仅供部署时显式迁移，不在启动命令中执行 SQL。
-COPY --chown=app:app schema ./schema
 
 USER app
 EXPOSE 8000

@@ -1,5 +1,7 @@
 # 上传文件元信息与个人助理备忘
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与实现状态
 
 上传元信息仅为个人助理接收的附件记录上传者、上传时间、类型及可见范围；个人备忘记录某位用户为该文件拟定的名称和摘要，帮助后续检索取回文件 UUID。同一文件可由多个用户分别记录，每位用户最多记录一次。
@@ -10,7 +12,7 @@
 
 ## 表结构
 
-[023 迁移](../../../schema/023-assistant-file-notes.sql)保留初版表结构历史，[024 迁移](../../../schema/024-uploaded-files-and-personal-notes.sql)将其调整为以下两张表。
+[023 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/023-assistant-file-notes.sql)保留初版表结构历史，[024 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/024-uploaded-files-and-personal-notes.sql)将其调整为以下两张表。
 
 ### 文件元信息 uploaded_files
 
@@ -35,7 +37,7 @@
 | `summary` | `TEXT`，非空白 | 文件内容和用途摘要，容量受 MySQL TEXT 字节上限约束。 |
 | `updated_at` | `DATETIME(6)`，必填 | 个人备忘最近更新时间，UTC，由程序维护。 |
 
-联合主键 `(owner_userid, file_id)` 保证每位用户对同一文件最多一条备忘；不另设备忘 ID。文件的上传时间、可见范围通过关联文件表取得，不在各用户备忘中重复保存。索引 `(owner_userid, updated_at, file_id)` 支持查看个人最近更新记录，`(file_id)` 支持外键及按文件查找关联备忘。另由 [025 迁移](../../../schema/025-assistant-file-notes-fulltext.sql)增加联合全文索引 `ft_assistant_file_notes_name_summary (name, summary) WITH PARSER ngram`；暂不引入向量索引。
+联合主键 `(owner_userid, file_id)` 保证每位用户对同一文件最多一条备忘；不另设备忘 ID。文件的上传时间、可见范围通过关联文件表取得，不在各用户备忘中重复保存。索引 `(owner_userid, updated_at, file_id)` 支持查看个人最近更新记录，`(file_id)` 支持外键及按文件查找关联备忘。另由 [025 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/025-assistant-file-notes-fulltext.sql)增加联合全文索引 `ft_assistant_file_notes_name_summary (name, summary) WITH PARSER ngram`；暂不引入向量索引。
 
 两表均使用 InnoDB、`utf8mb4`；名称与摘要采用 `utf8mb4_0900_ai_ci`，用户标识采用 `utf8mb4_0900_bin`，UUID、类型与可见范围采用 `ascii_bin`。
 
@@ -188,7 +190,7 @@
 
 ### 独立字段全文索引与部署
 
-[026 迁移](../../../schema/026-assistant-file-notes-field-fulltext.sql)增加 `FULLTEXT(name)` 与 `FULLTEXT(summary)` 两个独立 `ngram` 索引，SQL 分别使用 `MATCH(n.name)`、`MATCH(n.summary)` 后组合 AND/OR。原 025 联合索引保留兼容，但不能代替两个独立索引。关键词使用自然语言模式，不解析用户提供的布尔查询语法；不回退 LIKE。`ngram_token_size=2` 时单字和停用词可能无匹配，全文检索不等于字面包含或语义理解。
+[026 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/026-assistant-file-notes-field-fulltext.sql)增加 `FULLTEXT(name)` 与 `FULLTEXT(summary)` 两个独立 `ngram` 索引，SQL 分别使用 `MATCH(n.name)`、`MATCH(n.summary)` 后组合 AND/OR。原 025 联合索引保留兼容，但不能代替两个独立索引。关键词使用自然语言模式，不解析用户提供的布尔查询语法；不回退 LIKE。`ngram_token_size=2` 时单字和停用词可能无匹配，全文检索不等于字面包含或语义理解。
 
 在既有表结构准备完成后手工执行 026；应用启动不自动迁移。InnoDB 每条 ALTER 只能创建一个 FULLTEXT 索引，文件分两条执行，DDL 不具备共同回滚：若中途失败，应先回查索引，只补缺少的步骤。缺少索引时查询明确失败，不伪装为空结果。无需新增环境变量。
 

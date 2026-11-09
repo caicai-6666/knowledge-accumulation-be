@@ -1,5 +1,7 @@
 # 节点记忆向量存储
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与边界
 
 为用户提问、模型阶段输出和最终输出准备可检索的向量记录，通过任务节点和来源标识关联原始内容。树结构与恢复规则见[问答树存储](question-tree.md)。
@@ -10,7 +12,7 @@
 
 ## 字段与关联
 
-[002-question-node-memories.sql](../../../schema/002-question-node-memories.sql)在 `001-question-tree.sql` 之后手工执行，新增 `question_node_memories`。应用启动不会自动运行迁移，本次不修改真实数据库或配置。
+[002-question-node-memories.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/002-question-node-memories.sql)在 `001-question-tree.sql` 之后手工执行，新增 `question_node_memories`。应用启动不会自动运行迁移，本次不修改真实数据库或配置。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -70,4 +72,4 @@ Embedding 模型及维度由调用方统一配置，入口和客户端见 [MyVec
 
 2026-10-21 验证结果：新增 6 项离线模型测试和 6 项 MySQL 记忆测试通过；完整回归 213 项通过，无跳过（包含共 18 项 MySQL 8.4.11 隔离实库测试）。`pip check` 无冲突，新改文档 33 个相对文件链接通过。临时容器验证完成后清理，不代表已执行业务库迁移。
 
-检索缓存通过[005 迁移](../../../schema/005-question-memory-fulltext.sql)保存 text 原文副本并建立 ngram 全文索引，权威记忆表仍不增加 text 字段。刷新及关键词查询见[全文检索](../../capability/infrastructure/fulltext.md)。
+检索缓存通过[005 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/005-question-memory-fulltext.sql)保存 text 原文副本并建立 ngram 全文索引，权威记忆表仍不增加 text 字段。刷新及关键词查询见[全文检索](../../capability/infrastructure/fulltext.md)。

@@ -34,7 +34,7 @@ class RobotInboxRepository:
             await cursor.execute("SHOW COLUMNS FROM assistant_robot_inbox LIKE 'status'")
             column = await cursor.fetchone()
             if column is None or "'cancelled'" not in column['Type']:
-                raise ValueError('请先执行 029 入站终止状态迁移，再启动机器人接收服务')
+                raise ValueError('机器人接收表缺少 cancelled 终止状态；新空库请使用 deploy/mysql/init/001-schema.sql 初始化，已有数据库请先升级该状态枚举和取消约束，再启动接收服务')
 
     async def cancel_received(self, request_id, *, userid, reason):
         """运维明确终止未发布的接收；与接收/发布共用锁，不删除资料或伪造发送。"""

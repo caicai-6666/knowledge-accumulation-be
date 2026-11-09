@@ -100,7 +100,7 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 
 | 范围 | 保留内容 |
 | --- | --- |
-| 部署必需文件 | `app/**/*.py`、`schema/*.sql`、`assets/tool-tag/*.txt`、`requirement.txt`、`.env.example`、`Dockerfile` 和 `.dockerignore`。 |
+| 部署必需文件 | `app/**/*.py`、`assets/tool-tag/*.txt`、`requirement.txt`、`.env.example`、`Dockerfile` 和 `.dockerignore`。 |
 | 描述与维护规范 | `README.md`、`description/**/*.md`、`AGENTS.md` 和 `.gitignore`。 |
 | 必要目录层级 | 通过 `.gitkeep` 保留 `data/user/avatar/`、`data/user/upload-file/`、`tests/fixtures/`、`tests/tmp/` 和 `experiment/`。 |
 

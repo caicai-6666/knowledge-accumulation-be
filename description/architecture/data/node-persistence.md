@@ -1,5 +1,7 @@
 # 节点落盘与恢复
 
+> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
+
 ## 用途与边界
 
 在[问答树](question-tree.md)结构之上保存用户提问、完整阶段输出、最终答案、每次模型生成和工作区快照。实现入口为 [MySQLNodeRepository](../../../app/repository/node_persistence.py)，数据模型为 [NodeMessage / NodeGeneration](../../../app/model/node_persistence.py)。已装配 Agent Core 和内部树生成服务，不自动恢复或重放工具动作。
@@ -15,7 +17,7 @@
 
 ## 存储结构
 
-手动执行 [004-node-persistence.sql](../../../schema/004-node-persistence.sql)，依赖既有 `001` 问答树和 `002` 记忆迁移；当前模型还要求 `006`、`007` 类型字段和 `008` 生命周期字段，迁移及历史分支回填前提见[问答树结构](question-tree.md#mysql-数据结构)。`003` MyVector 缓存按需部署。助理还依赖[当前工作区与压缩边界迁移](../workflow/question-answering/assistant-memory.md)。应用不自动迁移真实数据库。
+手动执行 [004-node-persistence.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/004-node-persistence.sql)，依赖既有 `001` 问答树和 `002` 记忆迁移；当前模型还要求 `006`、`007` 类型字段和 `008` 生命周期字段，迁移及历史分支回填前提见[问答树结构](question-tree.md#mysql-数据结构)。`003` MyVector 缓存按需部署。助理还依赖[当前工作区与压缩边界迁移](../workflow/question-answering/assistant-memory.md)。应用不自动迁移真实数据库。
 
 | 表 | 内容 |
 | --- | --- |
@@ -88,7 +90,7 @@ Agent Core 进一步通过 `load_agent_context` 一致性读取公开路径，�
 
 ## 公开展示历史
 
-[010 迁移](../../../schema/010-question-node-display.sql)为 `question_node_contents` 增加独立的 `display_history` JSON 列，保存 SSE 精简展示事件及游标；旧节点为 NULL。此列不属于 `TaskContent`，不参与模型上下文、私有生成序号、工作区快照或记忆索引。节点内容更新只写 `content`，不会覆盖展示历史；整树删除一并移除。写入规则和故障边界见[展示恢复](../workflow/question-answering/exploration-session.md#sse-与恢复)。
+[010 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/010-question-node-display.sql)为 `question_node_contents` 增加独立的 `display_history` JSON 列，保存 SSE 精简展示事件及游标；旧节点为 NULL。此列不属于 `TaskContent`，不参与模型上下文、私有生成序号、工作区快照或记忆索引。节点内容更新只写 `content`，不会覆盖展示历史；整树删除一并移除。写入规则和故障边界见[展示恢复](../workflow/question-answering/exploration-session.md#sse-与恢复)。
 
 ---
 
