@@ -26,11 +26,11 @@ Docker/ASGI 默认不设置 `APP_PATH_PREFIX`，继续使用生产 API 路径和
 
 ## Compose 装配
 
-统一部署配置位于同级 [knowledge-accumulation-deploy](../../../../knowledge-accumulation-deploy/readme.md)，服务名 `knowledge-backend`，默认入口为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
+统一部署配置由 [knowledge-accumulation-deploy](../../../../knowledge-accumulation-deploy/readme.md)管理；正式部署时本项目克隆到 deploy 根目录内的 `knowledge-accumulation-be/`，其余三个子项目也位于 deploy 内。服务名 `knowledge-backend`，默认入口为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
 
 | 项目 | 行为 |
 | --- | --- |
-| 配置 | `KNOWLEDGE_BACKEND_ENV_FILE` 指向后端实际 `.env`，只读挂载到 `/workspace/.env`，默认 `../knowledge-accumulation-be/.env`。 |
+| 配置 | `KNOWLEDGE_BACKEND_ENV_FILE` 指向后端实际 `.env`，只读挂载到 `/workspace/.env`，默认 `./knowledge-accumulation-be/.env`（相对 deploy 根目录）。 |
 | 解析 | 应用以 `python-dotenv` 且 `interpolate=False` 读取文件，支持示例中的带引号 JSON，不把整个文件作为 Compose `env_file.format: raw` 传入。 |
 | 数据库 | Compose 环境覆盖为 `mysql:3306`，数据库、账号和密码与 registry 使用同一部署配置。 |
 | 注册中心文件 | `REGISTRY_BASE_URL` 固定为 `http://backend:8000`；`FILE_SOURCE_MYSQL_HOST/PORT` 为 `mysql:3306`，数据库、账号与密码复用部署的 `MYSQL_*`，覆盖挂载文件中的本机连接项。 |

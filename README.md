@@ -106,7 +106,7 @@ OpenAPI 可访问仅说明 Web 入口正常；登录、数据库和模型仍需�
 docker build -t knowledge-accumulation-be:dev .
 ```
 
-镜像使用 Python 3.12，以非 root 用户运行，容器内部监听 `8000`，固定单 worker。统一 Compose 编排维护在同级 `knowledge-accumulation-deploy` 项目，默认暴露宿主端口 `24000`，业务地址为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
+镜像使用 Python 3.12，以非 root 用户运行，容器内部监听 `8000`，固定单 worker。统一 Compose 编排维护在 `knowledge-accumulation-deploy` 项目；正式部署时本项目位于其 `knowledge-accumulation-be/` 子目录，默认暴露宿主端口 `24000`，业务地址为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
 
 Docker / ASGI 导入默认不带 `/dev`；`APP_PATH_PREFIX` 通过进程环境在路由导入前设置。实际 `.env` 通过只读挂载提供，运行数据使用持久卷。镜像不包含本机凭据和用户数据，也不会自动执行迁移。部署步骤、挂载权限、环境覆盖及 SSE 代理要求统一见[Docker 构建与部署](description/capability/application/docker.md)。
 
