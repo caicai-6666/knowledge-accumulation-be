@@ -160,3 +160,27 @@ async def run_robot(receive):
 产物保留引用字段结构及白名单内的消息关联、类型和正文值；采样格式 2 另保留 `originalProcessQueryKey`、`elementType` 和 `cardContent` 内 `elementType=TEXT` 节点的 `value`，用于对照发送回执及原文。卡片非文字节点的 `value` 继续脱敏，不放开图片链接和按钮参数。下载码、Webhook、身份字段和其他未知标量只保留存在性和类型。最多12层、每对象100字段、每列表30项、单字符串4000字符，不得把它称为完整原始报文。敏感凭据不进入产物或日志，采样结果不进入模型上下文。若引用信息未出现，应区分平台本次未提供与采样截断，结合实际字段判断，不能从规范化消息反推原始回调。
 
 2026-11-09：13 项采样与接收回归测试通过，覆盖目标过滤、嵌套敏感字段脱敏、引用正文保留、过期和首次证据保护。随后真实采样已确认图片引用位于 `text.repliedMsg`，包含原消息 ID、`msgType=picture` 和下载码字段，顶层 `originalMsgId` 与引用 ID 一致；下载码值未保存。采样已关闭。引用文字、图片、图文及助理文字卡片的正式处理与本地文件复用见[引用回复作为新任务](../application/assistant-inbound.md#引用回复作为新任务)。
+
+---
+
+## HTTP 固定出口代理
+
+`DINGTALK_PROXY_URL` 为可选 HTTP/HTTPS 代理地址，留空直连；可包含代理认证信息，应按密钥管理。配置由 `AuthSettings`、`DingTalkRobotSettings`、`AvatarSettings` 统一校验，环境变量覆盖 `.env`。不支持 SOCKS、路径、查询或片段。配置不合法会拒绝加载，连接失败不回退直连。
+
+`DingTalkHTTPClient` 显式传入代理、`trust_env=False`、`verify=True`、`follow_redirects=False`，忽略系统代理并保持目标证书验证。仅抑制自身请求上下文内 HTTPX/HTTPCore 日志，避免代理凭据、应用 token 和签名 URL 出现在底层日志。业务异常继续按固定类型和脱敏状态反馈。
+
+| 链路 | 代理覆盖 |
+| --- | --- |
+| 应用 token、免登 code、员工/部门、日程 API | 覆盖；日程继承通用钉钉客户端。 |
+| 机器人发送、媒体上传、下载地址获取 | 覆盖。 |
+| Stream `/gateway/connections/open` HTTP 请求 | 覆盖。 |
+| Stream WebSocket 长连接 | 不覆盖，仍显式 `proxy=None`，不使用系统代理。 |
+| 机器人附件与头像 CDN 下载 | 覆盖；独立客户端不带应用鉴权头，现有域名/重定向/大小校验保留。 |
+
+固定出口代理需要放行钉钉 API 以及实际附件/头像 CDN 域名。若代理只放行 `api.dingtalk.com` 和 `oapi.dingtalk.com`，API 可用不代表附件或头像下载可用；被代理拒绝时不会直连绕过。机器人下载保留本地公网 DNS 检查，但代理端独立解析目标，因此出口侧也必须限制目标域名/地址。中间件、模型、网页搜索和注册中心请求不受此配置影响。
+
+本机验证可仅对诊断进程设置 `DINGTALK_PROXY_URL=http://127.0.0.1:18888`；应用进程需重启后加载变更。本项目不建立隧道、不配置代理服务器，也不修改共享部署。隔离测试：`PYTHONPATH=tests python -m unittest test_dingtalk_proxy -q`，覆盖配置校验与脱敏、环境覆盖、CONNECT 转发、代理故障无直连回退及底层日志脱敏。
+
+2026-11-11 本机联调：仅为诊断进程设置上述回环代理，使用本项目 `DingTalkClient` 与本地凭据获取应用 token（0.874 秒）及读取根部门（0.927 秒）均成功。未保存或输出 token、凭据和人员资料，未发送消息，未启动后台同步或 Stream。代理/根部门/下载诊断/日程/无损头像相关隔离测试共 33 项通过；该轮未验证 WebSocket 或 CDN 经代理可用，当时临时代理只放行 API 域名。
+
+同日本机下载补验：协作方将临时代理放行范围扩展为 `dingtalk.com`、`alicdn.com`、`aliyuncs.com` 本域及子域的 443，与应用默认下载域名一致。通过代理只读获取 James 的头像地址，仅记录域名 `static-legacy.dingtalk.com`；使用 `AvatarStore.save_from_url` 完成头像下载、无损编码和临时文件保存，用时 3.810 秒，随后清理测试临时目录。未写入 `data/`，未记录头像 URL 或用户资料，未发送消息。此结果仅验证该头像域名及样本；机器人下载码换取附件、其他 CDN 域名和重定向链仍未真实联调，WebSocket 仍直连。自定义下载白名单与实际返回域名如超出上述范围，需单独核对代理策略，不能据单个头像成功声称所有文件链路已验证。

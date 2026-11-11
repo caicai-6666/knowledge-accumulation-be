@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from app.auth.error import AuthUnavailable, InvalidCredentials
 from app.config.auth import AuthSettings
+from app.infrastructure.dingtalk_http import DingTalkHTTPClient
 from app.model.dingtalk import DingTalkDepartment, DingTalkEmployee
 
 
@@ -29,7 +30,7 @@ class DingTalkClient:
         # 先在本地拒绝缺失凭据，再创建 HTTP 客户端；与仅使用模式配置的启动同步解耦。
         settings.require_dingtalk_credentials()
         self._settings = settings
-        self._client = httpx.AsyncClient(timeout=settings.dingtalk_timeout_seconds, transport=transport, trust_env=False, follow_redirects=False)
+        self._client = DingTalkHTTPClient(proxy_url=settings.dingtalk_proxy_url, timeout=settings.dingtalk_timeout_seconds, transport=transport)
         self._token: SecretStr | None = None
         self._expires_at = 0.0
         self._lock = asyncio.Lock()

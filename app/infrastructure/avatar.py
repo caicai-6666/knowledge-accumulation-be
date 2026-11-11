@@ -15,6 +15,7 @@ import httpx
 from PIL import Image, ImageOps
 
 from app.config.avatar import AvatarSettings
+from app.infrastructure.dingtalk_http import DingTalkHTTPClient
 
 
 def avatar_filename(relative_url: str) -> str:
@@ -93,7 +94,7 @@ class AvatarStore:
     async def _download(self, value: str) -> bytes:
         url = self._validate_url(value)
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.settings.timeout_seconds, transport=self._transport, trust_env=False, follow_redirects=False)
+            self._client = DingTalkHTTPClient(proxy_url=self.settings.dingtalk_proxy_url, timeout=self.settings.timeout_seconds, transport=self._transport)
         for _ in range(4):
             async with self._client.stream('GET', url) as response:
                 if response.is_redirect:

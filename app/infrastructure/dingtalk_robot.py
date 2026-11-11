@@ -1,7 +1,5 @@
 """机器人异步 OpenAPI；发送失败不盲目重试，临时文件只返回字节，不决定落盘位置。"""
 import asyncio
-from contextlib import asynccontextmanager
-from contextvars import ContextVar
 import json
 import logging
 import re
@@ -12,38 +10,11 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from app.config.dingtalk_robot import DingTalkRobotSettings
+from app.infrastructure.dingtalk_http import DingTalkHTTPClient
 from app.infrastructure.public_dns import resolve_public_address
 
 API_ROOT = 'https://api.dingtalk.com'
 ROBOT_TOPIC = '/v1.0/im/bot/messages/get'
-_private_http = ContextVar('dingtalk_robot_private_http', default=False)
-
-
-class _PrivateHTTPFilter(logging.Filter):
-    def filter(self, record):
-        return not _private_http.get()
-
-
-class _RobotHTTPClient(httpx.AsyncClient):
-    """HTTPX 的 INFO 日志会包含签名 URL；仅抑制本适配器请求上下文内的底层日志。"""
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        for name in ('httpx', 'httpcore.connection', 'httpcore.http11', 'httpcore.http2',
-                     'httpcore.proxy', 'httpcore.socks'):
-            target = logging.getLogger(name)
-            if not any(isinstance(item, _PrivateHTTPFilter) for item in target.filters):
-                target.addFilter(_PrivateHTTPFilter())
-
-    @asynccontextmanager
-    async def stream(self, *args, **kwargs):
-        token = _private_http.set(True)
-        try:
-            async with super().stream(*args, **kwargs) as response:
-                yield response
-        finally:
-            _private_http.reset(token)
-
-
 class RobotUnavailable(RuntimeError):
     def __init__(self, operation: str, *, status: int | None = None, uncertain: bool = False,
                  reason: str | None = None, download_host: str | None = None,
@@ -88,11 +59,9 @@ class DingTalkRobotClient:
                  resolver=resolve_public_address):
         settings.require_credentials()
         self.settings = settings
-        self._http = _RobotHTTPClient(transport=transport, timeout=settings.timeout_seconds,
-                                      trust_env=False, follow_redirects=False)
+        self._http = DingTalkHTTPClient(proxy_url=settings.dingtalk_proxy_url, transport=transport, timeout=settings.timeout_seconds)
         # 文件下载不得复用带鉴权头、Cookie 或平台会话的客户端。
-        self._files = _RobotHTTPClient(transport=download_transport, timeout=settings.timeout_seconds,
-                                       trust_env=False, follow_redirects=False)
+        self._files = DingTalkHTTPClient(proxy_url=settings.dingtalk_proxy_url, transport=download_transport, timeout=settings.timeout_seconds)
         self._resolver = resolver
         self._token = None
         self._expires_at = 0

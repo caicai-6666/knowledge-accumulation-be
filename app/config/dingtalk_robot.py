@@ -6,9 +6,10 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from app.config.middleware import PROJECT_ROOT
+from app.config.dingtalk_proxy import DingTalkProxySettings
 
 
-class DingTalkRobotSettings(BaseModel):
+class DingTalkRobotSettings(DingTalkProxySettings):
     model_config = ConfigDict(frozen=True, extra='forbid', hide_input_in_errors=True)
 
     corp_id: str = ''
@@ -42,7 +43,7 @@ class DingTalkRobotSettings(BaseModel):
 def load_dingtalk_robot_settings(env_file: Path | None = None) -> DingTalkRobotSettings:
     values = {**dotenv_values(env_file or PROJECT_ROOT / '.env', interpolate=False), **os.environ}
     try:
-        return DingTalkRobotSettings(
+        return DingTalkRobotSettings(dingtalk_proxy_url=values.get('DINGTALK_PROXY_URL') or '',
             corp_id=values.get('DINGTALK_CORP_ID') or '',
             app_key=values.get('DINGTALK_APP_KEY') or '',
             app_secret=values.get('DINGTALK_APP_SECRET') or '',

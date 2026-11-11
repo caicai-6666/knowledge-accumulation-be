@@ -140,3 +140,5 @@ registry 主开发助手报告：已使用目标实际配置及实际 AvatarStor
 新增 `employees.work_profile` JSON 存储和内部读取入口，首次初始化采集钉钉直属主管 userid、职位名称。岗位说明书已按用户要求移出范围。字段契约、手工迁移、权限、失败边界及历史用户策略统一见[任职资料与初始化](../../architecture/data/personnel.md#任职资料与初始化)。本轮未执行真实数据库迁移或钉钉联调。
 
 [任职资料隔离测试](../../../tests/test_employee_work_profile.py)共 6 项通过，覆盖 HTTP 字段解析、初始化传递、未知值、已有员工不覆盖、上游失败及字段校验；另用 Mock 连接验证 JSON 参数绑定、事务提交/回滚和内部回读。`git diff --check` 通过。测试不连接真实外部服务，不写入应用数据目录；迁移 SQL 尚未进行实库验证。测试文件依项目白名单规则仅保存在本地工作区。
+
+钉钉登录、通讯录及头像 HTTP 请求支持可选 `DINGTALK_PROXY_URL`，日程复用相同客户端；配置、出口限制和 Stream 边界见[HTTP 固定出口代理](dingtalk-robot.md#http-固定出口代理)。头像 CDN 必须获代理放行，API 请求成功不代表头像可下载。

@@ -9,11 +9,12 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from app.config.middleware import PROJECT_ROOT
+from app.config.dingtalk_proxy import DingTalkProxySettings
 from app.auth.model import AuthenticatedUser
 from app.infrastructure.avatar import avatar_response_filename
 
 
-class AuthSettings(BaseModel):
+class AuthSettings(DingTalkProxySettings):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode: Literal["development", "production"] = "development"
@@ -65,7 +66,7 @@ class AuthSettings(BaseModel):
 def load_auth_settings(env_file: Path | None = None) -> AuthSettings:
     values = {**dotenv_values(env_file or PROJECT_ROOT / ".env", interpolate=False), **os.environ}
     try:
-        return AuthSettings(
+        return AuthSettings(dingtalk_proxy_url=values.get('DINGTALK_PROXY_URL') or '',
             mode=values.get("APP_ENV", "development"),
             developer_access_token=values.get('AUTH_DEVELOPER_ACCESS_TOKEN') or '',
             operation_timeout_seconds=values.get('AUTH_OPERATION_TIMEOUT_SECONDS', '60'),

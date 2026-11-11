@@ -7,9 +7,10 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config.middleware import PROJECT_ROOT
+from app.config.dingtalk_proxy import DingTalkProxySettings
 
 
-class AvatarSettings(BaseModel):
+class AvatarSettings(DingTalkProxySettings):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     root: Path = PROJECT_ROOT / 'data/user/avatar'
@@ -37,7 +38,7 @@ class AvatarSettings(BaseModel):
 def load_avatar_settings(env_file: Path | None = None) -> AvatarSettings:
     values = {**dotenv_values(env_file or PROJECT_ROOT / '.env', interpolate=False), **os.environ}
     try:
-        return AvatarSettings(root=values.get('AVATAR_ROOT', 'data/user/avatar'),
+        return AvatarSettings(dingtalk_proxy_url=values.get('DINGTALK_PROXY_URL') or '', root=values.get('AVATAR_ROOT', 'data/user/avatar'),
             max_download_bytes=values.get('AVATAR_MAX_DOWNLOAD_BYTES', '10485760'),
             max_pixels=values.get('AVATAR_MAX_PIXELS', '16000000'),
             timeout_seconds=values.get('AVATAR_TIMEOUT_SECONDS', '10'),
