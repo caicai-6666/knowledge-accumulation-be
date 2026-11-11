@@ -31,14 +31,11 @@ class Assistant(AssistantModel):
     tree_id: TreeID
     tree_kind: Literal['assistant'] = 'assistant'
     enabled: bool = Field(default=True, strict=True)
-    heartbeat_interval_seconds: int = Field(default=-1, strict=True, ge=-1, le=2147483647)
     created_at: AwareDatetime = Field(default_factory=utc_now)
     updated_at: AwareDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode='after')
     def validate_record(self):
-        if self.heartbeat_interval_seconds == 0:
-            raise ValueError('心跳间隔必须为 -1 或正整数')
         if self.updated_at < self.created_at:
             raise ValueError('更新时间不能早于创建时间')
         return self

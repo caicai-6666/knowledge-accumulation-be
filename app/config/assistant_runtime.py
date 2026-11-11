@@ -16,6 +16,8 @@ class AssistantRuntimeSettings(BaseModel):
     inbound_retry_seconds: float=Field(default=30,gt=0,allow_inf_nan=False)
     inbound_batch_size: int=Field(default=100,gt=0)
     heartbeat_poll_seconds: float=Field(default=30,gt=0,allow_inf_nan=False)
+    # 心跳是全局运行策略；-1 关闭，正整数统一指定所有助理的实际间隔。
+    heartbeat_interval_seconds: int=Field(default=-1,ge=-1,le=2147483647)
     reminder_poll_seconds: float=Field(default=3,gt=0,allow_inf_nan=False)
     reminder_batch_size: int=Field(default=100,gt=0)
     reminder_retry_seconds: float=Field(default=30,gt=0,allow_inf_nan=False)

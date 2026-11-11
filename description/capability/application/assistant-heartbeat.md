@@ -13,9 +13,9 @@
 | 位置 | 默认值 | 行为 |
 | --- | --- | --- |
 | ASSISTANT_ENABLED | false | 与消费及提醒调度共用总开关，关闭时不启动扫描。 |
-| ASSISTANT_HEARTBEAT_POLL_SECONDS | 30 | 正数，扫描间隔；不等于每用户实际心跳间隔。 |
+| ASSISTANT_HEARTBEAT_INTERVAL_SECONDS | -1 | 全局实际心跳间隔；-1 关闭，正整数统一应用于所有已启用助理。 |
+| ASSISTANT_HEARTBEAT_POLL_SECONDS | 30 | 正数，调度器扫描间隔；不改变实际心跳间隔。 |
 | assistants.enabled | true | 停用的助理不参与扫描。 |
-| assistants.heartbeat_interval_seconds | -1 | -1 关闭该助理心跳；正整数按秒指定间隔，0 非法。 |
 
 只扫描已有绑定且开启心跳的助理，不为扫描创建用户或树。实际发布前还要确认用户存在于权威员工表。用户间隔由既有数据库字段配置，本轮不新增管理接口，也不调整真实数据；配置示例见 [.env.example](../../../.env.example)。
 
@@ -29,7 +29,7 @@
 2. 尝试获取与消费者共用的 MySQL 用户命名锁；其他实例正在处理该用户时直接跳过，不等待或中断它。
 3. 持锁后重新核对当前设置；若本地有未确认任务，包括失败、交付结果不明或等待 ack 的任务，暂不追加心跳。
 4. 查询 `GET /middleware-service/api/assistant/tasks/status?userid=...`，使用现有平台会话 Bearer。
-5. has_in_progress_task=true 时不发布；否则比较当前时间与 last_heartbeat_at 加该用户间隔。
+5. has_in_progress_task=true 时不发布；否则比较当前时间与 last_heartbeat_at 加全局间隔。
 6. 到期后 `POST /middleware-service/api/assistant/tasks/publish`，只传 userid、task_type=heartbeat、固定 message、稳定 request_id，不带用户 token、附件或 source_assistant_id。
 
 last_heartbeat_at 是中央**最近一次成功确认 heartbeat 的时间**，不是发布时间或普通任务完成时间。调度器不在 SQL 或内存中维护另一份权威忙碌状态/上次心跳时间，也不在发布成功后提前重置计时。
@@ -40,7 +40,7 @@ last_heartbeat_at 是中央**最近一次成功确认 heartbeat 的时间**，�
 
 ## 等待去重与故障恢复
 
-同一个 userid 和同一个 last_heartbeat_at 生成相同的请求键；null 使用固定首次周期，时间统一为 UTC。键使用散列，不暴露明文 userid。不同用户保留大小写区别，修改扫描频率或用户间隔不会改变尚未确认周期的键。正文固定，不把当前时间写入正文导致同键不同内容。
+同一个 userid 和同一个 last_heartbeat_at 生成相同的请求键；null 使用固定首次周期，时间统一为 UTC。键使用散列，不暴露明文 userid。不同用户保留大小写区别，修改扫描频率或全局间隔不会改变尚未确认周期的键。正文固定，不把当前时间写入正文导致同键不同内容。
 
 | 情况 | 处理 |
 | --- | --- |

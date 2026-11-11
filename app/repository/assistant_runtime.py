@@ -59,7 +59,7 @@ class MySQLAssistantRepository:
         await self.portraits.validate_schema()
         async with self.trees._transaction() as cursor:
             await cursor.execute('SELECT tree_id,id,content,summary,first_sequence FROM assistant_workspaces LIMIT 0')
-            await cursor.execute('SELECT userid,tree_id,enabled,heartbeat_interval_seconds FROM assistants LIMIT 0')
+            await cursor.execute('SELECT userid,tree_id,enabled FROM assistants LIMIT 0')
             await cursor.execute('SELECT task_id,delivery_token,lease_expires_at FROM assistant_task_executions LIMIT 0')
             await cursor.execute('SELECT id,action_key,status,error_code,file_id FROM assistant_deliveries LIMIT 0')
             await cursor.execute("SHOW INDEX FROM assistant_task_executions WHERE Key_name='uq_assistant_active'")
@@ -128,22 +128,21 @@ class MySQLAssistantRepository:
                 from app.repository.assistant_memory import create_memory
                 self.trees._stage_assistant_memory(cursor,await create_memory(cursor,tree))
             assistant=Assistant(userid=userid,tree_id=tree.id)
-            await cursor.execute('INSERT INTO assistants(userid,tree_id,tree_kind,enabled,heartbeat_interval_seconds,created_at,updated_at) '
-                'VALUES(%s,%s,%s,1,-1,%s,%s)',(userid,tree.id,'assistant',_date(assistant.created_at),_date(assistant.updated_at)))
+            await cursor.execute('INSERT INTO assistants(userid,tree_id,tree_kind,enabled,created_at,updated_at) '
+                'VALUES(%s,%s,%s,1,%s,%s)',(userid,tree.id,'assistant',_date(assistant.created_at),_date(assistant.updated_at)))
             return assistant
 
     async def heartbeat_candidates(self):
         """只扫描已有且开启心跳的助理，不为扫描创建树或复制用户目录。"""
         async with self.trees._transaction() as cursor:
-            await cursor.execute('SELECT userid FROM assistants WHERE enabled=1 '
-                                 'AND heartbeat_interval_seconds>0 ORDER BY userid')
+            await cursor.execute('SELECT userid FROM assistants WHERE enabled=1 ORDER BY userid')
             return [row['userid'] for row in await cursor.fetchall()]
 
     async def heartbeat_candidate(self, userid):
         """取得用户执行锁后重新核对配置；待核对的未确认任务不再积压心跳。"""
         async with self.trees._transaction() as cursor:
-            await cursor.execute('SELECT a.* FROM assistants a WHERE a.userid=%s AND a.enabled=1 '
-                'AND a.heartbeat_interval_seconds>0 AND NOT EXISTS '
+            await cursor.execute('SELECT a.userid,a.tree_id,a.tree_kind,a.enabled,a.created_at,a.updated_at '
+                'FROM assistants a WHERE a.userid=%s AND a.enabled=1 AND NOT EXISTS '
                 '(SELECT 1 FROM assistant_task_executions t WHERE t.userid=a.userid AND t.acknowledged_at IS NULL)',
                 (userid,))
             row = await cursor.fetchone()

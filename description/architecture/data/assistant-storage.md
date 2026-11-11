@@ -39,7 +39,6 @@
 | `userid` / `tree_id` | 所属用户及唯一助理树。 |
 | `tree_kind` | 固定 `assistant`，用于复合外键，不能借此绑定探索树。 |
 | `enabled` | 是否允许调度，默认 true；另受全局 ASSISTANT_ENABLED 控制。 |
-| `heartbeat_interval_seconds` | 默认 `-1` 关闭心跳；启用时必须为正整数，`0` 非法。 |
 | `created_at` / `updated_at` | UTC 创建及更新时间。 |
 
 已接入[空闲心跳调度](../../capability/application/assistant-heartbeat.md)，发送前查询中间件 `GET /assistant/tasks/status`：有任务执行时不发送，以中央上次成功确认心跳时间判断间隔；同一确认周期使用稳定发布键避免重复排入等待中的心跳。不在本地保存另一份权威忙碌状态或上次心跳时间。

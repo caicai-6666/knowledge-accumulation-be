@@ -42,7 +42,10 @@ class AssistantHeartbeatScheduler:
                 return
             now = self.clock()
             last = status.last_heartbeat_at
-            if last is not None and now < last + timedelta(seconds=assistant.heartbeat_interval_seconds):
+            interval = self.settings.heartbeat_interval_seconds
+            if interval < 0:
+                return
+            if last is not None and now < last + timedelta(seconds=interval):
                 return
             if not self._closed:
                 # status 不展示待领取心跳；相同确认时间始终生成同一个键，由中央幂等合并重试。
@@ -50,7 +53,7 @@ class AssistantHeartbeatScheduler:
                 await self.queue.publish(heartbeat_request(userid, last))
 
     async def tick(self):
-        if self._closed or not self.settings.enabled:
+        if self._closed or not self.settings.enabled or self.settings.heartbeat_interval_seconds < 0:
             return
         async with self._tick_lock:
             if self._closed:

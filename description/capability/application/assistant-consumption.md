@@ -229,7 +229,8 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 | `ASSISTANT_ENABLED` | false | 显式启用钉钉入站、后台消费、交付、提醒与空闲心跳调度。 |
 | `ASSISTANT_POLL_SECONDS` | 3 | 用户扫描及每用户下一次消费检查间隔。 |
 | `ASSISTANT_MODEL_RETRY_SECONDS` | 30 | 模型分词准备暂不可用后再次尝试消费的等待秒数；持续不可用时保留任务，不按尝试次数自动跳过。 |
-| `ASSISTANT_HEARTBEAT_POLL_SECONDS` | 30 | 空闲心跳扫描间隔；实际用户间隔取 assistants 表，默认 -1 关闭。 |
+| `ASSISTANT_HEARTBEAT_INTERVAL_SECONDS` | -1 | 全局空闲心跳间隔；-1 关闭，正整数统一应用于所有已启用助理。 |
+| `ASSISTANT_HEARTBEAT_POLL_SECONDS` | 30 | 空闲心跳扫描间隔；不改变实际心跳间隔。 |
 | `ASSISTANT_DIRECTORY_CACHE_CAPACITY` | 10 | 每任务助理查询结果集的 LRU 容量，与记忆/文件池独立。 |
 | `ASSISTANT_DIRECTORY_PAGE_SIZE` | 10 | 每页用户条数，查看工具无额外分页大小参数。 |
 | `ASSISTANT_DIRECTORY_MAX_RESULTS` | 1000 | 每次查询最多保存的用户条数，超过时明确标记截断。 |
@@ -238,7 +239,7 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 | `ASSISTANT_RENDERING_THINKING_EFFORT` | medium | 最终正文转换独立推理档位；可选 none / low / medium / xhigh，none 关闭推理。 |
 | `ASSISTANT_PUBLICATION_RETRY_WINDOW_SECONDS` | 3600 | 未知中间件发布的自动重试窗口，必须小于中央幂等回执保留期。 |
 
-启用需要可用的本平台中间件会话、权威员工 SQL、助理迁移、MLLM 和钉钉机器人凭据。缺少中间件或机器人凭据时本地失败。配置见 [.env.example](../../../.env.example) 与[队列传输配置](../infrastructure/assistant-queue.md#装配与配置)。本轮不改真实 .env，不启用共享消费，启用后会发布已设置提醒的到期消息；[空闲心跳调度](assistant-heartbeat.md)已接入，默认每用户间隔 -1 不发布。提醒扫描与重试配置见[定时任务专题](assistant-reminders.md#生命周期与配置)。
+启用需要可用的本平台中间件会话、权威员工 SQL、助理迁移、MLLM 和钉钉机器人凭据。缺少中间件或机器人凭据时本地失败。配置见 [.env.example](../../../.env.example) 与[队列传输配置](../infrastructure/assistant-queue.md#装配与配置)。本轮不改真实 .env，不启用共享消费，启用后会发布已设置提醒的到期消息；[空闲心跳调度](assistant-heartbeat.md)已接入，默认全局间隔 -1 不发布。提醒扫描与重试配置见[定时任务专题](assistant-reminders.md#生命周期与配置)。
 
 ---
 

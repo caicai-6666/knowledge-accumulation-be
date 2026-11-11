@@ -46,7 +46,7 @@
 - [助理一日场景与三用户实验](capability/application/assistant-lifecycle-experiment.md)：真实队列/模型、模拟钉钉、压力指标与对话审阅。
 - [助理定时任务](capability/application/assistant-reminders.md)：查看、创建、删除、到期入队和事务交付。
 - [助理日程集查询](capability/application/assistant-calendar.md)：指定员工和时间窗口查询钉钉日程集，分页查看安排及参与人员邀约响应。
-- [助理空闲心跳](capability/application/assistant-heartbeat.md)：中央状态判定、每用户间隔与稳定请求去重。
+- [助理空闲心跳](capability/application/assistant-heartbeat.md)：中央状态判定、全局间隔与稳定请求去重。
 - [钉钉单聊机器人接入](capability/infrastructure/dingtalk-robot.md)
 - [钉钉消息入站与整条校验](capability/application/assistant-inbound.md)
 - [节点落盘与恢复](architecture/data/node-persistence.md)
