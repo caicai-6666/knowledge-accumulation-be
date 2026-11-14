@@ -91,7 +91,7 @@ class SubManagementPlatformViewer:
 
     async def execute(self, arguments):
         if self._closed:
-            return ToolExecutionResult(status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束，请在有效任务中重新查询目录。'})
+            return ToolExecutionResult(failure_mode='dependency', status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束，请在有效任务中重新查询目录。'})
         try:
             rows = TypeAdapter(list[MiddlewarePlatformInfo]).validate_python(await self._directory.list_platforms())
             if len({row.code for row in rows}) != len(rows):
@@ -100,10 +100,10 @@ class SubManagementPlatformViewer:
             raise
         except Exception as error:
             logger.warning('子管理平台查询失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={
                 'code':'platform_directory_unavailable','message':'子管理平台目录暂不可用，请稍后重试；不能据此判断没有子管理平台。'})
         if self._closed:
-            return ToolExecutionResult(status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束，请在有效任务中重新查询目录。'})
+            return ToolExecutionResult(failure_mode='dependency', status='failed', tool_result={'code':'platform_view_closed','message':'本次任务已结束，请在有效任务中重新查询目录。'})
         # 只依据中间件明确的子管理标记，不从用户等级、管理员关系、在线或A2A标记推断。
         platforms = [row for row in rows if row.is_sub_management_platform]
         if not platforms:

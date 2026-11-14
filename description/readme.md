@@ -21,6 +21,7 @@
 
 - [提示词工程规范](standard/prompt-engineering.md)
 - [工具反馈渲染规范](standard/tool-feedback.md)：结构化结果与模型正文分离，成功/失败反馈、可折叠回执及逐项迁移验收要求。
+- [工具失败处理与诚实反馈](architecture/workflow/question-answering/tool-failures.md)：执行失败、参数纠错与必须停止边界。
 - [多轮上下文规范](standard/agent-context-management.md)
 - [实验验证规范](standard/experiment.md)
 - [Python 环境与依赖](capability/application/dependencies.md)
@@ -49,6 +50,7 @@
 - [助理空闲心跳](capability/application/assistant-heartbeat.md)：中央状态判定、全局间隔与稳定请求去重。
 - [钉钉单聊机器人接入](capability/infrastructure/dingtalk-robot.md)
 - [钉钉消息入站与整条校验](capability/application/assistant-inbound.md)
+- [附件分类转换为 PDF](capability/application/attachment-conversion.md)
 - [节点落盘与恢复](architecture/data/node-persistence.md)
 - [用户附件引用与文件定位](architecture/data/question-file.md)
 - [上传文件元信息与个人备忘](architecture/data/assistant-file-notes.md)：上传者与记录者分别归属，每位用户对同一文件最多一条备忘，外键关联，名称与摘要支持中文全文索引，转换落盘后自动登记上传元信息，个人助理可查看/修改本人文件可见范围；备忘工具和共享读取待接入。

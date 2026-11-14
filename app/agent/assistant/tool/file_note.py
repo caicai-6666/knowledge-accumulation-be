@@ -109,7 +109,7 @@ class FileNoteTools:
                         'reason':str(error), 'required_action':'请由管理员核对记录，不要自动重复操作。'})
                 except Exception as error:
                     logger.warning('文件备忘操作准备失败：tool=%s error_type=%s', name, type(error).__name__)
-                    return ToolExecutionResult(status='failed', tool_result={
+                    return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
                         'reason':'文件备忘操作前的检查未完成，本次未执行变更。',
                         'required_action':'请稍后重试，不能据此判断备忘已创建、删除或不存在。'})
             return RegisteredTool(name, model.__doc__, model,

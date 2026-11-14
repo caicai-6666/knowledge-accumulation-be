@@ -71,6 +71,8 @@ class ToolGuidance(ResultModel):
 
 
 class ToolExecutionResult(ResultModel):
+    failure_mode: Literal['correctable', 'failed', 'dependency'] = Field(default='correctable',
+        description='仅失败时使用：correctable 为可修正调用，failed 为已确认执行失败且主循环可继续，dependency 为宿主权限或生命周期失效必须停止。')
     status: Literal['succeeded', 'failed', 'unknown'] = Field(description='执行事实：成功、明确未成功或结果不确定；不确定时停止且禁止自动重放。')
     content: ToolContent = Field(default_factory=OrdinaryToolContent, description='程序消费的普通或可折叠内容，与执行状态独立。')
     tool_result: dict[str, JsonValue] = Field(description='结构化轻量结果，默认向模型展示为 JSON；普通内容提供 text 或可折叠内容提供 feedback 时展示对应正文。不包含私有审计、页面正文或图片 Base64。')
@@ -99,3 +101,12 @@ class ToolExecution:
         if self.output is not None and (not isinstance(self.output, str) or not self.output.strip()
                                         or self.result.status != 'succeeded'):
             raise ValueError('只有成功执行才能返回非空输出正文')
+
+
+class ToolOperationFailed(RuntimeError):
+    """可信执行分支明确保证操作未完成；不得用于取消、审计故障或不确定写入。"""
+
+    def __init__(self, *, reason: str, required_action: str):
+        super().__init__('工具执行未完成')
+        self.result = ToolExecutionResult(status='failed', failure_mode='failed',
+            tool_result={'reason': reason, 'required_action': required_action})

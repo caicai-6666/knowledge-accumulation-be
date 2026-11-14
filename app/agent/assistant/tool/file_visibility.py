@@ -76,8 +76,8 @@ def render_visibility_feedback(arguments, execution, context, *, operation):
     return with_feedback(execution, text)
 
 
-def _failure(code, reason, action):
-    return ToolExecutionResult(status='failed', tool_result={
+def _failure(code, reason, action, *, failure_mode='correctable'):
+    return ToolExecutionResult(status='failed', failure_mode=failure_mode, tool_result={
         'code':code, 'message':reason + action, 'reason':reason, 'required_action':action})
 
 
@@ -104,7 +104,7 @@ class FileVisibilityTools:
             logger.warning('文件可见范围读取失败：error_type=%s', type(error).__name__)
             reason = '暂时无法读取文件可见范围，本次没有修改。'
             action = '请稍后重试查询；不能据此判断文件不存在或猜测它是否公开。'
-            return _failure('file_visibility_unavailable', reason, action)
+            return _failure('file_visibility_unavailable', reason, action, failure_mode='failed')
         return _success(record)
 
     async def set(self, args):
@@ -119,7 +119,7 @@ class FileVisibilityTools:
             logger.warning('文件可见范围修改准备失败：error_type=%s', type(error).__name__)
             reason = '文件可见范围修改前的检查未完成，本次未执行更新。'
             action = '请稍后先用 get_file_visibility 核对，再按用户要求修改。'
-            return _failure('file_visibility_unavailable', reason, action)
+            return _failure('file_visibility_unavailable', reason, action, failure_mode='failed')
         return _success(record, changed=changed)
 
     def registrations(self):

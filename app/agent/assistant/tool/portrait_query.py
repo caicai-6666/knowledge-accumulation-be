@@ -38,10 +38,14 @@ def build_search_portraits_registration(*, pool: QueryResultPool, repository, ow
     async def execute(args):
         try:
             if pool.closed:
-                raise ValueError('画像查询已结束')
+                return ToolExecutionResult(status='failed', failure_mode='dependency',
+                    tool_result={'code':'portrait_query_closed','message':'本轮任务已结束，画像查询未执行。'})
             rows = TypeAdapter(list[PortraitGroup]).validate_python(await repository.search(
                 owner.userid, args.name, limit=max_results + 1))
-            if pool.closed or len(rows) > max_results + 1 or len({r.subject.userid for r in rows}) != len(rows):
+            if pool.closed:
+                return ToolExecutionResult(status='failed', failure_mode='dependency',
+                    tool_result={'code':'portrait_query_closed','message':'本轮任务已结束，画像结果未发布。'})
+            if len(rows) > max_results + 1 or len({r.subject.userid for r in rows}) != len(rows):
                 raise ValueError('画像查询返回的对象不合法或已关闭')
             keys = [p.key for group in rows for p in group.portraits]
             if len(set(keys)) != len(keys):
@@ -58,7 +62,7 @@ def build_search_portraits_registration(*, pool: QueryResultPool, repository, ow
                 total_pages=(len(rows) + pool.page_size - 1) // pool.page_size)
         except Exception as error:
             logger.warning('画像查询失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={
                 'code': 'portrait_search_unavailable', 'message': '画像查询暂不可用，请稍后重试；不能据此判断没有画像。'})
         return ToolExecution(ToolExecutionResult(status='succeeded', tool_result={**result.model_dump(),
             'truncated': truncated, 'message': '请用 view_portrait_query 查看。' +
@@ -139,7 +143,7 @@ class PortraitQueryViewer:
                 'code': 'portrait_query_unavailable', 'message': error.reason + '\n' + error.required_action})
         except Exception as error:
             logger.warning('画像页面读取失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={
                 'code':'portrait_page_unavailable',
                 'message':'画像页面暂不可用，本次未读取页面，页码未推进；请稍后重试查看，不能据此判断没有画像。'})
         metadata['total_subjects'] = metadata.pop('total')

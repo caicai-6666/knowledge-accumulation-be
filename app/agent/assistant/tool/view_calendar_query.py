@@ -75,7 +75,7 @@ class CalendarQueryViewer:
                 'message':error.reason + '\n' + error.required_action})
         except Exception as error:
             logger.warning('日程页面渲染失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={'code':'calendar_render_unavailable',
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={'code':'calendar_render_unavailable',
                 'message':'日程页面暂时无法渲染，本次未打开页面。请重新查询后再查看；持续失败时请管理员排查日程字段，不能据此判断没有日程。'})
         resource, locator, nonce = 'calendar-query:'+args.query_id, f'page:{args.page}', str(uuid4())
         reference = ToolPageReference(resource_id=resource, locator=locator,

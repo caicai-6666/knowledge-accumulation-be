@@ -42,6 +42,7 @@ class FeedbackOnlyHook:
                 or value.output != execution.output
                 or value.after_commit is not execution.after_commit
                 or value.result.status != original.status
+                or value.result.failure_mode != original.failure_mode
                 or value.result.tool_result != original.tool_result
                 or value.result.system_guidence != original.system_guidence):
             raise ValueError('反馈专用钩子只能修改展示内容')

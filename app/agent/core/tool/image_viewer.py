@@ -1,4 +1,5 @@
 """独立图像文件阅读工具；只查看多图附件的页面，不处理音频或视频。"""
+from ..model import AgentDependencyError
 from pydantic import BaseModel,ConfigDict,Field
 from textwrap import dedent
 from app.model.question_file import FileID
@@ -52,6 +53,8 @@ def build_image_view_registration(viewer):
     async def resolve(reference):
         try:
             return await viewer.resolve_page(reference)
+        except AgentDependencyError:
+            raise
         except Exception:
             # 已提交引用在展示期失效时仅隐藏资料，不把旧图像当成当前可读内容。
             raise ToolPageUnavailable('图像资料当前无法读取。') from None

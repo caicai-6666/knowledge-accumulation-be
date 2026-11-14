@@ -87,7 +87,7 @@ class FileCandidateViewer:
             })
         except Exception as error:
             logging.getLogger(__name__).warning('文件列表读取失败：error_type=%s',type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={
                 'code': 'file_page_unavailable',
                 'message': '文件列表读取未完成，暂时无法取得页面。',
                 'required_action': '请稍后重试查看；不能根据读取失败判断文件不存在或权限已撤销。',

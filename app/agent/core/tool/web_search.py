@@ -171,8 +171,8 @@ def render_search_view_feedback(arguments, execution, context):
     )
 
 
-def _failure(code, message):
-    return ToolExecutionResult(status='failed', tool_result={'code': code, 'message': message})
+def _failure(code, message, *, failure_mode='correctable'):
+    return ToolExecutionResult(status='failed', failure_mode=failure_mode, tool_result={'code': code, 'message': message})
 
 
 class WebSearchPool:
@@ -382,13 +382,13 @@ def build_web_search_registrations(*, pool, service, authorize):
             records.append({'stage': 'search_outcome', 'status': result.status,
                             'error_code': result.error_code, 'hint': result.hint, 'count': len(result.entries)})
             if result.status == 'error':
-                return _failure('search_failed', '本次搜索未取得可用结果，请稍后重试或调整搜索需求。')
+                return _failure('search_failed', '本次搜索未取得可用结果，请稍后重试或调整搜索需求。', failure_mode='failed')
             result_id, count = pool.put(args.query, result.entries, status=result.status, hint=result.hint)
         except PermissionError:
-            return _failure('session_expired', '会话已释放，请重新发起搜索。')
+            return _failure('session_expired', '会话已释放，请重新发起搜索。', failure_mode='dependency')
         except Exception as error:
             logger.warning('网页搜索失败：error_type=%s', type(error).__name__)
-            return _failure('search_failed', '本次搜索未取得可用结果，请稍后重试或调整搜索需求。')
+            return _failure('search_failed', '本次搜索未取得可用结果，请稍后重试或调整搜索需求。', failure_mode='failed')
         payload = {'count': count}
         if result_id:
             payload['result_id'] = result_id
@@ -400,7 +400,7 @@ def build_web_search_registrations(*, pool, service, authorize):
         try:
             await authorize()
         except PermissionError:
-            return _failure('session_expired', '当前会话无法继续查看，请在有效会话中重新搜索。')
+            return _failure('session_expired', '当前会话无法继续查看，请在有效会话中重新搜索。', failure_mode='dependency')
         return await pool.view(**args.model_dump(), defer_commit=True)
 
     async def resolve(reference):

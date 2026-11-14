@@ -22,6 +22,7 @@
 | [助理记忆加载](assistant-memory.md) | 持久化压缩窗口、当前工作区、线性追加与按需记忆检索。 |
 | [员工个人信息与助理私有画像](assistant-personal-context.md) | 员工事实背景、私有画像姓名全文检索、LRU 分页及逐条增删与事务恢复。 |
 | [核心循环](agent-core.md) | 输入、工具、校验、提交、输出、取消及故障。 |
+| [工具失败分层](tool-failures.md) | 主循环参数纠错、执行失败事实与必须停止边界；覆盖探索和个人助理。 |
 | [失败反馈审查与修复提示](error-feedback.md) | 校验、工具结果、system-guidence 的就近反馈、已修复项与宿主终止的剩余边界。 |
 | [上下文与工作区](context-management.md) | 最近摘要、分支恢复、token 预算与压缩。 |
 | [多轮工作区精简](workspace-compression.md) | 逐步编辑、容量反馈、保护路径和预留操作。 |

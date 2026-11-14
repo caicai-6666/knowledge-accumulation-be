@@ -1,5 +1,6 @@
 """内部检索工具只有引用和计数反馈；没有列表查看入口。"""
 from dataclasses import replace
+from ...model import AgentDependencyError
 from textwrap import dedent
 from pydantic import ValidationError
 from ...json_codec import load_model_json, validate_model_payload, ModelActionRejected, model_validation_feedback
@@ -35,6 +36,8 @@ async def execute(pool, search, name, raw):
             try:
                 hits=await search(field,args.passport if field=='passport' else args.query,scope)
             except ModelActionRejected:
+                raise
+            except (PermissionError, AgentDependencyError):
                 raise
             except Exception:
                 return {'status':'error','fatal':True,

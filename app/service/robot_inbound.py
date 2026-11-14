@@ -83,13 +83,19 @@ def _label(part, index):
 
 
 async def _finish_io(awaitable):
-    # 文件线程不随协程取消停止；等待写入/删除结束后才能释放消息锁。
+    # 文件线程不随协程取消停止；超时和服务关闭可能先后取消同一接收任务。
+    # 每次等待都保护子任务，直到转换、保存或删除结束，才传播取消并释放消息锁。
     task = asyncio.create_task(awaitable)
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await asyncio.gather(task, return_exceptions=True)
-        raise
+    completion = asyncio.gather(task, return_exceptions=True)
+    cancelled = False
+    while not completion.done():
+        try:
+            await asyncio.shield(completion)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError()
+    return task.result()
 
 
 class RobotInboundService:
@@ -111,6 +117,13 @@ class RobotInboundService:
         return await self._update(record, status='reply_pending', reply_text=text,
                                   next_attempt_at=self.clock())
 
+    async def _convert_and_save(self, part, original, reference, max_bytes):
+        # 转换和可靠暂存属于同一取消保护区；慢 Office 即使超过回调时限，
+        # 也先保存成功结果再退出，重推直接复用，不能每次重新转换直到永远超时。
+        content = await asyncio.to_thread(to_pdf, part, original, self.robot.settings, max_bytes=max_bytes)
+        await self.files.save_reference(UploadedFile(type='images', content=content), reference)
+        return content
+
     async def _prepare(self, record, message):
         if message.reply is not None and message.reply.rejection is not None:
             return await self._reject(record, message.reply.rejection)
@@ -126,7 +139,7 @@ class RobotInboundService:
         for index, part in enumerate(parts):
             if part.type == 'unsupported':
                 return await self._reject(record, '这条消息的类型暂不支持，无法读取内容。'
-                    '请改用文字、图片或 PDF 后重新发送整条消息。')
+                    '请改用文字、图片、PDF、Word（DOC/DOCX）或 Excel（XLS/XLSX）后重新发送整条消息。')
             if not supported(part):
                 return await self._reject(record, f'{_label(part,index)}：暂不支持该文件类型。'
                     '本条消息未接收，请调整后重新发送整条消息。')
@@ -163,10 +176,8 @@ class RobotInboundService:
                     await asyncio.to_thread(validate_pdf, content)
                 except FileNotFoundError:
                     original = await self.robot.download_file(part.download_code)
-                    content = await asyncio.to_thread(to_pdf, part, original, self.robot.settings,
-                        max_bytes=min(limits.max_file_bytes, self.files.max_bytes))
-                    await _finish_io(self.files.save_reference(
-                        UploadedFile(type='images', content=content), entry.reference))
+                    content = await _finish_io(self._convert_and_save(part, original, entry.reference,
+                        min(limits.max_file_bytes, self.files.max_bytes)))
                 if len(content) > limits.max_file_bytes:
                     raise AttachmentRejected('文件大小超出限制')
             except (AttachmentRejected, RobotAttachmentInvalid) as error:

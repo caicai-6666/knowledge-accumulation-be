@@ -123,10 +123,12 @@ class MemoryRetrievalSession:
         try:
             self._result = MemoryRetrievalResult(status='success', tasks=await self._search(plan))
             return self._result
+        except PermissionError:
+            raise
         except Exception as error:
             import logging
             logging.getLogger(__name__).warning('记忆召回失败：error_type=%s', type(error).__name__)
             return MemoryRetrievalResult(status='error', error_code='query_execution_failed',
-                error='记忆检索依赖暂时不可用，请稍后重试，不能据此判断没有相关记忆。')
+                error='记忆检索未完成，请稍后重试，不能据此判断没有相关记忆或确定服务已宕机。')
         finally:
             self._executing = False

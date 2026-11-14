@@ -4,6 +4,8 @@ from dataclasses import replace
 from app.agent.core.tool import ToolExecution, ToolHookContext
 from ..tool.finish_task import FinishAssistantTaskArguments
 from .schema import MessageRenderingError
+from app.agent.core.model import AgentDependencyError
+from app.agent.core.tool.result import ToolOperationFailed
 
 
 class AssistantMessageRenderingHook:
@@ -17,10 +19,10 @@ class AssistantMessageRenderingHook:
         # 使用前一个钩子的输出；共享转换器不保存本次任务身份、正文或 journal。
         try:
             if context.record_generation is None:
-                raise MessageRenderingError('转换缺少私有生成审计入口，尚未转换或提交；需绑定当前任务审计。')
+                raise AgentDependencyError('转换缺少私有生成审计入口，已停止')
             content = await self.agent.render(execution.output, on_generation=context.record_generation)
         except MessageRenderingError as error:
-            # 安全定向原因已由转换校验就近提供；终止主循环，不能触发主助理纠错重放。
-            from app.agent.core.runtime import AgentCoreError
-            raise AgentCoreError(str(error)) from None
+            # 尚未登记正文或交付；返回实际失败，主助手可解释或调整方案，禁止声称已发送。
+            raise ToolOperationFailed(reason=str(error),
+                required_action='本次正文及附件均未提交或发送；可调整完整正文后重试，持续失败时说明交付限制。不要声称用户已收到。') from None
         return replace(execution, output=content)

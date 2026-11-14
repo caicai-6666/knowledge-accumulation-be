@@ -13,3 +13,8 @@
 **/*.py[cod]
 **/.env
 **/.env.*
+
+!assets/fonts/
+!assets/fonts/*.otf
+!assets/fonts/*.txt
+!assets/fonts/*.md

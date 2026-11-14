@@ -26,7 +26,8 @@ from app.infrastructure.mllm import MLLMClient
 from app.infrastructure.vllm_tokenizer import TokenizationUnavailable
 from app.model.question_tree import SummaryContent, TreeID, TreeModel, WorkspaceVersion, new_tree_id
 from app.model.question_file import UploadedFile
-from app.repository.question_tree import QuestionTreeConflict
+from app.repository.question_tree import QuestionTreeConflict, QuestionTreeNotFound
+from app.agent.core.model import AgentDependencyError
 
 logger=logging.getLogger(__name__)
 
@@ -124,8 +125,19 @@ class QuestionAgentService:
                 self._running[key]=task
                 owns_run=True
             if self.file_service is not None:
-                async def read_file(file_id):return await self.file_service.read_file(tree_id,user.userid,file_id)
-                async def authorize(file_id):return await self.nodes.find_file(tree_id,user.userid,file_id)
+                async def read_file(file_id):
+                    try:
+                        return await self.file_service.read_file(tree_id,user.userid,file_id)
+                    except QuestionTreeNotFound as error:
+                        raise AgentDependencyError('任务树归属已失效，停止附件读取') from error
+                async def authorize(file_id):
+                    if self._closed:
+                        raise AgentDependencyError('问答宿主已关闭，停止附件读取')
+                    try:
+                        return await self.nodes.find_file(tree_id,user.userid,file_id)
+                    except QuestionTreeNotFound as error:
+                        # 单个附件不存在仍由 QuestionFileNotFound 反馈；树归属失效必须停止整个任务。
+                        raise AgentDependencyError('任务树归属已失效，停止附件读取') from error
                 if self.file_authorize_wrapper is not None:
                     authorize=self.file_authorize_wrapper(authorize, user)
                 viewer=ImageFileViewer(scope=(user.userid,tree_id),read_file=read_file,authorize=authorize,cache=self.file_cache)

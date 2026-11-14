@@ -1,5 +1,6 @@
 """仅为个人助理的附件查看器追加公开状态校验，不扩展文件读取权限。"""
 import logging
+from app.agent.core.model import AgentDependencyError
 
 from app.agent.core.file.image_viewer import FileViewError
 from app.repository.uploaded_file import UploadedFileAccessError
@@ -18,6 +19,8 @@ def wrap_image_authorize(authorize, *, userid, visibility):
         except UploadedFileAccessError as error:
             # 保留上游已确认的原因与修正方向，不从缺少登记推断文件不存在。
             raise FileViewError(error.code, error.reason + error.required_action) from None
+        except AgentDependencyError:
+            raise
         except Exception as error:
             logger.warning('助理附件公开状态校验失败：error_type=%s', type(error).__name__)
             raise FileViewError('attachment_visibility_unavailable',

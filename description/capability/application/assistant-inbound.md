@@ -19,9 +19,10 @@
 | 纯文字 | 保留正文，不添加虚构附件；空白输入或超长正文不能静默改成有效任务。 |
 | 图片 | PNG、JPEG、WebP、GIF、BMP、TIFF、AVIF、HEIC/HEIF 栅格图解码后转换为 PDF，修正方向、透明背景铺白、多帧转多页。 |
 | PDF 文件 | 校验真实 PDF、非加密、有效页面；保留原始字节。 |
-| 音频、视频、Word、Excel 及其他文件 | 整条拒绝，直接通过机器人发送文件问题提示。 |
+| Word、Excel 文件 | DOC/DOCX、XLS/XLSX 按真实内容识别，经独立转换器转 PDF；宏扩展名不接收。 |
+| 音频、视频及其他文件 | 整条拒绝，直接通过机器人发送文件问题提示。 |
 | 损坏、空文件、超限附件 | 整条拒绝，提示具体附件并要求调整后重新发送。 |
-| 钉钉 `unknownMsgType` | 保存可靠拒绝通知，提示改用文字、图片或 PDF；不下载、不初始化员工、不发布任务。 |
+| 钉钉 `unknownMsgType` | 保存可靠拒绝通知，提示改用文字、图片、PDF、Word 或 Excel；不下载、不初始化员工、不发布任务。 |
 | 下载网络故障 | 不判断为文件不支持；接收未完成，不发布半条消息，等待钉钉重推。 |
 
 先检查整条消息所有文件的类型和数量，再下载或转换。全部附件完成校验、可靠暂存后才进入待发布状态。单文件同样执行此流程。文件名只作提示，不参与磁盘路径；实际内容必须匹配允许的类型，不能只凭后缀接收。
@@ -52,13 +53,13 @@
 
 ## 文件与队列
 
-[转换器](../../../app/infrastructure/robot_attachment.py)在内存中处理字节，复用 Pillow 和 PyMuPDF，不启动外部格式转换程序。下载阶段兼容钉钉返回的 HTTP 标准 OSS 桶地址，升级为 HTTPS 后继续受原有域名和公网校验约束，详见[下载规则](../infrastructure/dingtalk-robot.md#附件与日志边界)。图片像素数、帧数和最终 PDF 字节数分别校验，禁止把动画静默截成首帧。
+[格式路由](../../../app/infrastructure/robot_attachment.py)调用独立的图片、Word、Excel、PDF 转换器，统一返回经过校验的 PDF。图片在内存中转换；Word/Excel 复用项目管理平台的 LibreOffice 实现，临时落盘后自动清理，详细格式、限制和部署方式见[附件转 PDF](attachment-conversion.md)。下载阶段兼容钉钉返回的 HTTP 标准 OSS 桶地址，升级为 HTTPS 后继续受原有域名和公网校验约束，详见[下载规则](../infrastructure/dingtalk-robot.md#附件与日志边界)。图片像素数、帧数和最终 PDF 字节数分别校验，禁止把动画静默截成首帧。
 
 苹果 HEIC/HEIF 由 `pillow-heif==1.8.1` 注册到 Pillow 解码，文件附件接受 `.heic`、`.heif`、`.heics`、`.heifs`、`.hif`（不区分大小写），图片消息无需文件名。实际内容仍须通过解码和允许格式检查；解码器处理 HEIF 容器方向后，复用现有逐帧转换，不重复旋转，不把缩略图作为额外正文页。输出继续使用 PDF，无需修改队列、存储格式或模型工具。此转换用于读取静态图像，不提取 Live Photo 的视频部分。
 
 依赖安装到实际运行环境后须重启后端；容器部署需基于更新的 `requirement.txt` 重建后端镜像。解码依赖及预编译包说明见[Python 环境与依赖](dependencies.md#heic--heif-解码)。
 
-转换后的所有附件都以 `images` 引用、`.pdf` 后缀通过现有 [UploadFileStore](../../../app/infrastructure/upload_file.py)暂存到 `data/user/upload-file`。稳定 UUID 来自消息标识和片段位置；相同回调恢复时复用已保存文件。存储层拒绝路径穿越、符号链接及不同内容覆盖。入队前再次核对已冻结的大小和 SHA-256。
+转换后的所有附件都以 `images` 引用、`.pdf` 后缀通过现有 [UploadFileStore](../../../app/infrastructure/upload_file.py)暂存到 `data/user/upload-file`。稳定 UUID 来自消息标识和片段位置；相同回调恢复时复用已保存文件。Office 输出不保证逐字节确定性，幂等依赖此已保存副本，不依赖重复转换。转换与可靠保存处于同一取消保护区；回调超时或取消时等待转换及保存结束后退出，重推复用 PDF，不发布半条任务。存储层拒绝路径穿越、符号链接及不同内容覆盖。入队前再次核对已冻结的大小和 SHA-256。
 
 发布时使用同一个稳定 `request_id`、原文字正文和有序 PDF 附件列表；无文字的纯附件消息使用“请查看附件。”。发布协议复用[中间件队列客户端](../infrastructure/assistant-queue.md)，不另加消息类型、接口或队列。正文不包含下载码、追踪标识或存储信息。
 

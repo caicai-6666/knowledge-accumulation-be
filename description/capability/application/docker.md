@@ -2,7 +2,7 @@
 
 ## 镜像与启动
 
-根目录 [Dockerfile](../../../Dockerfile) 使用 Python 3.12.15 slim bookworm，安装 [固定直接依赖](../../../requirement.txt) 并执行 `pip check`。只复制 `app/`和模型工具模板 `assets/tool-tag/`；[.dockerignore](../../../.dockerignore) 排除实际配置、数据、测试和实验文件。
+根目录 [Dockerfile](../../../Dockerfile) 使用 Python 3.12.15 slim bookworm，安装 [固定直接依赖](../../../requirement.txt) 并执行 `pip check`。安装 LibreOffice Writer/Calc 及系统字体，复制 `app/`、模型工具模板 `assets/tool-tag/` 和 `assets/fonts/` 中文字体；[.dockerignore](../../../.dockerignore) 排除实际配置、数据、测试和实验文件。
 
 ```bash
 docker build -t knowledge-accumulation-be:dev .
@@ -26,29 +26,25 @@ Docker/ASGI 默认不设置 `APP_PATH_PREFIX`，继续使用生产 API 路径和
 
 ## Compose 装配
 
-统一部署配置由 [knowledge-accumulation-deploy](../../../../knowledge-accumulation-deploy/readme.md)管理；正式部署时本项目克隆到 deploy 根目录内的 `knowledge-accumulation-be/`，其余三个子项目也位于 deploy 内。服务名 `knowledge-backend`，默认入口为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
+统一编排维护在 [knowledge-accumulation-deploy](../../../../knowledge-accumulation-deploy/readme.md)。正式部署时，本项目位于 deploy 内的 `knowledge-accumulation-be/`，其余子项目同样位于 deploy 内。知识后端服务名为 `knowledge-backend`，模板宿主端口为 `15000`，地址为 `http://127.0.0.1:15000/knowledge-accumulation/api`。
 
-| 项目 | 行为 |
+| 项目 | 当前行为 |
 | --- | --- |
-| 配置 | `KNOWLEDGE_BACKEND_ENV_FILE` 指向后端实际 `.env`，只读挂载到 `/workspace/.env`，默认 `./knowledge-accumulation-be/.env`（相对 deploy 根目录）。 |
-| 解析 | 应用以 `python-dotenv` 且 `interpolate=False` 读取文件，支持示例中的带引号 JSON，不把整个文件作为 Compose `env_file.format: raw` 传入。 |
-| 数据库 | Compose 环境覆盖为 `mysql:3306`，数据库、账号和密码与 registry 使用同一部署配置。 |
-| 注册中心文件 | `REGISTRY_BASE_URL` 固定为 `http://backend:8000`；`FILE_SOURCE_MYSQL_HOST/PORT` 为 `mysql:3306`，数据库、账号与密码复用部署的 `MYSQL_*`，覆盖挂载文件中的本机连接项。 |
-| 中间件 | 覆盖为部署配置中的 `MIDDLEWARE_BASE_URL`，平台身份固定 `knowledge-accumulation`；密钥仍取知识后端自己的配置。 |
-| 文件 | 独立命名卷 `knowledge-backend-data` 挂载 `/workspace/data`，头像路径固定 `/workspace/data/user/avatar`，附件位于 `/workspace/data/user/upload-file`。 |
-| 访问 | 宿主机端口由 `KNOWLEDGE_BACKEND_PORT` 控制，默认只绑定回环地址；registry 头像代理默认访问 `http://knowledge-backend:8000`。 |
+| 配置入口 | deploy 根 `.env` 是部署唯一入口，Compose 将 `KNOWLEDGE_*` 映射为知识后端对应变量；不再挂载或读取子项目 `.env`，不使用 `KNOWLEDGE_BACKEND_ENV_FILE`。 |
+| 配置解析 | Compose 解析根配置并显式注入本服务所需环境变量。独立本地运行仍从本项目 `.env` 读取，进程环境优先。包含 `$`、空格或 JSON 的部署值按 deploy 模板使用单引号。 |
+| 数据库 | 容器内连接 `mysql:3306`，账号、数据库与密码取共享 `MYSQL_*`；MySQL root 密码不进入后端。 |
+| 注册中心文件 | `KNOWLEDGE_REGISTRY_BASE_URL` 模板为 `http://backend:8000`，文件来源数据库与主库使用同一部署配置。 |
+| 中间件 | 使用根配置的 `MIDDLEWARE_BASE_URL` 及 `KNOWLEDGE_MIDDLEWARE_PLATFORM_CODE/SECRET`，密钥不进入前端。 |
+| 文件 | `knowledge-backend-data` 卷挂载 `/workspace/data`；头像、转换后附件保存在该卷中。 |
+| 访问 | `KNOWLEDGE_BACKEND_PORT` 控制宿主端口，默认绑定回环；容器内部监听 8000。 |
 
-环境变量优先于文件；Compose 中的企业公开标识统一取部署 `.env` 的 `DINGTALK_CORP_ID`，同时注入知识后端和前端构建参数 `VITE_DINGTALK_CORP_ID`。`APP_ENV`、AppKey、AppSecret、开发登录凭据、模型地址及密钥仍从知识后端配置读取，密钥不进入前端构建。生产应设置 `APP_ENV=production`，并提供共享 CorpId 及后端 AppKey/AppSecret；开发则配置固定登录凭据。共享 CorpId 留空不会回退到后端文件值，修改后需重建前端并重新创建知识后端；独立运行后端时仍从本项目 `.env` 读取 CorpId。
+企业公开标识 `DINGTALK_CORP_ID` 注入知识后端和知识前端构建参数，其他后端凭据不进入前端镜像。修改该标识需要重建前端并重新创建后端。容器中的 `127.0.0.1` 指向容器自身；宿主服务需使用容器可达地址，本地配置中的地址不会自动转换。
 
-中间件接入后会自动执行用户及管理员全表同步，启动前必须准备完整权威人员源，并停止旧的同身份运行实例。跨后端旧快照覆盖并发权限更新的边界仍需由部署侧保证。配置 `VLLM_EMBEDDING_BASE_URL` 后另会启动[记忆自动向量化](memory-embedding.md)，须预先准备问答表和向量服务；空地址不装配该任务。
+助理心跳、正文转换、A2A 和模型参数均从根配置的 `KNOWLEDGE_*` 注入；全局心跳模板为 `KNOWLEDGE_ASSISTANT_HEARTBEAT_INTERVAL_SECONDS=300`，不再读取 assistants 表的逐员工间隔。具体参数以 deploy `.env.example` 和 Compose 映射为准，不保留第二份部署配置副本。
 
-个人助理及平台 A2A 配置也从 `KNOWLEDGE_BACKEND_ENV_FILE` 读取，不在 deploy `.env` 或 Compose 环境中维护第二份值。部署模板已提示同步 `ASSISTANT_MODEL_RETRY_SECONDS=30`、`ASSISTANT_RENDERING_THINKING_EFFORT=medium` 及 A2A 响应缓冲、轮询、HTTP 超时和并发上限；其他开关、模型地址与自定义值保留；已有转换档位若为 `none`，需显式改为 `medium` 才会开启推理。部署侧配置清单见[助理、转换钩子与平台协作](../../../../knowledge-accumulation-deploy/readme.md#助理转换钩子与平台协作)。
+变更运行参数后使用 `docker compose up -d --no-build --wait knowledge-backend` 重新创建容器；单纯 restart 不刷新环境变量。变更代码或镜像依赖时使用 `docker compose up -d --build --wait knowledge-backend`。根 `.env` 保持私有，不输出完整 `docker compose config` 展开内容；只校验时使用 `config --quiet`。
 
-启用助理时，[转换子智能体](../../architecture/workflow/question-answering/assistant-message-rendering.md)作为 `finish_task` 独立钩子自动装配，共用 `VLLM_MLLM_*`，转换默认开启 `medium` 原生推理，要求模型服务支持 `/tokenize`；通过提示生成 JSON 并由本地 Pydantic 严格校验，不发送接口级 `response_format`。转换正文在普通提交前替换，失败不会自动降级发送原文；无需新增容器、端口或 SQL 迁移。配置文件变更需重新创建/启动后端才会加载，镜像仍通过 `COPY app` 包含钩子实现。
-
-Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取。可准备仅部署用户和 GID `10001` 可读的独立配置副本（如权限 `0640`），将 `KNOWLEDGE_BACKEND_ENV_FILE` 指向该副本；不要公开配置内容或把权限 `0600` 且属于其他用户的文件直接视为容器可读。路径缺失时 Compose 拒绝自动创建同名目录。
-
-容器中的 `127.0.0.1` 指向容器自己。中间件位于宿主机时可使用 `host.docker.internal`，宿主服务须监听容器可达接口；MLLM/Embedding 地址也必须可从容器访问。`.env` 中既有本机地址不会自动转换。已有部署 `.env` 如果显式设置了旧 `KNOWLEDGE_ACCUMULATION_BASE_URL`，需要在实际部署时改为新服务地址，默认值不会覆盖已有配置。
+中间件接入会同步用户与管理员全表，启用部署前须准备完整权威人员源并停止旧的同身份实例。配置 Embedding 地址后还会启动记忆加工；应用不自动迁移数据库。正文转换和工具失败分层无需新增容器或 SQL，见[工具失败处理](../../architecture/workflow/question-answering/tool-failures.md)。
 
 ---
 
@@ -68,13 +64,15 @@ Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取
 
 ## SSE 与运行边界
 
-反向代理须保留 `/knowledge-accumulation/api` 路径，转发 `Authorization`，对 SSE 关闭响应缓冲并设置足够的读取超时；上传限制需覆盖应用允许的 PDF 请求大小。容器通过 `init: true` 转发信号，Compose 提供 1 分钟停止宽限，应用负责取消在途任务并释放连接。重启不能自动续跑进程内任务，公开历史恢复遵循[探索会话契约](../../architecture/workflow/question-answering/exploration-session.md)。
+反向代理须保留 `/knowledge-accumulation/api` 路径，转发 `Authorization`，对 SSE 关闭响应缓冲并设置足够的读取超时；上传限制需覆盖原始附件及 multipart 请求大小。容器通过 `init: true` 转发信号，Compose 提供 1 分钟停止宽限，应用负责取消在途任务并释放连接。重启不能自动续跑进程内任务，公开历史恢复遵循[探索会话契约](../../architecture/workflow/question-answering/exploration-session.md)。
 
 本次配置不自动启动共享服务、不执行真实数据库迁移、不复制实际 `.env` 或用户数据。镜像和隔离运行检查的结果不代表生产依赖已经就绪。
 
 ---
 
-## 隔离验证
+## 历史隔离验证
+
+以下为各日期当时版本的验证记录，不代表当前新增 LibreOffice 的镜像已经重建。
 
 2026-10-22 已完成实际镜像构建及镜像内 `pip check`。使用合成配置验证 Compose 默认配置和自定义端口、数据库、代理地址覆盖；检查两后端同源数据库、独立数据卷、只读配置挂载与 MySQL 健康依赖。
 
@@ -83,3 +81,12 @@ Linux 主机上，挂载的配置文件必须允许容器 UID/GID `10001` 读取
 2026-10-30 配置同步：在现有挂载后端配置中补齐 6 个缺失的助理/A2A 参数，保留所有已有配置值；同步 deploy 模板注释、Compose 挂载说明和升级前提。实际配置通过 `AssistantRuntimeSettings`、`PlatformA2ASettings` 加载校验，生产和开发 Compose 均通过 `config --quiet`；解析生产 Compose 验证只读挂载目标及无额外助理/A2A/模型环境覆盖。未执行镜像重建、服务重启、数据库迁移或模型联通验证。
 
 2026-11-09 部署初始化同步：deploy 合并为一份最新业务库 SQL，覆盖 26 张表及 001–029 最终结构。隔离 MySQL 对照迁移结果逐表验证通过；官方入口完成空库建表和 MyVector 安装，业务账号可访问，插件状态为 ACTIVE。生产及开发 Compose 配置校验通过，未改动现有开发库。
+
+
+---
+
+## 附件转换部署配置（当前）
+
+deploy 使用根 `.env` 并由 Compose 显式注入环境变量。附件转换新增 `KNOWLEDGE_OFFICE_CONVERTER_EXECUTABLE=/usr/bin/soffice` 和 `KNOWLEDGE_PDF_MAX_VISUAL_TOKENS_PER_PAGE=2048`，分别映射为应用同名无 `KNOWLEDGE_` 前缀变量。实际部署规则以 [deploy 说明](../../../../knowledge-accumulation-deploy/readme.md#附件转换与探索上传) 为准。
+
+图片、Word、Excel 转换依赖已纳入本项目 Dockerfile、requirement.txt 和字体构建白名单；无需新服务或数据库迁移。需重建 knowledge-backend 和适配后的 knowledge-frontend 镜像。探索上传网关请求体上限至少 22 MiB、注册读取超时至少 1800 秒；前端镜像 Nginx 当前读取超时为 3600 秒，外层网关需独立核对。本次仅同步配置，不启动部署服务。

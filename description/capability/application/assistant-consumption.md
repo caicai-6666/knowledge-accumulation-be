@@ -77,7 +77,7 @@
 
 [转换钩子](../../../app/agent/assistant/message_rendering/hook.py)以 `hook(arguments, execution, context)` 接收当前工具结果，替换 `execution.output`；完整生成通过当前调用的私有审计回调保存。Core 同步更新已接受 `finish_task.content`，所以节点答案、交付账本正文及后续上下文都使用转换结果。`send_to_user=false` 透传，探索、助理间通信及提醒入队不触发转换。
 
-调用顺序为：工具参数验收 → 执行 → 本工具钩子按序运行 → 正文及调用历史正常提交 → 原子抢占发送 → 钉钉 `sampleMarkdown` → 保存发送回执。没有问答树结构调整、提交后正文更新或终态转换缓存；钩子失败终止任务，不提交原文或发送半成品。
+调用顺序为：工具参数验收 → 执行 → 本工具钩子按序运行 → 正文及调用历史正常提交 → 原子抢占发送 → 钉钉 `sampleMarkdown` → 保存发送回执。没有问答树结构调整、提交后正文更新或终态转换缓存；正文转换明确失败时不提交原文或发送半成品，而是向主模型返回失败回执继续处理；取消、宿主失效、审计故障和不确定写入仍停止，见[失败分层](../../architecture/workflow/question-answering/tool-failures.md)。
 
 `AssistantDeliveryService` 直接发送 `AssistantDelivery.message`，发送重试不运行转换器。默认应用将转换钩子传给助理工厂的 `finish_hooks`，配置、上下文、资源和验证边界统一见[转换专题](../../architecture/workflow/question-answering/assistant-message-rendering.md)。
 
@@ -146,7 +146,7 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 
 目录反映 SQL 用户身份，包括尚未创建助理树的真实用户，不保证在线或接收可用性；已有助理停用等状态仍由发送工具在实际发送前检查。查询不创建助理树、不修改身份。空结果与数据库失败明确区分；失败日志只记录异常类型，不回显查询词或异常正文。结果集及正文仅在本任务内可用，结束后释放。
 
-验证见[目录工具测试](../../../tests/test_assistant_directory.py)、[独立 MySQL 匹配测试](../../../tests/test_assistant_directory_mysql.py)，以及[消费链路测试](../../../tests/test_assistant_consumer_mysql.py)中的查询后发送场景。
+验证见目录工具测试（历史文件 `tests/test_assistant_directory.py`，当前工作区未保留）、独立 MySQL 匹配测试（历史文件 `tests/test_assistant_directory_mysql.py`，当前工作区未保留），以及消费链路测试（历史文件 `tests/test_assistant_consumer_mysql.py`，当前工作区未保留）中的查询后发送场景。
 
 ---
 
@@ -249,9 +249,9 @@ LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/
 
 2026-10-28 本机目录故障修复：当前人员库仅有姓名全文索引，部门及姓名/部门组合查询均复现 MySQL 1191；已显式执行 020，确认 `departments.name` 的 ngram 全文索引存在。通过实际工具执行器验证全量、姓名、部门、组合四种查询，分别返回 7、1、1、2 个结果，四种结果的第一页均成功渲染。验证只查询数据和准备内存结果集，不向员工发送消息；未重启服务，其他部署环境仍需独立迁移。记录见[索引修复验证](../../../experiment/maintenance/20261028-assistant-directory-index/verification.json)。
 
-[工具与渲染测试](../../../tests/test_assistant_tools.py)验证实际 Schema、严格布尔选择、静默完成不交付、条件工具禁止流式预览、提交回调时序、四种输入首部、公共附件渲染、默认关闭和稳定文件引用。
+工具与渲染测试（历史文件 `tests/test_assistant_tools.py`，当前工作区未保留）验证实际 Schema、严格布尔选择、静默完成不交付、条件工具禁止流式预览、提交回调时序、四种输入首部、公共附件渲染、默认关闭和稳定文件引用。
 
-[独立 MySQL 消费测试](../../../tests/test_assistant_consumer_mysql.py)使用真实 asyncmy、012 迁移、实际 Core 与队列 HTTP 客户端，模型及网络通过替身隔离。覆盖实际消费、来源身份、显式发送/静默、事务回滚、跨实例锁、交付原子抢占、消息及 ack 故障恢复、PDF 图像查看、取消、后台启动和应用逆序清理。所有文件在 tests/tmp，MySQL 只接受显式临时容器端口；不代表共享中间件或真实钉钉生产验收。
+独立 MySQL 消费测试（历史文件 `tests/test_assistant_consumer_mysql.py`，当前工作区未保留）使用真实 asyncmy、012 迁移、实际 Core 与队列 HTTP 客户端，模型及网络通过替身隔离。覆盖实际消费、来源身份、显式发送/静默、事务回滚、跨实例锁、交付原子抢占、消息及 ack 故障恢复、PDF 图像查看、取消、后台启动和应用逆序清理。所有文件在 tests/tmp，MySQL 只接受显式临时容器端口；不代表共享中间件或真实钉钉生产验收。
 
 2026-10-24：完整 unittest 共 1211 项，1049 项通过、162 项因其他隔离环境未配置而跳过；本轮 17 项消费 MySQL 测试、原有 16 项助理存储/上下文实库测试均在独立临时 MySQL 8.4 中实际执行，另有 11 项工具与渲染测试通过。`pip check`、`git diff --check` 及 11 份文档的 226 个相对链接/锚点检查通过。临时容器与本轮测试日志已清理。网络和模型均为隔离替身，未调用真实中间件或钉钉，未修改真实 `.env`、其他项目或业务数据。
 

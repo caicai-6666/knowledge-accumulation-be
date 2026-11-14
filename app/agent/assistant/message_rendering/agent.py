@@ -1,7 +1,8 @@
 """一次结构化生成；请求上下文独立，原始响应先审计后验收。"""
 import asyncio
 from app.config.mllm import MLLMGenerationSettings, MLLMSettings
-from app.infrastructure.mllm import MLLMClient
+from app.infrastructure.mllm import MLLMClient, MLLMRequestError, MLLMUnavailableError
+from app.agent.core.model import AgentDependencyError
 from app.infrastructure.vllm_tokenizer import count_chat_tokens
 from app.model.node_persistence import GenerationPayload
 from .prompt import build_messages
@@ -24,10 +25,15 @@ class DingTalkMessageRenderer:
 
     async def render(self, content: str, *, on_generation) -> str:
         if self._closed:
-            raise MessageRenderingError('转换器已关闭，尚未发送；需使用有效的转换器实例。')
+            raise AgentDependencyError('转换器已关闭，尚未发送；需使用有效的转换器实例。')
         if not isinstance(content, str) or not content.strip():
             raise MessageRenderingError('原始答复为空，未请求转换或发送；需提供工具执行后的完整正文。')
         messages = build_messages(content)
+        async def record(status, payload):
+            try:
+                await on_generation(status, payload)
+            except Exception as error:
+                raise AgentDependencyError('转换审计保存失败，已停止且未发送') from error
         try:
             count = (await self.counter(messages, [], self.generation) if self.counter is not None
                      else await count_chat_tokens(messages, [], self.settings, generation=self.generation))
@@ -38,15 +44,20 @@ class DingTalkMessageRenderer:
             response = await self.client.create_chat_completion(
                 messages=messages, generation=self.generation)
         except asyncio.CancelledError:
-            await on_generation('cancelled', GenerationPayload(
-                purpose='assistant_message_rendering', error_type='CancelledError'))
+            try:
+                await record('cancelled', GenerationPayload(
+                    purpose='assistant_message_rendering', error_type='CancelledError'))
+            except Exception:
+                pass  # 已取消时审计尽力保留，不用存储异常替换取消信号。
             raise
         except Exception as error:
-            await on_generation('failed', GenerationPayload(
+            await record('failed', GenerationPayload(
                 purpose='assistant_message_rendering', error_type=type(error).__name__))
+            if isinstance(error, (MLLMRequestError, MLLMUnavailableError)):
+                raise MessageRenderingError('转换请求未成功，尚未提交或发送；未取得可用转换正文。') from None
             raise
         # 在解析与业务验收之前可靠保存完整原生推理、JSON、用量及结束原因。
-        await on_generation('complete', GenerationPayload(
+        await record('complete', GenerationPayload(
             purpose='assistant_message_rendering', assistant_message=response.assistant_message,
             raw_response=response.raw_response, raw_chunks=list(response.raw_chunks),
             usage=response.usage, finish_reason=response.finish_reason))

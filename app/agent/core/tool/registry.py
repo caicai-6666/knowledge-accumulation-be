@@ -11,7 +11,8 @@ from ..json_codec import load_model_json,validate_model_payload,ModelActionRejec
 from ..workspace import WorkspacePayload
 from .result import ToolExecution,ToolExecutionResult,ToolContentType,ToolPageReference
 from .progress import ToolProgress,DEFAULT_TOOL_PROGRESS
-from .hooks import ToolHook,ToolHookContext
+from .hooks import ToolHook,ToolHookContext,FeedbackOnlyHook
+from .result import ToolOperationFailed
 
 # 可信工具调用标识仅供外部操作幂等使用，不进入 Schema、工具结果或提示词。
 current_tool_call_id = ContextVar('current_tool_call_id', default=None)
@@ -193,16 +194,30 @@ class ToolRegistry:
             execution=replace(execution,output=arguments.content)
         execution=self._validate_execution(entry,execution)
         # 仅运行本注册项的钩子，逐个等待；失败/未知回执也可加工，但不能改写执行事实。
+        operation_failed = False
         for hook in entry.hooks:
+            # 业务钩子明确失败后，仅允许末尾纯展示钩子渲染失败，不再跑成功动作。
+            if operation_failed and not isinstance(hook, FeedbackOnlyHook):
+                continue
             previous=execution
-            value=hook(arguments.model_copy(deep=True),replace(execution,
-                result=execution.result.model_copy(deep=True)),hook_context)
-            value=await value if isawaitable(value) else value
+            try:
+                value=hook(arguments.model_copy(deep=True),replace(execution,
+                    result=execution.result.model_copy(deep=True)),hook_context)
+                value=await value if isawaitable(value) else value
+            except ToolOperationFailed as error:
+                if isinstance(hook, FeedbackOnlyHook):
+                    raise ValueError('渲染钩子不能产生或改写业务失败') from error
+                execution = ToolExecution(error.result)
+                operation_failed = True
+                continue
             execution=self._validate_execution(entry,value)
-            if execution.result.status!=previous.result.status:
-                raise ValueError('工具钩子不能改写执行状态')
+            if (execution.result.status!=previous.result.status
+                    or execution.result.failure_mode!=previous.result.failure_mode):
+                raise ValueError('工具钩子不能改写执行状态或失败分类')
             if execution.after_commit is not previous.after_commit:
                 raise ValueError('工具钩子不能替换或丢弃提交回调')
+        if operation_failed and execution.result.content.text is None:
+            raise ValueError('业务钩子失败必须由末尾反馈专用钩子渲染')
         return execution
 
     @staticmethod

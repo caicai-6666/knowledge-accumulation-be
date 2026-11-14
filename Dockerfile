@@ -4,6 +4,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Word/Excel 转 PDF；中文字体资产随项目复制，不依赖开发机字体。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc fonts-noto-cjk fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace
 
 # 依赖层独立缓存；构建期间不读取实际环境配置。
@@ -19,6 +24,7 @@ RUN groupadd --gid 10001 app \
 
 COPY --chown=app:app app ./app
 COPY --chown=app:app assets/tool-tag ./assets/tool-tag
+COPY --chown=app:app assets/fonts ./assets/fonts
 
 USER app
 EXPOSE 8000

@@ -75,12 +75,12 @@ def build_calendar_query_pool():
 def build_search_calendar_events_registration(*, pool, service):
     async def execute(args):
         if pool.closed:
-            return ToolExecutionResult(status='failed', tool_result={'code': 'calendar_query_expired',
+            return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={'code': 'calendar_query_expired',
                 'message': '本轮日程查询已结束，未建立日程集。请在新的任务中重新查询。'})
         try:
             result = await service.search(args.userid, args.start_time, args.end_time)
             if pool.closed:
-                return ToolExecutionResult(status='failed', tool_result={'code': 'calendar_query_expired',
+                return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={'code': 'calendar_query_expired',
                     'message': '查询期间本轮任务已结束，日程集未发布；请在新的任务中重新查询。'})
             metadata = {'userid': args.userid, 'start_time': args.start_time.isoformat(), 'end_time': args.end_time.isoformat(),
                 'total': len(result.items), 'total_pages': (len(result.items) + pool.page_size - 1) // pool.page_size,
@@ -91,10 +91,12 @@ def build_search_calendar_events_registration(*, pool, service):
                         if result.truncated else '该主日历查询窗口内未返回日程，未生成查询 ID；这不代表员工一定空闲、在岗或没有其他安排。')})
             query_id, commit = pool.prepare(result.items)
         except CalendarReadError as error:
-            return ToolExecutionResult(status='failed', tool_result={'code': error.code, 'message': error.message})
+            return ToolExecutionResult(status='failed',
+                failure_mode='correctable' if error.code in {'calendar_range_invalid','calendar_employee_not_found','calendar_employee_mismatch'} else 'failed',
+                tool_result={'code': error.code, 'message': error.message})
         except Exception as error:
             logger.warning('日程查询失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={'code': 'calendar_search_unavailable',
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={'code': 'calendar_search_unavailable',
                 'message': '日程查询依赖暂不可用，未建立日程集。请稍后重试；不能将查询失败当作没有日程或员工空闲。'})
         return ToolExecution(ToolExecutionResult(status='succeeded', tool_result={**metadata, 'query_id': query_id,
             'message': ('日程集仅保留部分结果，请缩小时间范围重新查询。' if result.truncated else '已取得日程集。')

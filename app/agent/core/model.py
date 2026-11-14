@@ -8,6 +8,10 @@ from app.model.question_file import AttachmentReference,unique_references
 from .workspace import WorkspacePayload, empty_workspace
 
 
+class AgentDependencyError(RuntimeError):
+    """宿主权限或持久化边界失效；子工具不得将其转换为可继续的业务失败。"""
+
+
 class CoreModel(BaseModel):
     model_config=ConfigDict(extra='forbid',frozen=True)
 

@@ -1,4 +1,5 @@
 """注册中心PDF图像查看工具；文件ID与用户上传UUID明确区分。"""
+from ..model import AgentDependencyError
 from pydantic import BaseModel,ConfigDict,Field,field_validator
 from functools import partial
 from app.infrastructure.registry_file import validate_resource_id
@@ -26,6 +27,8 @@ def build_registry_file_registration(viewer):
     async def resolve(reference):
         try:
             return await viewer.resolve_page(reference)
+        except AgentDependencyError:
+            raise
         except Exception:
             raise ToolPageUnavailable('注册中心文件图像当前无法读取。') from None
 
@@ -33,6 +36,8 @@ def build_registry_file_registration(viewer):
         prefix='正在查看文件'
         try:
             name=await viewer.file_name(args.file_id)
+        except AgentDependencyError:
+            raise
         except Exception:
             # 展示资料失败不泄漏名称或底层错误；实际查看仍独立鉴权并返回原有错误契约。
             name=None

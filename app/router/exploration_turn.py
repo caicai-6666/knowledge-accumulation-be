@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 import json
 import logging
+from pathlib import PurePath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -10,7 +11,10 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.model.question_file import UploadedFile
+from app.infrastructure.file_conversion.model import ConversionError
+from app.service.exploration_attachment import (
+    MAX_FILE_BYTES, MAX_TOTAL_BYTES, SourceUpload, SUPPORTED_EXTENSIONS, UploadSizeExceeded,
+)
 from app.repository.question_tree import QuestionTreeConflict, QuestionTreeNotFound
 from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer
 from app.router.exploration import TreePath
@@ -33,7 +37,7 @@ FORM = {'requestBody': {'required': True, 'content': {'multipart/form-data': {'s
         'supersedes_turn_id': {'type': 'string', 'pattern': '^[0-9a-f]{32}$',
                                'description': '改变方向时显式指定同树尚未结束的旧任务 ID；省略时为普通新任务。'},
         'files': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string', 'format': 'binary'},
-                  'description': '重复 files 字段上传 PDF，每份 10 MiB，合计 20 MiB。'},
+                  'description': '重复 files 字段上传 PDF、图片、DOC/DOCX 或 XLS/XLSX，最多 10 份；原始文件及转换后 PDF 均每份 10 MiB、合计 20 MiB。'},
     }}}}}}
 
 
@@ -43,6 +47,15 @@ async def errors():
         yield
     except HTTPException:
         raise
+    except UploadSizeExceeded as error:
+        raise HTTPException(413, str(error), headers={'Cache-Control': 'no-store'}) from None
+    except ConversionError as error:
+        status = 422
+        if error.code in {'converter_unavailable', 'font_unavailable', 'converter_busy'}:
+            status = 503
+        elif error.code == 'output_too_large':
+            status = 413
+        raise HTTPException(status, error.reason, headers={'Cache-Control': 'no-store'}) from None
     except InvalidTurnInput:
         raise HTTPException(422, '替代任务 PDF 不合法', headers={'Cache-Control': 'no-store'}) from None
     except QuestionTreeNotFound:
@@ -86,20 +99,20 @@ async def create_turn(tree_id: TreePath, request: Request, response: Response, u
                 if not isinstance(file, UploadFile):
                     raise ValueError()
                 filename = (file.filename or '').replace('\\', '/').rsplit('/', 1)[-1]
-                if not filename.lower().endswith('.pdf') or len(filename) > 512:
+                if PurePath(filename).suffix.lower() not in SUPPORTED_EXTENSIONS or len(filename) > 512:
                     raise ValueError()
                 chunks, size = [], 0
                 while chunk := await file.read(65536):
                     size += len(chunk)
                     total += len(chunk)
-                    if size > 10 * 1024 * 1024 or total > 20 * 1024 * 1024:
-                        raise HTTPException(413, 'PDF 每份最多 10 MiB、合计最多 20 MiB', headers={'Cache-Control': 'no-store'})
+                    if size > MAX_FILE_BYTES or total > MAX_TOTAL_BYTES:
+                        raise HTTPException(413, '原始附件每份最多 10 MiB、合计最多 20 MiB', headers={'Cache-Control': 'no-store'})
                     chunks.append(chunk)
-                uploads.append(UploadedFile(type='images', content=b''.join(chunks)))
+                uploads.append(SourceUpload(filename=filename, content=b''.join(chunks)))
             async with errors():
                 result = await service(request).register(tree_id, user, body, uploads)
     except (ValidationError, ValueError):
-        raise HTTPException(422, '请求参数或 PDF 文件不合法', headers={'Cache-Control': 'no-store'}) from None
+        raise HTTPException(422, '请求参数或附件类型不合法，请上传 PDF、图片、DOC/DOCX 或 XLS/XLSX', headers={'Cache-Control': 'no-store'}) from None
     except StarletteHTTPException as error:
         if error.status_code == 400:
             # multipart 解析错误不回显文件名、字段值或内部解析细节。

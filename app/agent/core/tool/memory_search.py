@@ -54,7 +54,7 @@ class SearchMemoryArguments(RetrievalModel):
 def build_memory_search_registration(*, pool, search, reference_time, core, journal, thinking_effort):
     async def execute(args):
         if pool.closed:
-            return ToolExecutionResult(status='failed', tool_result={'code':'query_expired','message':'记忆资料已释放，请重新检索。'})
+            return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={'code':'query_expired','message':'记忆资料已释放，请重新检索。'})
         async with AsyncExitStack() as stack:
             from app.infrastructure.mllm import MLLMClient
             client = core.client if core.client is not None else await stack.enter_async_context(MLLMClient(core.settings))
@@ -70,9 +70,9 @@ def build_memory_search_registration(*, pool, search, reference_time, core, jour
                 # LangGraph 会将节点内部取消包装为普通异常；还原取消，避免 Core 误记为失败。
                 raise asyncio.CancelledError() from None
         if result.status == 'error':
-            return ToolExecutionResult(status='failed', tool_result={'code':result.error_code,'message':result.error})
+            return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={'code':result.error_code,'message':result.error})
         if pool.closed:
-            return ToolExecutionResult(status='failed', tool_result={'code':'query_expired','message':'记忆资料已释放，请重新检索。'})
+            return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={'code':'query_expired','message':'记忆资料已释放，请重新检索。'})
         if not result.tasks:
             return ToolExecutionResult(status='succeeded', tool_result={'total':0,'total_pages':0,
                 'message':'未召回任务，未生成查询ID，无需翻页。'})

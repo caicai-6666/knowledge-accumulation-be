@@ -285,7 +285,7 @@ curl -i -X DELETE http://127.0.0.1:24000/knowledge-accumulation/api/exploration/
 | `selected_node_id` | 普通非空树任务必填 | 本树任务节点 ID；空树首轮省略。改变方向时省略或与 `supersedes_turn_id` 相同，不传字符串 `null` |
 | `mode` | 是 | `main` 推进模式；`branch` 探索模式 |
 | `question` | 是 | 1–20000 字符，不能全空白 |
-| `files` | 否 | 重复此字段直接上传 PDF；最多 10 份，每份 10 MiB，总量 20 MiB |
+| `files` | 否 | 重复此字段上传 PDF、图片、DOC/DOCX 或 XLS/XLSX；最多 10 份，原始文件和转换后 PDF 均每份 10 MiB、合计 20 MiB |
 | `thinking_effort` | 是 | `low`、`medium`、`xhigh`，对应低、中、高三档 |
 | `supersedes_turn_id` | 否 | 改变方向时指定同树尚未结束的旧任务 ID；不传则是普通新任务 |
 
@@ -301,7 +301,11 @@ curl -i -X DELETE http://127.0.0.1:24000/knowledge-accumulation/api/exploration/
 }
 ```
 
-`turn_id` 也是任务节点 ID；普通任务的 pending 阶段还没有 SQL 节点。替代已落库旧任务时，为保证关联外键和事务完整，新节点会在注册阶段创建，但仍不执行模型。响应另含 `supersedes_turn_id`，普通任务为 null。响应 `Cache-Control: no-store`。PDF 文件后缀、数量与大小在注册阶段验收，实际内容损坏、加密或无页在激活后以 SSE 失败报告；不会静默当作图片处理。
+`turn_id` 也是任务节点 ID；普通任务的 pending 阶段还没有 SQL 节点。替代已落库旧任务时，为保证关联外键和事务完整，新节点会在注册阶段创建，但仍不执行模型。响应另含 `supersedes_turn_id`，普通任务为 null。响应 `Cache-Control: no-store`。附件在注册阶段验收实际内容并由后端转换为 PDF；全部成功才返回 201。损坏、加密、空文件或格式不支持返回 422，原始文件或转换结果超限返回 413，转换器、字体缺失或转换器繁忙返回 503。不会启动模型或将未转换原件写入任务。
+
+支持扩展名：`.pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,.avif,.heic,.heif,.heics,.heifs,.hif,.doc,.docx,.xls,.xlsx`。以扩展名选择转换器，并校验实际内容；不信任浏览器 MIME。DOCM、XLSM、PPT/PPTX、音视频暂不支持。图片多帧转多页；Excel 每个完整工作表一页，包含隐藏表、忽略打印区域。详见[转换规则](../capability/application/attachment-conversion.md)。
+
+前端直接提交原始文件，无需自行转 PDF。注册期间展示“正在上传并处理附件”，等待成功后才订阅 SSE；Office 文件转换可能持续较久，多文件依次转换，请避免短请求超时及自动重复提交。首次激活期限从转换完成后的注册成功开始计算。
 
 ```bash
 curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/exploration/trees/<tree_id>/turns' \
@@ -316,7 +320,7 @@ curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/exploration/tree
 错误：`401` 中央登录失效；`404` 树不存在、非本人或 assistant 树；`409` 节点/模式冲突或已有活跃任务；`413` 上传超限或 multipart 格式非法；`422` 输入、文件名、空文件不合法；`503` 依赖故障或暂存容量满。错误只返回脱敏 `detail`。
 
 
-**改变方向的调用方式**：仍使用本注册接口，增加 `supersedes_turn_id=<旧 turn_id>`，提交新的 question、thinking_effort 和可选 PDF；mode 必须与旧任务一致。不要先调用 cancel，否则旧任务已成为 cancelled 终态，不能再替代。
+**改变方向的调用方式**：仍使用本注册接口，增加 `supersedes_turn_id=<旧 turn_id>`，提交新的 question、thinking_effort 和可选附件；mode 必须与旧任务一致。不要先调用 cancel，否则旧任务已成为 cancelled 终态，不能再替代。
 
 ```bash
 curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/exploration/trees/<tree_id>/turns' \
@@ -332,7 +336,7 @@ curl -X POST 'http://127.0.0.1:24000/knowledge-accumulation/api/exploration/tree
 - 替代已落库执行任务：SQL 原子创建直接子任务并标记旧节点 superseded；继承旧节点的主干/分支属性，不通过改变方向切换路径。
 - 替代尚未激活、没有 SQL 节点的任务：只替换内存待激活输入，从旧任务原先选择的节点开始，旧 pending 输入不会执行或补造历史节点。
 - 正在准备上下文、尚未落库的 processing 任务暂不支持改变方向，返回 `409`，可等待 `node_id` 就绪；单纯停止仍可使用 cancel。`can_interrupt` 表示可停止，不保证当前已具备可替代的 SQL 节点。
-- 非法输入/PDF、容量不足、归属错误或事务回滚不停止旧任务。旧最终提交先赢时返回 `409`，不改写 complete 历史。上传内容在方向调整注册阶段提前验收，损坏 PDF 返回 `422`。
+- 非法输入/附件、容量不足、归属错误或事务回滚不停止旧任务。旧最终提交先赢时返回 `409`，不改写 complete 历史。上传内容在方向调整注册阶段提前验收，损坏 PDF 返回 `422`。
 - 新任务取消或过期不会恢复旧任务。已登记接替节点取消落为 cancelled；过期/停机落为 failed，HTTP 过期仍返回 expired/410。若数据库清理失败返回 `503` 或后台脱敏重试，不假称节点已清理。
 
 ---

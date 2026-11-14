@@ -94,7 +94,7 @@ def build_search_assistants_registration(*, pool, employees, max_results=1000):
 
     async def execute(args):
         if pool.closed:
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={
                 'code':'assistant_query_expired', 'message':'查询已结束，请重新发起任务。'})
         try:
             # 单条 SQL 取得有序快照；多取一条判断截断，分页不再查询数据库。
@@ -103,7 +103,8 @@ def build_search_assistants_registration(*, pool, employees, max_results=1000):
             if len({row.userid for row in rows}) != len(rows) or len(rows) > max_results + 1:
                 raise ValueError('人员目录返回重复身份或超出查询数量')
             if pool.closed:
-                raise ValueError('查询已结束')
+                return ToolExecutionResult(status='failed', failure_mode='dependency',
+                    tool_result={'code':'assistant_query_expired','message':'本轮任务已结束，目录未发布。'})
             if not rows:
                 return ToolExecutionResult(status='succeeded', tool_result={
                     'total':0, 'total_pages':0, 'message':('人员目录为空，未生成查询 ID，无需查看。' if args.keyword is None and args.department is None
@@ -113,7 +114,7 @@ def build_search_assistants_registration(*, pool, employees, max_results=1000):
             query_id, commit = pool.prepare(rows)
         except Exception as error:
             logger.warning('助理目录查询失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={
                 'code':'assistant_directory_unavailable', 'message':'助理目录暂不可用，本次未生成查询结果；请稍后重新查询，不能据此判断没有匹配用户。'})
         return ToolExecution(ToolExecutionResult(status='succeeded', tool_result={
             'query_id':query_id, 'total':len(rows),

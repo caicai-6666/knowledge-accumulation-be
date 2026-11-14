@@ -114,13 +114,13 @@ def build_platform_a2a_registrations(service, *, userid, tree_id, node_id):
                 '目标平台或续聊响应无效。请从平台目录确认目标，并使用当前会话中该平台实际返回的成功响应ID。'})
         except PlatformA2AError as error:
             if isinstance(args, ContinuePlatformA2AArguments) and args.action == 'wait':
-                return ToolExecutionResult(status='failed', tool_result={'message':
+                return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={'message':
                     '等待服务暂不可用，本次没有发送新消息。可稍后沿用相同平台和 response_id，选择 action="wait" 再等；不要用 chat 重发原问题。'})
-            return ToolExecutionResult(status='unknown' if error.uncertain else 'failed',
+            return ToolExecutionResult(status='unknown' if error.uncertain else 'failed', failure_mode='failed',
                 tool_result={'message': '平台协作暂不可用；尚未确认的请求不能直接重复发送。'})
         text = render_platform_a2a(result, continuation=isinstance(args, ContinuePlatformA2AArguments))
         status = {'completed': 'succeeded', 'publish_unknown': 'unknown'}.get(result['status'], 'failed')
-        receipt = ToolExecutionResult(status=status, tool_result={'message': text})
+        receipt = ToolExecutionResult(status=status, failure_mode='failed', tool_result={'message': text})
         if status != 'succeeded':
             return receipt
         async def accept():

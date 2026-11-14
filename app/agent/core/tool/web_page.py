@@ -85,8 +85,8 @@ def render_web_page_feedback(arguments, execution, context):
     )
 
 
-def _failure(code, message):
-    return ToolExecutionResult(status='failed', tool_result={'code': code, 'message': message})
+def _failure(code, message, *, failure_mode='correctable'):
+    return ToolExecutionResult(status='failed', failure_mode=failure_mode, tool_result={'code': code, 'message': message})
 
 
 def render_web_page_notice(source, result, count):
@@ -186,7 +186,7 @@ class WebPageViewer:
                     await self._check_access()  # 驱逐期间结束的网络/模型请求不得重新写入缓存。
                     result = WebPageResult.model_validate(output['result'])
                     if result.status == 'error':
-                        return _failure(result.error_code, result.hint)
+                        return _failure(result.error_code, result.hint, failure_mode='failed')
                     if result.status == 'no_content':
                         # 提示作为完整业务结果提交，不登记空页面，也不推进已有阅读位置。
                         counter_key = (scope, urldefrag(result.final_url or result.url)[0])
@@ -254,10 +254,10 @@ class WebPageViewer:
                 commit()
                 return result
             except PermissionError:
-                return _failure('session_expired', '会话已释放，请重新发起读取。')
+                return _failure('session_expired', '会话已释放，请重新发起读取。', failure_mode='dependency')
             except Exception as error:
                 logger.warning('网页读取工具执行失败：error_type=%s', type(error).__name__)
-                return _failure('web_page_failed', '网页读取暂时失败，请稍后重试，不能据此判断没有相关信息。')
+                return _failure('web_page_failed', '网页读取暂时失败，请稍后重试，不能据此判断没有相关信息。', failure_mode='failed')
 
     async def resolve_page(self, reference):
         await self._check_access()

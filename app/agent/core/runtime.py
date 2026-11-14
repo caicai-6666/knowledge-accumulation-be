@@ -5,6 +5,7 @@ import re
 from types import SimpleNamespace
 from pydantic import ValidationError
 from app.config.mllm import MLLMGenerationSettings
+from .model import AgentDependencyError
 from app.infrastructure.mllm import MLLMClient
 from app.infrastructure.vllm_tokenizer import count_chat_tokens,count_text_tokens
 from app.infrastructure.tool_tag import resolve_mllm_tool_tag,tool_tag_section
@@ -117,10 +118,14 @@ class AgentCore:
                 async with asyncio.timeout(self.options.cleanup_timeout_seconds):
                     await journal.record_generation(status='cancelled' if isinstance(error,asyncio.CancelledError) else 'failed',
                         purpose=purpose,raw_chunks=chunks,error_type=type(error).__name__)
-            except Exception:
-                pass
+            except Exception as persistence_error:
+                if not isinstance(error, asyncio.CancelledError):
+                    raise AgentDependencyError('生成审计保存失败，已停止') from persistence_error
             raise
-        await journal.record_generation(response,purpose=purpose)
+        try:
+            await journal.record_generation(response,purpose=purpose)
+        except Exception as error:
+            raise AgentDependencyError('生成审计保存失败，已停止') from error
         return response
 
     async def _compress(self,client,journal,*,source,workspace,generation,workspace_budget,summary_limit,
@@ -393,9 +398,18 @@ class AgentCore:
                     arguments=type(arguments).model_validate({**arguments.model_dump(),
                         'content':execution.output})
                 pages.validate(call.call_id,result)
+            except asyncio.CancelledError:
+                journal.audit.append({'event':'execution_cancelled','tool':call.name})
+                raise
+            except (AgentDependencyError, PermissionError):
+                journal.audit.append({'event':'dependency_failed','tool':call.name})
+                raise
             except BaseException:
                 journal.audit.append({'event':'execution_unknown','tool':call.name})
                 raise
+            if result.status=='failed' and result.failure_mode=='dependency':
+                journal.audit.append({'event':'dependency_failed','tool':call.name})
+                raise AgentCoreError('宿主权限或执行生命周期失效，已停止')
             if result.status=='unknown':
                 journal.audit.append({'event':'execution_unknown','tool':call.name})
                 raise AgentCoreError('工具执行结果不确定；已停止且不自动重放')
@@ -408,6 +422,16 @@ class AgentCore:
             guidance=[{**item.message,'source':item.source} for item in result.system_guidence]
             if result.status=='failed':
                 if output_observer is not None:await output_observer.interrupt()
+                if result.failure_mode == 'failed':
+                    # 执行失败是已确认的事实，保留回执供模型诚实说明；不接受候选工作区或成功回调。
+                    proposed = [*all_exchanges, *pair, *guidance]
+                    await journal.commit(workspace=workspace, exchanges=proposed)
+                    journal.audit.append({'event':'tool_failed','tool':call.name,'code':result.tool_result.get('code')})
+                    all_exchanges = proposed
+                    accepted.extend([*pair, *guidance])
+                    temporary.clear()
+                    errors = 0
+                    continue
                 errors+=1
                 # 具体原因和修复动作由工具错误分支提供，不能再用“检查参数”覆盖。
                 temporary.extend([*pair,*[dict(item.message) for item in result.system_guidence]])

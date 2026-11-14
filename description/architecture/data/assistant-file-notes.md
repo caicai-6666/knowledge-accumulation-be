@@ -50,7 +50,7 @@
 | 入口 | 登记时机与来源 |
 | --- | --- |
 | 探索上传 | 不写入 `uploaded_files`；仍保存文件并由任务附件引用负责归属与读取授权。 |
-| 钉钉及中间件助理附件 | 钉钉图片先转换成 PDF 并可靠暂存，入队后由 `AssistantConsumer._prepare_files` 校验、保存最终文件、登记元信息，再写入任务文件映射并标记 prepared。owner 来自可信队列任务 userid。 |
+| 钉钉及中间件助理附件 | 钉钉图片、Word、Excel 先转换成 PDF 并可靠暂存，入队后由 `AssistantConsumer._prepare_files` 校验、保存最终文件、登记元信息，再写入任务文件映射并标记 prepared。owner 来自可信队列任务 userid。 |
 | 助理合并消息 | 每个文件使用所属原始消息的 `created_at`，不使用合并任务的最晚时间或重试时间；无原始消息分组的任务使用其可信任务 `created_at`。时间表示队列接收，不宣称是钉钉客户端的原始上传时间。 |
 
 机器人收件箱中的临时 UUID 与最终任务 UUID 不同，临时副本确认发布后会被清理，因此不登记临时副本。`uploaded_files.id` 必须等于最终 `TaskContent.attachments.file_id`。转换失败、内容校验失败或磁盘保存失败的附件不登记；元信息默认公开，但不会创建个人备忘或开放现有读取权限。

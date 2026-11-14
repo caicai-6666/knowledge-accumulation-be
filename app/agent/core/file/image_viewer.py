@@ -1,5 +1,6 @@
 """图像附件查看器：每次使用核验来源，派生缓存可共享，阅读位置按运行隔离。"""
 import asyncio
+from ..model import AgentDependencyError
 import base64
 from uuid import uuid4
 from pydantic import TypeAdapter
@@ -78,6 +79,7 @@ class ImageFileViewer:
 
     @staticmethod
     def _error(error):
+        if isinstance(error,AgentDependencyError):raise error
         if isinstance(error,FileViewError):return error
         if isinstance(error,(PermissionError,LookupError)):
             return FileViewError('file_unavailable','附件不存在或当前用户无权访问，请核对文件引用。')
@@ -117,7 +119,9 @@ class ImageFileViewer:
                     content=FoldableToolContent(pages=[reference])),after_commit=committed)
             except Exception as error:
                 error=self._error(error)
-                return ToolExecution(ToolExecutionResult(status='failed',tool_result={
+                return ToolExecution(ToolExecutionResult(status='failed',
+                    failure_mode=('dependency' if error.code=='viewer_closed' else
+                        'failed' if error.code in {'read_failed','resource_busy','invalid_file','attachment_visibility_unavailable','file_authorization_unavailable','download_failed'} else 'correctable'),tool_result={
                     'status':'error','code':error.code,'error':str(error)}))
 
     async def resolve_page(self,reference):

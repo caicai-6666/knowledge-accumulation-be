@@ -11,7 +11,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 用户与身份 | 钉钉登录、开发登录、中央会话验证、员工及管理员全表同步、头像与平台信息查询。 |
-| 探索问答 | 问答树管理、历史节点分支、PDF 上传、任务注册、SSE 输出、取消与公开历史恢复。 |
+| 探索问答 | 问答树管理、历史节点分支、PDF/图片/Word/Excel 上传、任务注册、SSE 输出、取消与公开历史恢复。 |
 | 个人助理 | 钉钉单聊接收、队列消费、员工背景、私有画像、助理间消息、定时任务与空闲心跳。 |
 | 资料与检索 | 注册中心文件查询及授权阅读、图像逐页查看、网页搜索与正文读取、专家问答、祖先记忆召回。 |
 | 上下文与持久化 | 工作区、受控压缩、任务检查点、公开消息和私有生成审计；助理维护线性记忆窗口与当前工作区。 |
@@ -46,7 +46,7 @@ if [ ! -e .env ]; then
 fi
 ```
 
-编辑 `.env`，替换地址、账号和凭据占位值。应用通常从项目根目录加载该文件，进程环境变量优先，不展开 `${...}`。完整参数见 [.env.example](.env.example)，首次接入重点配置：
+编辑 `.env`，替换地址、账号和凭据占位值。应用通常从项目根目录加载该文件，进程环境变量优先，不展开 `${...}`。Word/Excel 转换还需本机安装 LibreOffice；macOS 标准安装位置可自动识别，其他位置用 `OFFICE_CONVERTER_EXECUTABLE` 指定。Docker 镜像构建时安装该组件。完整参数见 [.env.example](.env.example)，首次接入重点配置：
 
 | 配置 | 用途与要求 |
 | --- | --- |
@@ -94,7 +94,7 @@ OpenAPI 可访问仅说明 Web 入口正常；登录、数据库和模型仍需�
 
 钉钉后台需完成机器人发布、可见范围及权限配置，具体步骤见[机器人接入](description/capability/infrastructure/dingtalk-robot.md)。新空库统一使用 deploy 的 `mysql/init/001-schema.sql`，不需要历史迁移或工作区数据迁移器。
 
-最终正文转换使用同一 MLLM 服务，默认开启 `medium` 原生推理（`ASSISTANT_RENDERING_THINKING_EFFORT=medium`），通过提示生成 JSON 并由本地 Pydantic 严格校验，不发送接口级 `response_format`；该配置与主助理推理档位独立。转换失败不会自动降级发送原文；任务失败、确认与交付恢复的当前规则见[助理消费](description/capability/application/assistant-consumption.md#失败与恢复)。
+最终正文转换使用同一 MLLM 服务，默认开启 `medium` 原生推理（`ASSISTANT_RENDERING_THINKING_EFFORT=medium`），通过提示生成 JSON 并由本地 Pydantic 严格校验，不发送接口级 `response_format`；该配置与主助理推理档位独立。转换明确失败时不会发送原文，主模型可以根据失败回执继续处理；取消、宿主失效、审计或写入不确定仍停止，见[工具失败分层](description/architecture/workflow/question-answering/tool-failures.md)；任务失败、确认与交付恢复的当前规则见[助理消费](description/capability/application/assistant-consumption.md#失败与恢复)。
 
 ---
 
@@ -106,9 +106,9 @@ OpenAPI 可访问仅说明 Web 入口正常；登录、数据库和模型仍需�
 docker build -t knowledge-accumulation-be:dev .
 ```
 
-镜像使用 Python 3.12，以非 root 用户运行，容器内部监听 `8000`，固定单 worker。统一 Compose 编排维护在 `knowledge-accumulation-deploy` 项目；正式部署时本项目位于其 `knowledge-accumulation-be/` 子目录，默认暴露宿主端口 `24000`，业务地址为 `http://127.0.0.1:24000/knowledge-accumulation/api`。
+镜像使用 Python 3.12，以非 root 用户运行，容器内部监听 `8000`，固定单 worker。统一 Compose 编排维护在 `knowledge-accumulation-deploy` 项目；正式部署时本项目位于其 `knowledge-accumulation-be/` 子目录，模板暴露宿主端口 `15000`，业务地址为 `http://127.0.0.1:15000/knowledge-accumulation/api`。
 
-Docker / ASGI 导入默认不带 `/dev`；`APP_PATH_PREFIX` 通过进程环境在路由导入前设置。实际 `.env` 通过只读挂载提供，运行数据使用持久卷。镜像不包含本机凭据和用户数据，也不会自动执行迁移。部署步骤、挂载权限、环境覆盖及 SSE 代理要求统一见[Docker 构建与部署](description/capability/application/docker.md)。
+Docker / ASGI 导入默认不带 `/dev`；`APP_PATH_PREFIX` 通过进程环境在路由导入前设置。部署统一读取 deploy 根 `.env`，由 Compose 显式注入知识后端环境变量，不再挂载子项目 `.env`；运行数据使用持久卷。镜像不包含本机凭据和用户数据，也不会自动执行迁移。部署步骤、挂载权限、环境覆盖及 SSE 代理要求统一见[Docker 构建与部署](description/capability/application/docker.md)。
 
 ---
 

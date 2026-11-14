@@ -1,5 +1,6 @@
 """沿用参考项目六工具多轮规划；有限纠错，成功后清除失败轨迹。"""
 from copy import deepcopy
+from app.infrastructure.mllm import MLLMRequestError, MLLMUnavailableError
 from datetime import datetime, timezone, timedelta
 from textwrap import dedent
 from .schema import MemoryRetrievalRequest, MemoryRetrievalResult
@@ -36,8 +37,8 @@ async def run_memory_retrieval(request, *, search, generate, counter, generation
         try:
             # generate 由宿主保存每次原生响应与失败分片，不能把私有推理写进查询历史。
             response = await generate(messages, tools, generation)
-        except Exception:
-            return failure('model_unavailable','记忆检索模型暂时不可用，请稍后重试。')
+        except (MLLMRequestError, MLLMUnavailableError):
+            return failure('model_unavailable','记忆检索请求未成功，未取得检索结果；可稍后重试，不能据此判断没有历史记忆。')
         valid = (response.finish_reason in ('stop','tool_calls') and not response.assistant_message.get('refusal')
             and len(response.tool_calls) == 1)
         try:

@@ -1,4 +1,5 @@
 """主模型文件检索入口；结果通过journal提交后发布，失败不泄漏内部集合。"""
+from ..model import AgentDependencyError
 import asyncio
 import logging
 from contextlib import AsyncExitStack
@@ -68,19 +69,13 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
             initial=tuple(i for i,_ in parent.ranking.hits) if parent is not None else None
             # 本次初始范围由权威来源确定；关闭任务、撤权或平台交集为空都不能退回全库。
             if pool.closed:
-                raise ModelActionRejected(
-                    '当前任务的文件查询资源已释放，本次检索已停止。',
-                    '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
-                )
+                raise AgentDependencyError('文件查询宿主已关闭，已停止且未发布候选')
             rows=await backend.read(userid,initial,platforms)
             allowed=tuple(r.id for r in rows)
             if parent is not None:
                 pool.check(args.result_id,parent)
             if pool.closed:
-                raise ModelActionRejected(
-                    '当前任务的文件查询资源已释放，本次检索已停止。',
-                    '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
-                )
+                raise AgentDependencyError('文件查询宿主已关闭，已停止且未发布候选')
             if not allowed:
                 return ToolExecutionResult(status='succeeded',tool_result={'status':'success','count':0,
                     'explanation':'当前限定范围内没有可访问文件，未生成结果集。'})
@@ -90,18 +85,12 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
                 k=settings.rrf_k,history_weight=settings.history_weight)
             async def search(field,query,scope):
                 if pool.closed:
-                    raise ModelActionRejected(
-                        '当前任务的文件查询资源已释放，本次检索已停止。',
-                        '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
-                    )
+                    raise AgentDependencyError('文件查询宿主已关闭，已停止且未发布候选')
                 if parent is not None:
                     pool.check(args.result_id,parent)
                 result=await backend.search(userid,field,query,scope,platforms)
                 if pool.closed:
-                    raise ModelActionRejected(
-                        '当前任务的文件查询资源已释放，本次检索已停止。',
-                        '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
-                    )
+                    raise AgentDependencyError('文件查询宿主已关闭，已停止且未发布候选')
                 if parent is not None:
                     pool.check(args.result_id,parent)
                 return result
@@ -110,18 +99,25 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
                 client=core.client if core.client is not None else await stack.enter_async_context(MLLMClient(core.settings))
                 async def generate(messages,tools,generation):
                     return await core._invoke(client,journal(),messages,tools,generation,'file_retrieval')
+                async def record_retrieval(event):
+                    try:
+                        await journal().record_file_retrieval(event)
+                    except Exception as error:
+                        raise AgentDependencyError('文件检索审计保存失败，已停止') from error
                 graph=build_file_retrieval_subgraph(pool=candidates,search=search,generate=generate,counter=core.counter,
                     generation=core.generation(thinking_effort),context_window=core.settings.context_window_tokens,
                     tool_template=core.tool_call_template,max_rounds=settings.max_rounds,
-                    audit=lambda event:journal().record_file_retrieval(event))
-                ranking,explanation=(await graph.ainvoke({'query':args.query}))['result']
+                    audit=record_retrieval)
+                try:
+                    ranking,explanation=(await graph.ainvoke({'query':args.query}))['result']
+                except ModelActionRejected as error:
+                    # 内部规划器已耗尽或明确失败，不算外层主助手的参数错误。
+                    return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
+                        'code':'file_search_failed', 'message':error.reason, 'required_action':error.required_action})
             if parent is not None:
                 pool.check(args.result_id,parent)
             if pool.closed:
-                raise ModelActionRejected(
-                    '当前任务的文件查询资源已释放，本次检索已停止。',
-                    '请在有效任务中重新发起检索，不复用已释放的结果集 ID。',
-                )
+                raise AgentDependencyError('文件查询宿主已关闭，已停止且未发布候选')
             if ranking is None:
                 return ToolExecutionResult(status='succeeded',tool_result={'status':'success','count':0,'explanation':explanation})
             current=await backend.read(userid,tuple(i for i,_ in ranking.hits),platforms)
@@ -146,9 +142,11 @@ def build_file_search_registration(*, pool, backend, userid, core, journal, thin
                 'message': error.reason if error.required_action else '结果集引用未通过有效性检查，本次查询未完成。',
                 'required_action': error.required_action or '请重新取得有效的最终结果集 ID；若必须限定原范围，不要删除 result_id 后扩大查询。',
             })
+        except (AgentDependencyError, PermissionError):
+            raise
         except Exception as error:
             logging.getLogger(__name__).warning('文件检索失败：error_type=%s',type(error).__name__)
-            return ToolExecutionResult(status='failed',tool_result={'code':'file_search_unavailable',
+            return ToolExecutionResult(failure_mode='failed', status='failed',tool_result={'code':'file_search_unavailable',
                 'message':'文件检索未能完成，未发布可用结果；不能据此判断没有相关文件。',
                 'required_action':'请稍后按原范围重新检索；不要使用本次尚未发布的候选引用。'})
         finally:

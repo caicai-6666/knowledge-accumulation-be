@@ -75,3 +75,8 @@ FastAPI 应用及中间件接入已实现，启动方式见[中间件平台注�
 探索问答 multipart PDF 上传使用 `python-multipart==0.0.32`，已在 `requirement.txt` 声明；SSE 使用 FastAPI/Starlette 自带 `StreamingResponse`，不额外引入 SSE 包。
 
 网页正文提取新增 `trafilatura==2.3.1` 和直接依赖 `lxml==6.1.3`，已安装于上述 Conda 环境；HTTP、模型精炼与 LangGraph 复用现有依赖，使用方式见[网页搜索与正文读取](../../architecture/workflow/question-answering/web-search.md)。
+
+
+## Office 附件转换
+
+个人助理下载的 Word/Excel 附件由 LibreOffice Writer/Calc 转为 PDF，Python 增加 `olefile==0.47` 检查旧 DOC/XLS 容器，复用现有 lxml。Dockerfile 安装转换引擎及后备字体，并复制 `assets/fonts/` 内 Noto Sans CJK SC 字体与 OFL 许可证。开发环境须安装 LibreOffice，或设置 `OFFICE_CONVERTER_EXECUTABLE`。具体转换和清理边界见[附件转 PDF](attachment-conversion.md)。

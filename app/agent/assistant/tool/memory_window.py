@@ -73,12 +73,12 @@ class SearchMemoryWindowArguments(RetrievalModel):
 def build_memory_window_registration(*, pool, lookup):
     async def execute(args):
         if pool.closed:
-            return ToolExecutionResult(status='failed', tool_result={'code': 'query_expired',
+            return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={'code': 'query_expired',
                 'message': '本轮记忆资料已释放，未建立结果集；请在新的任务中重新查找历史。'})
         try:
             ids = await lookup(**args.model_dump())
             if pool.closed:
-                return ToolExecutionResult(status='failed', tool_result={'code': 'query_expired',
+                return ToolExecutionResult(status='failed', failure_mode='dependency', tool_result={'code': 'query_expired',
                     'message': '本轮记忆资料已释放，未建立结果集；请在新的任务中重新查找历史。'})
             if not ids:
                 return ToolExecutionResult(status='succeeded', tool_result={'total': 0, 'total_pages': 0,
@@ -90,7 +90,7 @@ def build_memory_window_registration(*, pool, lookup):
         except Exception as error:
             # 依赖与正文回查失败不能降级为空结果，也不能向模型回显任意异常原文。
             logger.warning('任务窗口读取失败：error_type=%s', type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={'code': 'memory_window_unavailable',
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={'code': 'memory_window_unavailable',
                 'message': '任务窗口暂时无法读取，未建立结果集；请稍后重试，不能据此判断没有历史任务。'})
         return ToolExecution(ToolExecutionResult(status='succeeded', tool_result={
             'query_id': query_id, 'total': len(ids), 'total_pages': (len(ids)+pool.page_size-1)//pool.page_size,

@@ -86,7 +86,7 @@ class AssistantFinishTask(FinishTaskTool):
         async def execute(arguments):
             if arguments.file_ids:
                 if self.validate_files is None:
-                    return ToolExecutionResult(status='failed', tool_result={
+                    return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
                         'reason':'附件交付暂不可用，本次未提交。',
                         'required_action':'请稍后重试，或清空 file_ids 并在正文中明确未发送附件。'})
                 try:
@@ -95,7 +95,7 @@ class AssistantFinishTask(FinishTaskTool):
                     return ToolExecutionResult(status='failed', tool_result={
                         'reason':error.reason, 'required_action':error.action})
                 except Exception:
-                    return ToolExecutionResult(status='failed', tool_result={
+                    return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
                         'reason':'附件发送前的检查暂不可用，本次未提交。',
                         'required_action':'请稍后重试；若清空 file_ids 继续结束，需调整正文说明附件未发送。'})
             return ToolExecutionResult(status='succeeded',tool_result={'status':'accepted'})

@@ -195,7 +195,7 @@ class FileNoteQueryTools:
             return ToolExecutionResult(status='failed',tool_result={'reason':error.reason,'required_action':error.required_action})
         except Exception as error:
             logger.warning('备忘查找失败：error_type=%s',type(error).__name__)
-            return ToolExecutionResult(status='failed',tool_result={
+            return ToolExecutionResult(status='failed', failure_mode='failed',tool_result={
                 'reason':'备忘查询暂不可用，本次未建立新结果集。','required_action':'请稍后重试；持续失败请管理员检查查询依赖与全文索引，不能据此判断没有备忘。'})
         return ToolExecution(ToolExecutionResult(status='succeeded',tool_result={'query_id':query_id,'total':len(rows),
             'total_pages':(len(rows)+self.pool.page_size-1)//self.pool.page_size,'truncated':limited}),after_commit=commit)
@@ -211,7 +211,7 @@ class FileNoteQueryTools:
             return ToolExecutionResult(status='failed',tool_result={'reason':error.reason,'required_action':error.required_action})
         except Exception as error:
             logger.warning('备忘页面读取失败：error_type=%s',type(error).__name__)
-            return ToolExecutionResult(status='failed',tool_result={'reason':'本次未读取页面，阅读位置未推进。',
+            return ToolExecutionResult(status='failed', failure_mode='failed',tool_result={'reason':'本次未读取页面，阅读位置未推进。',
                 'required_action':'请稍后重试查看，不能据此判断记录不存在。'})
         resource,locator,nonce='file-note-query:'+args.query_id,f'page:{args.page}',uuid4().hex
         ref=ToolPageReference(resource_id=resource,locator=locator,display_id=nonce+'.'+self._sign(resource,locator,nonce),

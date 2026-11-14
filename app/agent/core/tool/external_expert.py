@@ -236,7 +236,7 @@ class ExternalExpertSessionPool:
             event['response'] = response.raw_response
             if self._closed or self._sessions.get(sid) is not entry:
                 event['status'] = 'released'
-                return self._error('session_expired', '专家会话已释放，本次答复未提交。')
+                return self._error('pool_closed' if self._closed else 'session_expired', '专家会话已释放，本次答复未提交。')
             if not response.is_complete or not response.content.strip():
                 event['status'] = 'incomplete'
                 return self._error('incomplete_response', '专家答复不完整，本轮未加入会话；请缩小问题范围后重试。', None if created else sid)
@@ -311,7 +311,7 @@ def build_external_expert_registrations(*, get_pool, on_audit=None):
         try:
             pool = get_pool()
         except (DeepSeekRequestError, DeepSeekUnavailableError):
-            return ToolExecutionResult(status='failed', tool_result={
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={
                 'status': 'error', 'error_code': 'expert_unavailable',
                 'message': '外部专家服务尚未配置或不可用，请稍后再试。'})
         events = []
@@ -325,7 +325,10 @@ def build_external_expert_registrations(*, get_pool, on_audit=None):
                 for event in events:
                     await on_audit(event)
         return ToolExecutionResult(
-            status='succeeded' if result['status'] == 'success' else 'failed', tool_result=result)
+            status='succeeded' if result['status'] == 'success' else 'failed',
+            failure_mode=('dependency' if result.get('error_code') == 'pool_closed' else
+                'failed' if result.get('error_code') in {'expert_unavailable','expert_request_failed','incomplete_response','session_limit','pool_busy','session_busy'}
+                else 'correctable'), tool_result=result)
 
     def progress(arguments):
         # 展示状态压平空白并限制长度；专家收到的原始问题保持不变。

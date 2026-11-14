@@ -10,6 +10,8 @@ import pymupdf
 from starlette.concurrency import run_in_threadpool
 
 from app.auth.model import AuthenticatedUser
+from app.infrastructure.pdf_lock import serialized_pdf_operation
+from app.service.exploration_attachment import SourceUpload, prepare_uploads
 from app.model.question_tree import new_tree_id, utc_now
 from app.model.display_history import DisplayEvent, StoredDisplayHistory
 from app.model.question_file import UploadedFile
@@ -84,6 +86,7 @@ def context_status(status):
     return {'cancelled': 'user_manually_stopped', 'superseded': 'user_goal_adjusted'}.get(status)
 
 
+@serialized_pdf_operation
 def validate_pdfs(uploads):
     """激活后验收实际 PDF；文件后缀和浏览器 MIME 不能替代内容校验。"""
     for upload in uploads:
@@ -248,6 +251,12 @@ class ExplorationTurnService:
         request = TurnInput.model_validate(request.model_dump())
         # 与打开/删除共用树级锁，先验权威归属，再登记内存任务。所有入口锁顺序一致。
         async with self.tree_service.operation(tree_id, user.userid):
+            # 归属校验后转换；失败或取消时尚未修改旧任务，也未持久化原始文件。
+            if any(isinstance(upload, SourceUpload) for upload in uploads):
+                snapshot = await self.trees.load_tree(tree_id, user.userid)
+                if snapshot.tree.kind != 'exploration':
+                    raise QuestionTreeNotFound('问答树不存在')
+                uploads = await run_in_threadpool(prepare_uploads, uploads)
             await self._expire_pending(tree_id, user.userid)
             if request.supersedes_turn_id is not None:
                 # 一旦进入替代事务，HTTP 取消也须等待数据库和内存投影一起收尾。

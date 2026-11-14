@@ -76,7 +76,7 @@ class MemoryQueryViewer:
             })
         except Exception as error:
             logging.getLogger(__name__).warning('记忆页面读取失败：error_type=%s',type(error).__name__)
-            return ToolExecutionResult(status='failed', tool_result={'code':'memory_page_unavailable',
+            return ToolExecutionResult(failure_mode='failed', status='failed', tool_result={'code':'memory_page_unavailable',
                 'message':'历史任务读取未完成，本次未返回页面，页码未推进。',
                 'required_action':'请稍后重试查看；不能根据本次失败判断历史任务不存在。'})
         resource, locator, nonce = 'memory-query:'+query_id, f"page:{metadata['page']}", str(uuid4())

@@ -1,18 +1,9 @@
 """内存 PDF 模型与预算内 PNG；所有 MuPDF 操作跨线程共用一把锁。"""
-from dataclasses import dataclass
-from functools import wraps
+from dataclasses import dataclass, field
 from math import ceil,isfinite
-from threading import RLock
 import pymupdf
-
-_PDF_LOCK=RLock()
-
-
-def serialized_pdf_operation(function):
-    @wraps(function)
-    def wrapped(*args,**kwargs):
-        with _PDF_LOCK:return function(*args,**kwargs)
-    return wrapped
+from app.infrastructure.pdf_lock import serialized_pdf_operation
+from app.config.file_conversion import load_pdf_visual_token_budget
 
 
 class PDFOpenError(ValueError):
@@ -23,7 +14,8 @@ class PDFOpenError(ValueError):
 class PDFRenderConfig:
     max_scale:float=2.0
     patch_size:int=32
-    max_visual_tokens:int=2048
+    # 创建渲染配置时读取；显式注入的预算仍优先，模块导入不读取环境。
+    max_visual_tokens:int=field(default_factory=load_pdf_visual_token_budget)
 
     def __post_init__(self):
         if not isfinite(self.max_scale) or self.max_scale<=0:raise ValueError('渲染比例必须为有限正数')
