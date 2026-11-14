@@ -18,6 +18,9 @@ class FinishAssistantTaskArguments(OutputArguments):
     content: WorkspaceText = Field(description='本轮完整最终反馈：有依据的答案、已完成范围与具体限制，或需要用户回答的澄清问题。send_to_user 为 true 时向所属用户发送此正文；为 false 时应写成本轮内部处理结论，保留事实、执行结果、未完成事项及限制。因无法通知而改为 false 时，检查并调整面向员工的称呼、提醒和提问，将需要确认的内容记为待确认事项，不暗示已通知或收到确认；不提交私有推理，不将部分完成说成全部完成。')
     send_to_user: bool = Field(strict=True,description='是否将 content 发送给所属用户，必须明确选择 true 或 false。先核对本轮所属用户信息中的在职状态：所属员工已离职时必须选 false，包括答复、提醒、澄清及风险告知，仅保存结论；所属员工在职且需要阅读答复、提醒或澄清问题时选 true，其他内部记录选 false。程序会拒绝离职或未绑定可信状态时的 true；按反馈检查并调整 content 为内部处理结论，再改为 false 后重新提交。例如提醒到期后没有需要通知的事项，可以选 false。')
 
+    prune_current_task: bool = Field(default=False, strict=True,
+        description="是否裁剪当前心跳任务的完整执行记录，默认 false。仅限本轮只调用 finish_task、未发送消息、未修改数据或工作区、未发生自动摘要及失败，且没有值得保留的新结论的空转心跳。true 时必须 send_to_user=false、file_ids=[]；裁剪本轮输入、生成、调用反馈及最终正文，不裁剪其他任务。条件不满足时改为 false，保留本轮记录。")
+
     file_ids: list[Annotated[FileID, Field(description='所属用户上传附件的完整 UUID，不接受注册中心文件 ID。')]] = Field(
         default_factory=list, max_length=10,
         description='可选，随正文分别发送给所属用户的附件 ID，最多10个；仅限当前助理可访问的本人上传 PDF，每份不超过20 MB。省略为空，重复ID按首次出现去重。send_to_user=false 时必须为空；发送的是已保存的附件，图片转换后按PDF发送，不接受路径或注册中心文件ID。')
@@ -37,6 +40,14 @@ class FinishAssistantTaskArguments(OutputArguments):
 
 def render_assistant_finish(arguments, execution, context):
     if execution.result.status == 'succeeded':
+        if arguments.prune_current_task:
+            return with_feedback(execution, dedent("""
+                ### 心跳任务结束
+
+                状态：本轮已结束，当前心跳的执行记录已裁剪。
+                用户通知：未发送
+                历史任务：未裁剪
+            """).strip())
         delivery = '正文已登记交付' if arguments.send_to_user else '仅保存内部结论，不通知用户'
         text = dedent("""
             ### 任务结束
@@ -59,15 +70,23 @@ def render_assistant_finish(arguments, execution, context):
 
 
 class AssistantFinishTask(FinishTaskTool):
-    def __init__(self, *, user: AuthenticatedUser | None = None, hooks=(), validate_files=None):
+    def __init__(self, *, user: AuthenticatedUser | None = None, hooks=(), validate_files=None, task_type=None, validate_pruning=None):
         super().__init__(hooks=hooks)
         self.validate_files=validate_files
+        self.task_type=task_type
+        self.validate_pruning=validate_pruning
         # 每轮从可信身份复制状态，不解析模型上下文，也不在共享工具上修改用户归属。
         self.employment_status = (AuthenticatedUser.model_validate(user.model_dump()).employment_status
                                   if user is not None else None)
 
     def build_registration(self):
         def validate_delivery(name, raw, workspace, arguments):
+            if arguments.prune_current_task and self.task_type != 'heartbeat':
+                raise ModelActionRejected('只有当前任务为心跳时才能裁剪，本次最终结果未提交，记录未裁剪。',
+                    '将 prune_current_task 改为 false，保留本轮正文并重新提交；不能依据消息正文自行认定任务类型。')
+            if arguments.prune_current_task and (arguments.send_to_user or arguments.file_ids):
+                raise ModelActionRejected('本轮需要发送正文或附件，不能裁剪，本次最终结果未提交。',
+                    '保留必要的通知，将 prune_current_task 改为 false 后重新提交，不要为裁剪取消应发送的消息。')
             if arguments.send_to_user and self.employment_status == 'resigned':
                 raise ModelActionRejected(
                     'send_to_user=true 不符合交付规则：所属员工已离职，不能向员工本人发送消息。本次最终结果尚未提交，未进行格式转换或发送。',
@@ -84,6 +103,14 @@ class AssistantFinishTask(FinishTaskTool):
                     '将 send_to_user 改为 false 后重新提交；不要猜测员工状态、编造确认或声称已发送。')
             return workspace
         async def execute(arguments):
+            if arguments.prune_current_task:
+                if self.validate_pruning is None:
+                    return ToolExecutionResult(status='failed', tool_result={
+                        'reason':'无法确认本轮是否满足裁剪条件，记录未裁剪，最终结果未提交。',
+                        'required_action':'将 prune_current_task 改为 false，保留本轮记录并重新提交。'})
+                rejection = await self.validate_pruning()
+                if rejection is not None:
+                    return ToolExecutionResult(status='failed', tool_result=rejection)
             if arguments.file_ids:
                 if self.validate_files is None:
                     return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
@@ -105,6 +132,8 @@ class AssistantFinishTask(FinishTaskTool):
 
     arguments_model = FinishAssistantTaskArguments
     description = """当你需要提交最终答复、记录本轮处理结论，或因缺少必要信息而需要用户补充后才能继续时，使用这个工具。提交完整反馈并结束本轮任务，成功后不再继续本轮调用。
+
+    空转心跳没有值得保留的新结论时，可选择 prune_current_task=true。例如仅阅读已有上下文后确认无事可做，以 content="当前无需要推进的事项", send_to_user=false, prune_current_task=true 结束。仅心跳允许裁剪；只要调用过其他工具、修改过数据或工作区、发生自动摘要、失败或结果不确定，都必须保留。程序拒绝裁剪时按反馈改为 false，不反复请求裁剪。裁剪只影响当前心跳，不取消后续心跳、不删除历史任务，也不撤销业务操作。
 
     通过 send_to_user 明确选择是否向所属用户发送正文。依据本轮所属用户信息中的在职状态，所属员工已离职时必须选择 false，仅保存结论，不发送答复、提醒、澄清或风险通知；例如离职员工的提醒处理完毕，用 send_to_user=false 收尾。所属员工在职时，需要用户回答澄清问题选择 true，无须通知用户选择 false。提醒到期后也由你根据处理结果决定是否通知，而不是每次提醒都必须发送消息。
 

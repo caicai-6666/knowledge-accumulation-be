@@ -7,8 +7,8 @@ def build_registrations():
     return ()
 
 
-def build_registry(*,additional=(),finish_hooks=(),user=None):
-    return build_core_registry(finish_task=AssistantFinishTask(user=user,hooks=finish_hooks),
+def build_registry(*,additional=(),finish_hooks=(),user=None,task_type=None,validate_pruning=None):
+    return build_core_registry(finish_task=AssistantFinishTask(user=user,hooks=finish_hooks,task_type=task_type,validate_pruning=validate_pruning),
                                additional=(*build_registrations(), *additional))
 
 __all__=['build_registrations','build_registry']

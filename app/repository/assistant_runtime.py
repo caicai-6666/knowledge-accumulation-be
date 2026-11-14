@@ -64,6 +64,11 @@ class MySQLAssistantRepository:
             await cursor.execute('SELECT id,action_key,status,error_code,file_id FROM assistant_deliveries LIMIT 0')
             await cursor.execute("SHOW INDEX FROM assistant_task_executions WHERE Key_name='uq_assistant_active'")
             if not await cursor.fetchone():raise ValueError('请先执行 012 助理消费迁移')
+            await cursor.execute("SELECT CHECK_CLAUSE AS clause FROM information_schema.CHECK_CONSTRAINTS "
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_NAME='assistant_task_executions_chk_11'")
+            constraint = await cursor.fetchone()
+            if constraint is None or "heartbeat" not in constraint['clause']:
+                raise ValueError('助理心跳裁剪所需约束未同步，请按 deploy/mysql/readme.md 的心跳裁剪约束升级更新数据库')
 
     @asynccontextmanager
     async def user_scope(self,userid,*,namespace='assistant'):
@@ -282,6 +287,31 @@ class MySQLAssistantRepository:
                 changes.update(processing_status='failed',finished_at=now,error_code='generation_interrupted')
             await self._save(cursor,record.model_copy(update=changes))
         return commit
+
+    async def validate_pruning(self, task_id):
+        from .assistant_pruning import pruning_rejection
+        async with self.trees._transaction() as cursor:
+            await cursor.execute('SELECT * FROM assistant_task_executions WHERE task_id=%s', (task_id,))
+            record = _task(await cursor.fetchone()).record
+            return await pruning_rejection(cursor, record)
+
+    def pruning_hook(self, task_id):
+        initial_workspace = None
+        async def finalize(cursor, restored, previous):
+            nonlocal initial_workspace
+            # 首次检查点前的工作区只用于本次执行；重启不会继续执行已存在的节点。
+            if initial_workspace is None:
+                initial_workspace = previous.workspace.model_copy(deep=True)
+            if restored.node.status != 'complete':
+                return
+            from .assistant_pruning import prune_records
+            await cursor.execute('SELECT * FROM assistant_task_executions WHERE task_id=%s FOR UPDATE', (task_id,))
+            record = _task(await cursor.fetchone()).record
+            if (record.tree_id, record.userid, record.node_id) != (
+                    restored.tree.id, restored.tree.owner_userid, restored.node.id):
+                raise ValueError('裁剪收尾与当前任务身份不符')
+            await prune_records(self, cursor, record, restored, initial_workspace)
+        return finalize
 
     async def deliveries(self,task_id):
         async with self.trees._transaction() as cursor:

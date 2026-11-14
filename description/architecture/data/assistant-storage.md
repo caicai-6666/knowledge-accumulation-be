@@ -50,7 +50,7 @@
 | 字段 | 说明 |
 | --- | --- |
 | `task_id` | 中间件任务标识，重复领取复用同一记录。 |
-| `userid` / `tree_id` / `node_id` | 用户、唯一助理树、实际任务节点；准备前可以没有节点。 |
+| `userid` / `tree_id` / `node_id` | 用户、唯一助理树、实际任务节点；准备前可以没有节点，成功裁剪的 heartbeat 也将 node_id 置空，完成和确认状态仍保留。 |
 | `task_type` | `reminder`、`user_message`、`assistant_message`、`heartbeat`。 |
 | `input_payload` | `QueueTaskSnapshot`：冻结任务及合并前的 `user_messages`、来源、时间、文件引用。 |
 | `file_bindings` | `TaskFileBinding[]`：中间件文件引用到本地 `AttachmentReference` 的持久映射。 |
@@ -187,3 +187,10 @@ GROUP BY owner_userid HAVING COUNT(*) > 1;
 ## 用户附件交付记录
 
 027 迁移在 `assistant_deliveries` 增加可空 `file_id`。NULL 保持原正文/队列消息语义；非空仅允许任务向所属用户本人交付用户附件，使用 `file:<UUID>` 动作键，与正文 `final` 分别去重。没有对上传表增加外键：交付账本需要保留文件被删除后的历史，发送前由业务服务重新检查附件可用性。事务登记、类型限制与恢复规则统一见[最终回复附件交付](../../capability/application/assistant-consumption.md#最终回复的用户附件交付)。
+
+
+---
+
+## 心跳裁剪与执行账本
+
+空转心跳可通过 `finish_task.prune_current_task` 请求裁剪本轮执行记录；条件、同事务清理及恢复规则统一见[心跳裁剪](../../capability/application/assistant-heartbeat.md#当前心跳记录裁剪)。`completed + heartbeat + node_id=NULL` 为正常裁剪终态，不是生成失败；其他类型的 completed 及所有 running 任务仍必须绑定节点。

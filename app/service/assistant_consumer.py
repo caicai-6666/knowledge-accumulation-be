@@ -69,7 +69,7 @@ def task_question(record,*,user_name,source_name=None):
         return f'-- 来自{source_name or "未知用户"}助理的消息\n'+task.message
     return ('-- 来自空闲心跳\n'
         '请结合已有记忆、工作区和已确认的待办，想一想现在是否有值得主动推进、核查或整理的事项。'
-        '只在已有授权和能力范围内行动，不为保持忙碌而虚构任务。没有必要行动时，可以简要记录判断并静默结束；'
+        '只在已有授权和能力范围内行动，不为保持忙碌而虚构任务。没有必要行动且没有值得保留的新结论时，可按 finish_task 的裁剪规则结束，不重复记录旧事项；'
         '只有确有值得告知的进展或需要用户决策时，再决定向用户发送消息。\n\n心跳提示：\n'+task.message)
 
 
@@ -128,7 +128,8 @@ class AssistantConsumer:
         if record.processing_status=='failed':
             # failed 是业务终态；确认消费仅释放队列，不改成成功，也不重放模型或发送动作。
             return True
-        nodes=MySQLNodeRepository(self.repository.trees,commit_hook=self.repository.commit_hook(record.task_id))
+        nodes=MySQLNodeRepository(self.repository.trees,commit_hook=self.repository.commit_hook(record.task_id),
+            finalize_hook=self.repository.pruning_hook(record.task_id))
         if await self._node_exists(record):
             restored=await nodes.load_node(record.tree_id,user.userid,task_node_id(record.task_id))
             # 不重放已有执行。进程遗留的未完成节点显式失败后跳过，避免永久占住队列。
@@ -167,7 +168,8 @@ class AssistantConsumer:
             tools=(*tools,build_search_calendar_events_registration(pool=calendar_queries,service=self.calendar),
                 build_view_calendar_query_registration(CalendarQueryViewer(calendar_queries)))
         agent=self.agent_factory(nodes=nodes,file_service=_PreparedFiles(record,nodes,self.files),tools=tools,
-                                 prompt_builder=task_prompt(record.task_type),
+                                 prompt_builder=task_prompt(record.task_type), task_type=record.task_type,
+                                 validate_pruning=lambda: self.repository.validate_pruning(record.task_id),
                                  context_loader=AssistantEmployeeContextLoader(self.employees))
         async def registered(restored,summary_id):
             await self.repository.update(record.task_id,node_id=restored.node.id,processing_status='running')

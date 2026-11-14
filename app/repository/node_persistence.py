@@ -12,11 +12,13 @@ class QuestionFileNotFound(LookupError):
 
 
 class MySQLNodeRepository:
-    def __init__(self, trees: MySQLQuestionTreeRepository, *, commit_hook=None):
+    def __init__(self, trees: MySQLQuestionTreeRepository, *, commit_hook=None, finalize_hook=None):
         # 聚合内复用同一事务提供者，不创建第二个连接池，也不负责关闭外部仓库。
         self.trees=trees
         # 可选数据库提交钩子，只允许同事务 SQL；不得在钩子内进行远程交付。
         self.commit_hook=commit_hook
+        # 可选同事务收尾，位于普通检查点及驻留缓存候选构建之后。
+        self.finalize_hook=finalize_hook
 
     async def _node(self,cursor,tree_id,node_id):
         await cursor.execute("SELECT * FROM question_nodes WHERE tree_id=%s AND id=%s AND kind='task'",(tree_id,node_id))
@@ -415,6 +417,9 @@ class MySQLNodeRepository:
             if assistant_memory is not None:
                 await commit_memory(self.trees,cursor,assistant_memory,restored,
                     new_exchanges=exchanges[len(original):] if changed_exchanges else ())
+            if self.finalize_hook is not None:
+                # 收尾可清理已完成任务；返回值只供本次 journal 确认终态，不代表仍可从 SQL 恢复。
+                await self.finalize_hook(cursor, restored, current)
             return restored
 
     async def load_memory_source(self,tree_id,owner_userid,memory_id) -> NodeMessage:

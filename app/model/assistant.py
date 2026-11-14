@@ -134,7 +134,9 @@ class AssistantTaskExecution(AssistantModel):
             local_ids.add(binding.attachment.file_id)
         if self.processing_status in ('prepared', 'running', 'completed') and seen != set(sources):
             raise ValueError('任务附件尚未完整转存登记')
-        if self.processing_status in ('running', 'completed') and self.node_id is None:
+        # 成功裁剪的心跳只保留执行/确认账本，不再引用已删除的记录节点。
+        pruned = self.processing_status == 'completed' and self.task_type == 'heartbeat'
+        if self.processing_status in ('running', 'completed') and self.node_id is None and not pruned:
             raise ValueError('开始执行后必须绑定任务节点')
         terminal = self.processing_status in ('completed', 'failed')
         if terminal != (self.finished_at is not None):

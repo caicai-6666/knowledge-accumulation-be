@@ -11,16 +11,16 @@ from .tool.image_authorization import wrap_image_authorize
 from app.agent.core.tool import ToolRegistry
 
 
-def build_core(settings,*,client=None,counter=None,options=None,tools=(),prompt_builder=None,finish_hooks=(),user=None):
+def build_core(settings,*,client=None,counter=None,options=None,tools=(),prompt_builder=None,finish_hooks=(),user=None,task_type=None,validate_pruning=None):
     options=options if options is not None else load_agent_core_settings()
     return AgentCore(settings,client=client,counter=counter,options=options,
-        registry=build_registry(additional=tools,finish_hooks=finish_hooks,user=user),prompt_builder=prompt_builder or build_system_prompt)
+        registry=build_registry(additional=tools,finish_hooks=finish_hooks,user=user,task_type=task_type,validate_pruning=validate_pruning),prompt_builder=prompt_builder or build_system_prompt)
 
 
-def build_service(nodes,settings,*,client=None,counter=None,options=None,tools=(),context_loader=None,tool_loader=None,file_service=None,file_cache=None,expert_settings=None,expert_client=None,web_search_service=None,web_graph_factory=None,memory_backend=None,platform_directory=None,file_retrieval=None,registry_files=None,registry_file_access=None,prompt_builder=None,platform_a2a=None,finish_hooks=(),file_visibility=None,file_delivery=None):
+def build_service(nodes,settings,*,client=None,counter=None,options=None,tools=(),context_loader=None,tool_loader=None,file_service=None,file_cache=None,expert_settings=None,expert_client=None,web_search_service=None,web_graph_factory=None,memory_backend=None,platform_directory=None,file_retrieval=None,registry_files=None,registry_file_access=None,prompt_builder=None,platform_a2a=None,finish_hooks=(),file_visibility=None,file_delivery=None,task_type=None,validate_pruning=None):
     def bind_registry(user, registry, tree_id):
         # 复用本轮可信员工快照；保留转换钩子及其他工具，不修改共享注册表。
-        final = AssistantFinishTask(user=user, hooks=finish_hooks,
+        final = AssistantFinishTask(user=user, hooks=finish_hooks, task_type=task_type, validate_pruning=validate_pruning,
             validate_files=(lambda ids: file_delivery.validate(user.userid, tree_id, ids)) if file_delivery is not None else None).build_registration()
         return ToolRegistry([final if name == 'finish_task' else entry
                              for name, entry in registry.entries.items()])
