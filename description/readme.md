@@ -35,6 +35,7 @@
 - [多轮工作区精简](architecture/workflow/question-answering/workspace-compression.md)
 - [主题发现与工作记忆总结](architecture/workflow/question-answering/topic-summary.md)
 - [Agent Core 包结构](architecture/workflow/question-answering/package-structure.md)
+- [独立 Agent Core 库与隔离接入实验](capability/application/agent-core-library.md)
 - [助理与探索模式装配](architecture/workflow/question-answering/agent-modes.md)
 - [公司背景与默认指代](architecture/workflow/question-answering/company-background.md)：公开业务背景、公司指代和资料核实边界。
 - [问答树存储与内存索引](architecture/data/question-tree.md)

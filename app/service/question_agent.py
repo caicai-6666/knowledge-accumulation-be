@@ -281,6 +281,10 @@ class QuestionAgentService:
             additional.extend([build_file_search_registration(pool=_file_results,backend=self.file_retrieval,
                 userid=user.userid,core=core,journal=lambda:journal,thinking_effort=thinking_effort),
                 build_file_candidates_registration(FileCandidateViewer(_file_results))])
+        if tree.kind == 'assistant' and self.file_retrieval is not None:
+            from app.agent.assistant.tool.file_disclosure import build_file_disclosure_registration
+            additional.append(build_file_disclosure_registration(
+                source=self.file_retrieval.source, owner_userid=user.userid))
         if _platform_viewer is not None:
             additional.append(build_sub_management_platform_registration(_platform_viewer))
         if self.platform_a2a is not None:

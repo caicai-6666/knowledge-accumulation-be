@@ -104,3 +104,26 @@ class RegisteredFileRepository:
                 self._pool.close()
                 await self._pool.wait_closed()
                 self._pool = None
+
+    async def disclosure_snapshot(self, owner_userid, recipient_userid, ids):
+        """一次只读快照核对双方权限；不读取正文，也不使用历史授权缓存。"""
+        await self._initialize()
+        async with asyncio.timeout(self.settings.operation_timeout_seconds):
+            async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
+                await cursor.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+                await cursor.execute('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
+                try:
+                    permissions = {}
+                    for userid in (owner_userid, recipient_userid):
+                        await cursor.execute('SELECT platform_permissions FROM employees WHERE CAST(userid AS BINARY)=CAST(%s AS BINARY)', (userid,))
+                        row = await cursor.fetchone()
+                        if row is not None:
+                            value = row['platform_permissions']
+                            permissions[userid] = TypeAdapter(AuthenticatedUser.model_fields['platform_permissions'].annotation).validate_python(
+                                json.loads(value) if isinstance(value, (str, bytes)) else value)
+                    await cursor.execute('SELECT id,source_platform,file_level FROM resources WHERE id IN (' +
+                        ','.join('%s' for _ in ids) + ')', tuple(ids))
+                    files = {str(row['id']): row for row in await cursor.fetchall()}
+                    return permissions, files
+                finally:
+                    await connection.rollback()

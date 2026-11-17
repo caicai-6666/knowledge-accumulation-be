@@ -16,6 +16,7 @@
 | [助理与探索模式](agent-modes.md) | 模式工厂、专用工具扩展、个人背景注入及身份隔离。 |
 | [公司背景与默认指代](company-background.md) | 公司公开定位、材料研发理解、默认公司指代及资料来源边界。 |
 | [助理消费与交付](../../../capability/application/assistant-consumption.md) | 任务领取、消息渲染、条件最终回复、助理间发送及故障恢复。 |
+| [文件内容告知检查](file-disclosure.md) | 模型识别来源、当前文件与接收方权限核对及实验边界。 |
 | [助理最终正文转换](assistant-message-rendering.md) | 单次生成、钉钉规则、JSON Schema、原生推理与交付恢复。 |
 | [助理定时任务](../../../capability/application/assistant-reminders.md) | 三个提醒工具、时间规则、到期生产和可靠入队。 |
 | [助理空闲心跳](../../../capability/application/assistant-heartbeat.md) | 空闲与间隔检查、稳定发布键、执行锁和停机清理。 |

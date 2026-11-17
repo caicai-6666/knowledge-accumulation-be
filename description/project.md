@@ -49,6 +49,14 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 
 ---
 
+个人助理新增[文件内容告知检查](architecture/workflow/question-answering/file-disclosure.md)，模型在向其他用户转述平台文件资料前主动核对当前访问权限；该方案不包含自动来源追踪或发送正文强制门禁。
+
+## Agent Core 独立封装
+
+已在独立目录提取可安装的 `agent-core` 库，保留核心运行与压缩机制，提供三类模型接口、可替换存储和 SQLite 参考实现，并在本项目执行隔离接入实验。生产个人助理和探索模式尚未切换，详见[独立库接入实验](capability/application/agent-core-library.md)。
+
+---
+
 ## 系统边界与总览流程
 
 | 参与方 | 职责 |
