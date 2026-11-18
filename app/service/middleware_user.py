@@ -1,4 +1,4 @@
-"""启动按用户→管理员顺序全表注册，首次登录只补用户登记；full-table 可能删除遗漏用户及其登录缓存。"""
+"""启动按用户→管理员顺序全表注册，登录与机器人入站按需补用户登记；full-table 可能删除遗漏用户及其登录缓存。"""
 
 import asyncio
 import logging
@@ -73,8 +73,13 @@ class MiddlewareUserSyncService:
         """中央明确报告资料缺失时，仅丢弃本地确认记录，不自动恢复中央资料。"""
         self._registered_userids = self._registered_userids - {userid}
 
+    async def ensure_registered(self, userid: str) -> None:
+        """可信机器人入站只登记资料，不创建登录；与启动及网页登录共用维护锁。"""
+        async with asyncio.timeout(self._settings.operation_timeout_seconds), self._maintenance_lock:
+            await self.ensure_registered_locked(userid)
+
     async def ensure_registered_locked(self, userid: str) -> None:
-        """仅显式登录持有组合根维护锁时调用；成功批次已包含该用户则不重复发全表。"""
+        """调用方持有组合根维护锁；成功批次已包含该用户则不重复发全表。"""
         if self._closed:
             raise RuntimeError('用户注册服务已关闭')
         if userid in self._registered_userids:

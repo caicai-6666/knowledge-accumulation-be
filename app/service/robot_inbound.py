@@ -16,6 +16,7 @@ from app.agent.core.context_rendering.attachment import render_attachments
 from app.model.question_tree import utc_now
 from app.model.robot_inbox import RobotInboxFile, RobotInboxRecord
 from app.service.employee_onboarding import EmployeeOnboardingService
+from app.service.middleware_user import MiddlewareUserSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +101,12 @@ async def _finish_io(awaitable):
 
 class RobotInboundService:
     def __init__(self, settings, repository, employees, queue, robot, files, *, clock=utc_now,
-                 onboarding: EmployeeOnboardingService | None = None, reply_files=None):
+                 onboarding: EmployeeOnboardingService | None = None, reply_files=None,
+                 registration: MiddlewareUserSyncService | None = None):
         self.settings, self.repository, self.employees = settings, repository, employees
         self.queue, self.robot, self.files, self.clock = queue, robot, files, clock
         self.onboarding = onboarding
+        self.registration = registration
         self.reply_files = reply_files
         self._task = None
         self._closed = False
@@ -154,6 +157,11 @@ class RobotInboundService:
             user = await self.onboarding.initialize(message.userid)
             if user.userid != message.userid:
                 raise ValueError('初始化员工与机器人发送者不一致')
+        # SQL 提交后登记可能失败，重推时员工已存在，因此确认不能放进首次建档分支。
+        # 登记失败保留 received，不下载附件、不发布任务，也不为机器人创建网页登录。
+        if self.registration is None:
+            raise RuntimeError('机器人中间件用户登记服务未装配')
+        await self.registration.ensure_registered(message.userid)
         entries = record.files
         reused = None
         if resolved_richtext is not None:

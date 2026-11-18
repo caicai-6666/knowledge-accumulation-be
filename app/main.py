@@ -310,7 +310,7 @@ def create_app(
                     stack.push_async_callback(heartbeat.close)
                     await heartbeat.start()
                     inbound=RobotInboundService(assistant_settings,RobotInboxRepository(trees),repository,
-                        queue,robot,files,onboarding=onboarding,
+                        queue,robot,files,onboarding=onboarding,registration=registration,
                         reply_files=RobotReplyFileResolver(assistant_repository,nodes,files,platform_code=middleware.platform_code))
                     application.state.assistant_robot_inbound=inbound
                     stack.push_async_callback(inbound.close)
