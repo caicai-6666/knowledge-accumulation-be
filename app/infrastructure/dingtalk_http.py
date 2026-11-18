@@ -15,9 +15,15 @@ class _PrivateHTTPFilter(logging.Filter):
 
 
 class DingTalkHTTPClient(httpx.AsyncClient):
-    def __init__(self, *, proxy_url: SecretStr, **kwargs):
+    def __init__(self, *, proxy_url: SecretStr, pinned_download: bool = False, **kwargs):
         # 显式代理适用于该客户端全部 HTTP 请求；失败直接上抛，绝不重建直连客户端。
-        super().__init__(proxy=proxy_url.get_secret_value() or None,
+        proxy = proxy_url.get_secret_value() or None
+        if pinned_download and proxy:
+            from app.infrastructure.pinned_proxy import PinnedProxyTransport
+            kwargs['transport'] = PinnedProxyTransport(proxy)
+            # 专用transport本身执行显式代理，禁止httpx再以默认代理覆盖它。
+            proxy = None
+        super().__init__(proxy=proxy,
                          trust_env=False, follow_redirects=False, verify=True, **kwargs)
         for name in ('httpx', 'httpcore.connection', 'httpcore.http11', 'httpcore.http2',
                      'httpcore.proxy', 'httpcore.socks'):

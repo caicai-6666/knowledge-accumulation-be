@@ -61,7 +61,7 @@ class DingTalkRobotClient:
         self.settings = settings
         self._http = DingTalkHTTPClient(proxy_url=settings.dingtalk_proxy_url, transport=transport, timeout=settings.timeout_seconds)
         # 文件下载不得复用带鉴权头、Cookie 或平台会话的客户端。
-        self._files = DingTalkHTTPClient(proxy_url=settings.dingtalk_proxy_url, transport=download_transport, timeout=settings.timeout_seconds)
+        self._files = DingTalkHTTPClient(proxy_url=settings.dingtalk_proxy_url, transport=download_transport, timeout=settings.timeout_seconds, pinned_download=True)
         self._resolver = resolver
         self._token = None
         self._expires_at = 0
