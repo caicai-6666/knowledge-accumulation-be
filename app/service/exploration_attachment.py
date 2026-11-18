@@ -3,12 +3,12 @@ from dataclasses import dataclass
 from pathlib import PurePath
 
 from app.infrastructure.file_conversion import (
-    convert_excel_to_pdf, convert_image_to_pdf, convert_pdf, convert_word_to_pdf,
+    convert_excel_to_pdf, convert_image_to_pdf, convert_pdf, convert_word_to_pdf, convert_powerpoint_to_pdf,
 )
 from app.infrastructure.file_conversion.image import IMAGE_EXTENSIONS
 from app.model.question_file import UploadedFile
 
-SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | {'.pdf', '.doc', '.docx', '.xls', '.xlsx'}
+SUPPORTED_EXTENSIONS = IMAGE_EXTENSIONS | {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
 MAX_FILE_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
@@ -35,6 +35,8 @@ def prepare_uploads(uploads):
                 result = convert_word_to_pdf(upload.content)
             elif extension in {'.xls', '.xlsx'}:
                 result = convert_excel_to_pdf(upload.content)
+            elif extension in {'.ppt', '.pptx'}:
+                result = convert_powerpoint_to_pdf(upload.content)
             elif extension in IMAGE_EXTENSIONS:
                 result = convert_image_to_pdf(upload.content, max_bytes=MAX_FILE_BYTES)
             else:

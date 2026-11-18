@@ -37,7 +37,7 @@ FORM = {'requestBody': {'required': True, 'content': {'multipart/form-data': {'s
         'supersedes_turn_id': {'type': 'string', 'pattern': '^[0-9a-f]{32}$',
                                'description': '改变方向时显式指定同树尚未结束的旧任务 ID；省略时为普通新任务。'},
         'files': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string', 'format': 'binary'},
-                  'description': '重复 files 字段上传 PDF、图片、DOC/DOCX 或 XLS/XLSX，最多 10 份；原始文件及转换后 PDF 均每份 10 MiB、合计 20 MiB。'},
+                  'description': '重复 files 字段上传 PDF、图片、DOC/DOCX、XLS/XLSX 或 PPT/PPTX，最多 10 份；原始文件及转换后 PDF 均每份 10 MiB、合计 20 MiB。'},
     }}}}}}
 
 
@@ -112,7 +112,7 @@ async def create_turn(tree_id: TreePath, request: Request, response: Response, u
             async with errors():
                 result = await service(request).register(tree_id, user, body, uploads)
     except (ValidationError, ValueError):
-        raise HTTPException(422, '请求参数或附件类型不合法，请上传 PDF、图片、DOC/DOCX 或 XLS/XLSX', headers={'Cache-Control': 'no-store'}) from None
+        raise HTTPException(422, '请求参数或附件类型不合法，请上传 PDF、图片、DOC/DOCX、XLS/XLSX 或 PPT/PPTX', headers={'Cache-Control': 'no-store'}) from None
     except StarletteHTTPException as error:
         if error.status_code == 400:
             # multipart 解析错误不回显文件名、字段值或内部解析细节。

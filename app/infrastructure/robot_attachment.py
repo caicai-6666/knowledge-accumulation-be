@@ -1,6 +1,6 @@
 """钉钉附件格式路由；只将转换成功的 PDF 交给既有暂存和队列流程。"""
 from pathlib import PurePath
-from .file_conversion import convert_image_to_pdf, convert_word_to_pdf, convert_excel_to_pdf, convert_pdf
+from .file_conversion import convert_image_to_pdf, convert_word_to_pdf, convert_excel_to_pdf, convert_powerpoint_to_pdf, convert_pdf
 from .file_conversion.image import IMAGE_EXTENSIONS, IMAGE_FORMATS
 from .file_conversion.model import ConversionError
 from .file_conversion.pdf import inspect_pdf_openable
@@ -16,7 +16,7 @@ class AttachmentConversionUnavailable(RuntimeError):
 
 def supported(part):
     return (part.type == 'picture' or part.type == 'file'
-            and PurePath(part.filename).suffix.lower() in IMAGE_EXTENSIONS | {'.pdf', '.doc', '.docx', '.xls', '.xlsx'})
+            and PurePath(part.filename).suffix.lower() in IMAGE_EXTENSIONS | {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'})
 
 
 def validate_pdf(content):
@@ -29,7 +29,7 @@ def validate_pdf(content):
 
 def to_pdf(part, content, settings, *, max_bytes):
     if not supported(part):
-        raise AttachmentRejected('暂不支持该文件类型，请提供图片、PDF、DOC/DOCX 或 XLS/XLSX')
+        raise AttachmentRejected('暂不支持该文件类型，请提供图片、PDF、DOC/DOCX、XLS/XLSX 或 PPT/PPTX')
     extension = PurePath(part.filename).suffix.lower() if part.type == 'file' else ''
     try:
         if extension == '.pdf':
@@ -38,6 +38,8 @@ def to_pdf(part, content, settings, *, max_bytes):
             result = convert_word_to_pdf(content)
         elif extension in {'.xls', '.xlsx'}:
             result = convert_excel_to_pdf(content)
+        elif extension in {'.ppt', '.pptx'}:
+            result = convert_powerpoint_to_pdf(content)
         else:
             result = convert_image_to_pdf(content, max_bytes=max_bytes,
                 max_pixels=settings.max_image_pixels, max_frames=settings.max_image_frames)

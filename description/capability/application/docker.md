@@ -2,7 +2,7 @@
 
 ## 镜像与启动
 
-根目录 [Dockerfile](../../../Dockerfile) 使用 Python 3.12.15 slim bookworm，安装 [固定直接依赖](../../../requirement.txt) 并执行 `pip check`。安装 LibreOffice Writer/Calc 及系统字体，复制 `app/`、模型工具模板 `assets/tool-tag/` 和 `assets/fonts/` 中文字体；[.dockerignore](../../../.dockerignore) 排除实际配置、数据、测试和实验文件。
+根目录 [Dockerfile](../../../Dockerfile) 使用 Python 3.12.15 slim bookworm，安装 [固定直接依赖](../../../requirement.txt) 并执行 `pip check`。安装 LibreOffice Writer/Calc/Impress 及系统字体，复制 `app/`、模型工具模板 `assets/tool-tag/` 和 `assets/fonts/` 中文字体；[.dockerignore](../../../.dockerignore) 排除实际配置、数据、测试和实验文件。
 
 ```bash
 docker build -t knowledge-accumulation-be:dev .

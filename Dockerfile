@@ -4,9 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Word/Excel 转 PDF；中文字体资产随项目复制，不依赖开发机字体。
+# Word/Excel/PowerPoint 转 PDF；中文字体资产随项目复制，不依赖开发机字体。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc fonts-noto-cjk fonts-liberation \
+    && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress fonts-noto-cjk fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

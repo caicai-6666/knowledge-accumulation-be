@@ -303,7 +303,7 @@ curl -i -X DELETE http://127.0.0.1:24000/knowledge-accumulation/api/exploration/
 
 `turn_id` 也是任务节点 ID；普通任务的 pending 阶段还没有 SQL 节点。替代已落库旧任务时，为保证关联外键和事务完整，新节点会在注册阶段创建，但仍不执行模型。响应另含 `supersedes_turn_id`，普通任务为 null。响应 `Cache-Control: no-store`。附件在注册阶段验收实际内容并由后端转换为 PDF；全部成功才返回 201。损坏、加密、空文件或格式不支持返回 422，原始文件或转换结果超限返回 413，转换器、字体缺失或转换器繁忙返回 503。不会启动模型或将未转换原件写入任务。
 
-支持扩展名：`.pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,.avif,.heic,.heif,.heics,.heifs,.hif,.doc,.docx,.xls,.xlsx`。以扩展名选择转换器，并校验实际内容；不信任浏览器 MIME。DOCM、XLSM、PPT/PPTX、音视频暂不支持。图片多帧转多页；Excel 每个完整工作表一页，包含隐藏表、忽略打印区域。详见[转换规则](../capability/application/attachment-conversion.md)。
+支持扩展名：`.pdf,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,.avif,.heic,.heif,.heics,.heifs,.hif,.doc,.docx,.xls,.xlsx,.ppt,.pptx`。以扩展名选择转换器，并校验实际内容；不信任浏览器 MIME。DOCM、XLSM、PPTM、音视频暂不支持。PowerPoint 每张幻灯片一页，包含隐藏页、不导出备注页，动画和音视频不保留为可播放内容。图片多帧转多页；Excel 每个完整工作表一页，包含隐藏表、忽略打印区域。详见[转换规则](../capability/application/attachment-conversion.md)。 前端文件选择器的 `accept` 和客户端扩展名校验须同步允许 `.ppt,.pptx`；后端新增支持不会自动更新前端。
 
 前端直接提交原始文件，无需自行转 PDF。注册期间展示“正在上传并处理附件”，等待成功后才订阅 SSE；Office 文件转换可能持续较久，多文件依次转换，请避免短请求超时及自动重复提交。首次激活期限从转换完成后的注册成功开始计算。
 

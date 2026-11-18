@@ -1,4 +1,4 @@
-"""Word/Excel共用LibreOffice进程、临时目录、字体、超时和PDF校验。"""
+"""Word/Excel/PowerPoint共用LibreOffice进程、临时目录、字体、超时和PDF校验。"""
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore
@@ -97,8 +97,8 @@ def convert_office_to_pdf(content: bytes, *, kind, export_filter, executable=Non
                     except ProcessLookupError:pass
                     process.wait()
                     raise ConversionError('conversion_timeout','Office转换超时。') from None
-            # 旧DOC/XLS和OOXML统一借助LibreOffice转临时ODF，再改字体；原件不回写。
-            extension='ods' if kind in ('XLS','XLSX') else 'odt'
+            # 旧DOC/XLS/PPT和OOXML统一借助LibreOffice转临时ODF，再改字体；原件不回写。
+            extension = {'XLS': 'ods', 'XLSX': 'ods', 'PPT': 'odp', 'PPTX': 'odp'}.get(kind, 'odt')
             intermediate=root/'normalized';intermediate.mkdir()
             normalized=intermediate/('input.'+extension)
             if export(source,extension,intermediate)!=0 or not normalized.is_file():

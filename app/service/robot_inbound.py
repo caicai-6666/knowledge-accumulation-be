@@ -142,7 +142,7 @@ class RobotInboundService:
         for index, part in enumerate(parts):
             if part.type == 'unsupported':
                 return await self._reject(record, '这条消息的类型暂不支持，无法读取内容。'
-                    '请改用文字、图片、PDF、Word（DOC/DOCX）或 Excel（XLS/XLSX）后重新发送整条消息。')
+                    '请改用文字、图片、PDF、Word（DOC/DOCX）、Excel（XLS/XLSX）或 PowerPoint（PPT/PPTX）后重新发送整条消息。')
             if not supported(part):
                 return await self._reject(record, f'{_label(part,index)}：暂不支持该文件类型。'
                     '本条消息未接收，请调整后重新发送整条消息。')
