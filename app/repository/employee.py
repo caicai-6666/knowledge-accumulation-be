@@ -254,3 +254,32 @@ class MySQLEmployeeRepository:
             self._pool.close()
             await self._pool.wait_closed()
             self._pool = None
+
+    async def find_avatar(self, userid: str) -> tuple[bool, str | None]:
+        """独立读取头像引用，避免部门资料不全导致把已存在员工误判为不存在。"""
+        await self._initialize()
+        async with asyncio.timeout(self._settings.operation_timeout_seconds):
+            async with self._pool.acquire() as connection, connection.cursor(DictCursor) as cursor:
+                await cursor.execute('SELECT avatar_url FROM employees WHERE CAST(userid AS BINARY)=CAST(%s AS BINARY)', (userid,))
+                row = await cursor.fetchone()
+        return (False, None) if row is None else (True, row['avatar_url'] or None)
+
+    async def fill_avatar(self, userid: str, relative_url: str) -> tuple[bool, str | None]:
+        """条件更新以数据库仲裁并发；只补空头像，不修改员工的其他资料。"""
+        avatar_response_filename(relative_url)
+        await self._initialize()
+        async with asyncio.timeout(self._settings.operation_timeout_seconds):
+            async with self._pool.acquire() as connection:
+                await connection.begin()
+                try:
+                    async with connection.cursor(DictCursor) as cursor:
+                        await cursor.execute("UPDATE employees SET avatar_url=%s WHERE CAST(userid AS BINARY)=CAST(%s AS BINARY) "
+                            "AND (avatar_url IS NULL OR avatar_url='')", (relative_url, userid))
+                        changed = cursor.rowcount == 1
+                        await cursor.execute('SELECT avatar_url FROM employees WHERE CAST(userid AS BINARY)=CAST(%s AS BINARY) FOR UPDATE', (userid,))
+                        row = await cursor.fetchone()
+                    await connection.commit()
+                    return changed, row['avatar_url'] if row else None
+                except BaseException:
+                    await connection.rollback()
+                    raise

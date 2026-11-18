@@ -22,6 +22,8 @@
 
 新后端对外业务前缀为 `/knowledge-accumulation/api`，registry 继续使用 `/knowledge-accumulation/registry/api`。当前提供 `auth/login`、`auth/me`、`resource/avatar/{filename}` 和 `platform/list`。平台查询聚合中间件基础信息及数据库管理员展示资料，不迁移权限或管理员增量维护。
 
+注册中心人工刷新员工时，可通过[员工头像补齐接口](api/employee-avatar.md)转发管理员用户凭据，知识后端校验中央身份和SQL管理关系后只补空头像，复用现有存储与转码。
+
 ### 智能体问答服务
 
 - 接收用户的问答请求，关联当前用户与会话。

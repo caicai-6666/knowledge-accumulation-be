@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | [显式登录](auth.md#显式登录) | `POST` | `/knowledge-accumulation/api/auth/login` |
 | [查询当前身份](auth.md#查询当前身份) | `GET` | `/knowledge-accumulation/api/auth/me` |
+| [管理员补齐员工头像](employee-avatar.md) | `POST` | `/knowledge-accumulation/api/internal/employee/avatar` |
 | [读取头像](resource.md#读取头像) | `GET` | `/knowledge-accumulation/api/resource/avatar/{filename}` |
 | [读取任务附件](resource.md#读取任务附件) | `GET` | `/knowledge-accumulation/api/resource/attachment/{tree_id}/{file_id}` |
 | [查询平台列表](platform.md#查询平台列表) | `GET` | `/knowledge-accumulation/api/platform/list` |

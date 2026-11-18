@@ -35,6 +35,8 @@ from app.infrastructure.dingtalk_calendar import DingTalkCalendarClient
 from app.service.calendar import CalendarService
 from app.router.auth import router as auth_router
 from app.router.resource import router as resource_router
+from app.router.employee_avatar import router as employee_avatar_router
+from app.service.employee_avatar import EmployeeAvatarService
 from app.router.platform import router as platform_router
 from app.router.exploration import router as exploration_router
 from app.router.exploration_turn import router as exploration_turn_router
@@ -204,6 +206,7 @@ def create_app(
             application.state.middleware_user_sync_service = None
             application.state.auth_service = None
             application.state.avatar_store = None
+            application.state.employee_avatar_service = None
             application.state.platform_query_service = None
             application.state.platform_directory_service = None
             await service.start()
@@ -238,6 +241,7 @@ def create_app(
                 avatars = AvatarStore(avatar_settings if avatar_settings is not None else load_avatar_settings())
                 stack.push_async_callback(avatars.close)
                 application.state.avatar_store = avatars
+                application.state.employee_avatar_service = EmployeeAvatarService(repository, avatars)
                 central = MiddlewareUserAuthService(service, client, repository,
                     maintenance_lock=maintenance_lock, registration=registration, timeout_seconds=auth.middleware_timeout_seconds)
                 application.state.registry_file_access = RegistryFileAccessService(file_retrieval)
@@ -324,6 +328,7 @@ def create_app(
     application = FastAPI(title="企业知识沉淀客户后端", lifespan=lifespan)
     application.include_router(auth_router, prefix=API_PREFIX)
     application.include_router(resource_router, prefix=API_PREFIX)
+    application.include_router(employee_avatar_router, prefix=API_PREFIX)
     application.include_router(platform_router, prefix=API_PREFIX)
     application.include_router(exploration_router, prefix=API_PREFIX)
     application.include_router(exploration_turn_router, prefix=API_PREFIX)
