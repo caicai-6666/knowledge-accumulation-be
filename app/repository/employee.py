@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import asyncmy
 from asyncmy.cursors import DictCursor
@@ -135,6 +138,32 @@ class MySQLEmployeeRepository:
                 rows = await cursor.fetchall()
         return [_user(row) for row in rows]
 
+    @staticmethod
+    async def _lock_permission_gate(cursor) -> None:
+        # 与 registry 共用数据库行锁；必须先迁移，不允许缺表时退回无锁同步。
+        await cursor.execute('SELECT baseline_ready FROM platform_permission_control WHERE id=1 FOR UPDATE')
+        if await cursor.fetchone() is None:
+            raise ValueError('平台权限同步锁未初始化，请先同步部署数据库结构')
+
+    @asynccontextmanager
+    async def locked_users(self) -> AsyncIterator[list[AuthenticatedUser]]:
+        """锁内读取并保持到中央发布结束，避免旧全表覆盖 registry 的新权限。"""
+        await self._initialize()
+        async with asyncio.timeout(self._settings.operation_timeout_seconds):
+            async with self._pool.acquire() as connection:
+                await connection.begin()
+                try:
+                    async with connection.cursor(DictCursor) as cursor:
+                        await self._lock_permission_gate(cursor)
+                        # 使用当前读，不能复用 REPEATABLE READ 的历史快照。
+                        await cursor.execute(_EMPLOYEE_SELECT + ' ORDER BY e.userid FOR UPDATE')
+                        users = [_user(row) for row in await cursor.fetchall()]
+                        yield users
+                    await connection.commit()
+                except BaseException:
+                    await connection.rollback()
+                    raise
+
     async def find_work_profile(self, userid: str) -> EmployeeWorkProfile | None:
         """按精确 userid 读取任职资料；不进入中央同步或公开认证响应。"""
         await self._initialize()
@@ -230,6 +259,22 @@ class MySQLEmployeeRepository:
                 await connection.begin()
                 try:
                     async with connection.cursor(DictCursor) as cursor:
+                        await self._lock_permission_gate(cursor)
+                        await cursor.execute(_EMPLOYEE_QUERY + ' FOR UPDATE', (userid,))
+                        existing = await cursor.fetchone()
+                        if existing is not None:
+                            # 并发建档的失败方不可补键，否则会恢复管理员主动撤销的权限。
+                            await connection.commit()
+                            return _user(existing)
+                        await cursor.execute('SELECT platform_code FROM platform_permission_registry FOR UPDATE')
+                        permissions = {**platform_permissions}
+                        for platform in await cursor.fetchall():
+                            permissions.setdefault(platform['platform_code'], 0)
+                        # 员工删除后重建也不能复活历史显式撤权；人工决定优先于自动零级。
+                        await cursor.execute('SELECT platform_code FROM platform_permission_overrides '
+                                             'WHERE userid=%s FOR UPDATE', (userid,))
+                        for decision in await cursor.fetchall():
+                            permissions.pop(decision['platform_code'], None)
                         for department in departments:
                             await cursor.execute(
                                 'INSERT INTO departments(id,name) VALUES(%s,%s) AS incoming '
@@ -239,8 +284,12 @@ class MySQLEmployeeRepository:
                             'INSERT INTO employees(userid,name,avatar_url,department_id,platform_permissions,work_profile,department_ids) '
                             'VALUES(%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE userid=employees.userid',
                             (userid, name, avatar_url, department_ids[0],
-                             json.dumps(platform_permissions, ensure_ascii=False, separators=(',', ':')),
+                             json.dumps(permissions, ensure_ascii=False, separators=(',', ':')),
                              profile.model_dump_json(), json.dumps(department_ids)))
+                        # 与首次建档同事务保留重试意图，由 registry 发布最新 SQL 权限并确认 revision。
+                        await cursor.execute(
+                            'INSERT INTO platform_permission_outbox(userid,revision) VALUES(%s,%s) AS incoming '
+                            'ON DUPLICATE KEY UPDATE revision=incoming.revision', (userid, uuid4().hex))
                         await cursor.execute(_EMPLOYEE_QUERY, (userid,))
                         user = _user(await cursor.fetchone())
                     await connection.commit()

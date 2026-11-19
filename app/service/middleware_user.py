@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Protocol
+from contextlib import AbstractAsyncContextManager
 
 import httpx
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmployeeReader(Protocol):
-    async def list_users(self) -> list[AuthenticatedUser]: ...
+    def locked_users(self) -> AbstractAsyncContextManager[list[AuthenticatedUser]]: ...
 
     async def list_platform_admins(self) -> dict[str, list[str]]: ...
 
@@ -88,29 +89,30 @@ class MiddlewareUserSyncService:
             await self._publish_locked(required_userid=userid)
 
     async def _publish_locked(self, *, required_userid: str | None = None) -> None:
-        # 调用方必须持有唯一维护锁。锁只协调本进程，不提供与 registry 编辑的跨后端一致性。
+        # 锁顺序固定为进程维护锁 → MySQL gate → 员工行；registry 共用后两层。
         if self._closed:
             raise RuntimeError('用户注册服务已关闭')
         token = self._sessions.get_access_token()
         if token is None:
             raise RuntimeError('中间件平台会话暂不可用')
         try:
-            # 读取权威完整范围的现有权限，不按登录用户对象或目录重新生成已有员工等级。
-            users = list(await self._employees.list_users())
-            if len({user.userid for user in users}) != len(users):
-                raise ValueError('员工总表存在重复 userid')
-            developer_in_sql = self._simulated_user is not None and any(
-                user.userid == self._simulated_user.userid for user in users)
-            # 配置的开发 userid 可以显式绑定 SQL 员工；已有资料完全由数据库提供，禁止配置覆盖。
-            if self._simulated_user is not None and not developer_in_sql:
-                users.append(self._simulated_user)
-            ids = frozenset(user.userid for user in users)
-            if required_userid is not None and required_userid not in ids:
-                raise ValueError('权威总表未包含待登记用户，拒绝发布不完整注册资料')
-            profiles = [middleware_profile(user) for user in users]
-            count = await self._client.replace_user_table(profiles, token)
-            if type(count) is not int or count != len(profiles):
-                raise ValueError('用户注册响应数量与提交数量不一致')
+            async with self._employees.locked_users() as current_users:
+                users = list(current_users)
+                # 读取权威完整范围的现有权限，不按登录用户对象或目录重新生成已有员工等级。
+                if len({user.userid for user in users}) != len(users):
+                    raise ValueError('员工总表存在重复 userid')
+                developer_in_sql = self._simulated_user is not None and any(
+                    user.userid == self._simulated_user.userid for user in users)
+                # 配置的开发 userid 可以显式绑定 SQL 员工；已有资料完全由数据库提供，禁止配置覆盖。
+                if self._simulated_user is not None and not developer_in_sql:
+                    users.append(self._simulated_user)
+                ids = frozenset(user.userid for user in users)
+                if required_userid is not None and required_userid not in ids:
+                    raise ValueError('权威总表未包含待登记用户，拒绝发布不完整注册资料')
+                profiles = [middleware_profile(user) for user in users]
+                count = await self._client.replace_user_table(profiles, token)
+                if type(count) is not int or count != len(profiles):
+                    raise ValueError('用户注册响应数量与提交数量不一致')
             # 仅保存已确认成员集合，不维护可与 registry 分叉的本地权限缓存。
             self._registered_userids = ids
             self._developer_in_sql = developer_in_sql
