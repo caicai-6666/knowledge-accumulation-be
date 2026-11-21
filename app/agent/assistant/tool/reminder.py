@@ -8,7 +8,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AwareDatetime, Field, model_validator
-from app.agent.core.json_codec import validate_model_json
+from app.agent.core.json_codec import load_model_json, normalize_model_json, render_json
 from app.agent.core.workspace import WorkspaceObject
 from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult, FoldableToolContent, ToolPageReference
 from app.agent.core.tool.result import ToolPageUnavailable
@@ -127,6 +127,9 @@ class CalendarArguments(CalendarSchedule):
         return self
 
 
+_SCHEDULE_MODELS = {'once': OnceArguments, 'interval': IntervalArguments, 'calendar': CalendarArguments}
+
+
 class CreateReminderArguments(WorkspaceObject):
     """当你需要让自己在未来某个时间检查事项或处理任务时，使用这个工具。支持一次性提醒、固定间隔提醒，以及每天、每周或每月的日历提醒；成功返回提醒 ID 和下一次触发时间。
 
@@ -142,14 +145,23 @@ class CreateReminderArguments(WorkspaceObject):
 
     @model_validator(mode='after')
     def validate_rule(self):
-        expected = {'once': OnceArguments, 'interval': IntervalArguments, 'calendar': CalendarArguments}
-        if not isinstance(self.schedule_config, expected[self.schedule_type]):
+        if not isinstance(self.schedule_config, _SCHEDULE_MODELS[self.schedule_type]):
             raise ValueError('提醒类型与时间规则不一致')
         try:
             ZoneInfo(self.timezone)
         except (ValueError, ZoneInfoNotFoundError):
             raise ValueError('提醒时区不合法') from None
         return self
+
+
+def parse_create_reminder(raw):
+    # 类型由调用者明示，按该分支解码 weekdays 等嵌套字段，避免在多个对象 Schema 间猜测。
+    payload = normalize_model_json(load_model_json(raw), {'type': 'object'})
+    schema = CreateReminderArguments.model_json_schema()
+    rule = payload.get('schedule_type') if isinstance(payload, dict) else None
+    if isinstance(rule, str) and rule in _SCHEDULE_MODELS:
+        schema['properties']['schedule_config'] = {'$ref': '#/$defs/' + _SCHEDULE_MODELS[rule].__name__}
+    return CreateReminderArguments.model_validate_json(render_json(normalize_model_json(payload, schema)))
 
 
 class ListRemindersArguments(WorkspaceObject):
@@ -261,7 +273,7 @@ class ReminderTools:
             return execute
         return tuple(RegisteredTool(name, args.__doc__, args,
             lambda name, raw, workspace, arguments: workspace, executor=safe(method), hooks=(render,), persist_result=name == 'create_reminder',
-            parser=(lambda raw: validate_model_json(CreateReminderArguments, raw)) if name == 'create_reminder' else None,
+            parser=parse_create_reminder if name == 'create_reminder' else None,
             **({'return_types':('ordinary','foldable'), 'page_resolver':self.resolve_page} if name == 'list_reminders' else {}))
             for name, args, method, render in (
                 ('list_reminders', ListRemindersArguments, self.list, render_list_reminders_feedback),

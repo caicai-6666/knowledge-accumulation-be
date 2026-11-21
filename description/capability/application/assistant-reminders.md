@@ -21,6 +21,8 @@
 | create_reminder | content、schedule_type、schedule_config；timezone 默认 Asia/Shanghai；end_at 可选 | 预验未来触发时间，随节点检查点提交创建记录，返回提醒 ID、规则和首次排期。 |
 | delete_reminder | reminder_id | 验证本人归属，随节点检查点关闭未来排期，从当前列表移除；重复删除幂等。 |
 
+创建提醒时，模型工具入口按 `schedule_type` 选择时间规则。序列化成 JSON 字符串的 `schedule_config` 及周历中的 `weekdays` 数组会先解码，再校验日期、星期和字段；提醒正文始终保留原文。
+
 列表按创建时间和 ID 排序，是本次查询快照，不锁定跨页结果。若查询期间发生变化，可以从 offset=0 重新查询。失败返回资料不可用，不能当作空列表。每任务只保留最后一次已提交的列表页面；新查询或任务结束后旧页面不可读取，沿用 Core 的页面折叠协议。
 
 列表正文示意：
