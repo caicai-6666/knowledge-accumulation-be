@@ -17,8 +17,8 @@
 | 表名 | 所属仓库 | 主要职责 |
 | --- | --- | --- |
 | `assistants` | `MySQLAssistantRepository` | 维护每位员工唯一的 `tree_id`（32 位十六进制）与 `enabled` 开关；`ensure(userid)` 直接分配 `tree_id`，不再依赖 `question_trees` 外键。 |
-| `assistant_task_executions` | `MySQLAssistantRepository` | 记录中间件队列任务领取、租约（`delivery_token` / `lease_expires_at`）、附件映射（`file_bindings`）、执行状态（`received` / `prepared` / `running` / `completed` / `failed`）与 `acknowledged_at`。 |
-| `assistant_deliveries` | `MySQLAssistantRepository` | 交付 Outbox：按 `(task_id, action_key)` 幂等记录发往钉钉用户（`final` / `file:<uuid>`）或跨助理队列（`call:<sha256>`）的发送动作、尝试次数、未知结果标记与外部回执。 |
+| `assistant_task_executions` | `MySQLAssistantRepository` | 记录中间件队列任务领取、租约（`delivery_token` / `lease_expires_at`）、附件映射（`file_bindings`）、节点绑定（`running` 绑定占位 `task_node_id`，`completed` 回写 `agent-core` 真实节点 ID）、执行状态（`received` / `prepared` / `running` / `completed` / `failed`）与 `acknowledged_at`；同时提供 `ensure_scheduled_execution` 为 1B 内部提醒/心跳幂等补齐已终态确认的账本行（不占 `uq_assistant_active`，也不进入 `awaiting_ack`）。 |
+| `assistant_deliveries` | `MySQLAssistantRepository` | 交付 Outbox：外键关联 `assistant_task_executions(task_id)`，按 `(task_id, action_key)` 幂等记录发往钉钉用户（`final` / `file:<uuid>`）或跨助理队列（`call:<sha256>`）的发送动作、尝试次数、未知结果标记与外部回执；中间件任务以队列 `task_id` 落库，1B 调度任务在补齐账本后以内部任务 ID 落库。 |
 | `assistant_tree_files` | `MySQLAssistantRepository` | 登记助理树内已落盘附件 `(tree_id, owner_userid, file_id, file_type, created_at)`，供 `view_pdf`、`AssistantFileDeliveryService` 与 `RobotReplyFileResolver` 核对归属（同时兼容回查 `assistant_task_executions.file_bindings`）。 |
 | `assistant_portraits` / `assistant_portrait_sequence` / `assistant_portrait_actions` | `AssistantPortraitRepository` | 存储私有画像、自增数字 key 序列及按 `(task_id, operation_hash)` 幂等去重的动作账本（提供 `add_idempotent` / `delete_idempotent` 供工具直写）。 |
 | `uploaded_files` / `assistant_file_notes` | `UploadedFileRepository` / `AssistantFileNoteRepository` | 上传文件可见性（`private` / `public`）与 2A 个人文件备忘（见[上传文件元信息与个人备忘](assistant-file-notes.md)）。 |

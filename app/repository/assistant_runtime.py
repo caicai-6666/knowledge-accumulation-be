@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import SecretStr
 
-from app.model.assistant import Assistant, AssistantDelivery, AssistantTaskExecution, TaskFileBinding
+from app.model.assistant import Assistant, AssistantDelivery, AssistantTaskExecution, QueueTaskSnapshot, TaskFileBinding
 from app.model.assistant_queue import AssistantDeliveryLease
 from app.model.question_file import AttachmentReference
 from app.model.question_tree import new_tree_id, utc_now
@@ -199,6 +199,69 @@ class MySQLAssistantRepository:
             await cursor.execute('SELECT * FROM assistant_task_executions WHERE task_id=%s', (task_id,))
             row = await cursor.fetchone()
             return _task(row) if row else None
+
+    async def ensure_scheduled_execution(
+        self,
+        assistant: Assistant,
+        *,
+        task_id: str,
+        node_id: str,
+        task_type: str,
+        message: str,
+    ) -> AssistantTaskExecution:
+        """为 1B 内部定时提醒/心跳幂等补齐已终态确认的执行账本，满足 assistant_deliveries 外键且不占活跃锁或 awaiting_ack。"""
+        async with self.database._transaction() as cursor:
+            await cursor.execute(
+                'SELECT * FROM assistant_task_executions WHERE task_id=%s FOR UPDATE',
+                (task_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                return _task(row).record
+            effective_type = task_type if task_type in ('reminder', 'heartbeat') else 'reminder'
+            effective_message = (message or '').strip() or '定时调度任务'
+            now = utc_now()
+            snapshot = QueueTaskSnapshot(
+                task_id=task_id,
+                userid=assistant.userid,
+                task_type=effective_type,
+                message=effective_message,
+                source_platform_code='knowledge-accumulation',
+                created_at=now,
+                sequence='1',
+            )
+            record = AssistantTaskExecution(
+                task_id=task_id,
+                userid=assistant.userid,
+                tree_id=assistant.tree_id,
+                node_id=node_id,
+                task_type=effective_type,
+                input_payload=snapshot,
+                processing_status='completed',
+                received_at=now,
+                updated_at=now,
+                finished_at=now,
+                acknowledged_at=now,
+            )
+            await cursor.execute(
+                'INSERT INTO assistant_task_executions '
+                '(task_id,userid,tree_id,node_id,task_type,input_payload,file_bindings,processing_status,'
+                'received_at,updated_at,finished_at,acknowledged_at) '
+                "VALUES(%s,%s,%s,%s,%s,%s,'[]','completed',%s,%s,%s,%s)",
+                (
+                    record.task_id,
+                    record.userid,
+                    record.tree_id,
+                    record.node_id,
+                    record.task_type,
+                    _dump(record.input_payload.model_dump(mode='json')),
+                    _date(record.received_at),
+                    _date(record.updated_at),
+                    _date(record.finished_at),
+                    _date(record.acknowledged_at),
+                ),
+            )
+            return record
 
     async def receive(self, assistant: Assistant, lease: AssistantDeliveryLease) -> StoredAssistantTask:
         if assistant.userid != lease.task.userid:

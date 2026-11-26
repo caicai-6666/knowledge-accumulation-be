@@ -21,11 +21,11 @@ class PlatformInfo(BaseModel):
 class MiddlewarePlatformInfo(PlatformInfo):
     """完整上游响应；A2A职责供内部使用，不增加当前平台列表API字段。"""
 
-    a2aresponsibility: str = Field(description='平台在A2A协作中的职责；子管理平台须非空，其他平台未配置时为空字符串。')
+    a2aresponsibility: str = Field(description='平台在 A2A 协作中的职责；参与 A2A 的子管理平台为非空说明，其他平台未配置或未开启 A2A 时为空字符串。')
 
     @model_validator(mode='after')
     def require_sub_platform_responsibility(self):
-        # 对齐中间件配置边界，不能用supports_a2a=false绕过子管理平台职责声明。
-        if self.is_sub_management_platform and not self.a2aresponsibility.strip():
-            raise ValueError('子管理平台的A2A职责不能为空')
+        # 对齐中间件配置边界：仅对实际开启 A2A 的子管理平台强制声明职责，关闭 supports_a2a 时允许留空。
+        if self.is_sub_management_platform and self.supports_a2a and not self.a2aresponsibility.strip():
+            raise ValueError('参与A2A的子管理平台的A2A职责不能为空')
         return self

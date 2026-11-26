@@ -101,7 +101,7 @@ curl 'http://127.0.0.1:24000/knowledge-accumulation/api/platform/list' \
 
 响应 DTO 为 [PlatformResponse](../../app/schema/platform.py)，继承公开基础字段 [PlatformInfo](../../app/model/platform.py)；三个布尔标记仍原样返回，管理员复用 PlatformAdminProfile。
 
-上游使用同文件中的 `MiddlewarePlatformInfo` 独立接收新增必填字符串 `a2aresponsibility`（平台在 A2A 协作中的职责）。非子管理平台可以为空字符串；子管理平台必须为非空、非纯空白说明，即使 `supports_a2a=false` 也不例外。缺失、null、错误类型或非法空职责沿用契约故障处理；不默认补造职责，不改变授权。客户端及内部目录保留该字段，`PlatformQueryService` 显式选择原有公开字段，因此本项目 `GET /knowledge-accumulation/api/platform/list` 的 JSON、OpenAPI 和管理员来源均不变，不新增职责字段。
+上游使用同文件中的 `MiddlewarePlatformInfo` 独立接收必填字符串 `a2aresponsibility`（平台在 A2A 协作中的职责）。仅当 `is_sub_management_platform=true` 且 `supports_a2a=true` 时要求职责为非空、非纯空白说明；非子管理平台或 `supports_a2a=false` 的子管理平台允许为空字符串。缺失、null、错误类型或参与 A2A 的子管理平台职责为空时沿用契约故障处理；不默认补造职责，不改变授权。客户端及内部目录保留该字段，`PlatformQueryService` 显式选择原有公开字段，因此本项目 `GET /knowledge-accumulation/api/platform/list` 仍完整返回中间件中的全部平台，JSON、OpenAPI 和管理员来源均不变，不新增职责字段。
 
 员工首次初始化仍只使用目录中的平台代码初始化零权限，不根据新增标记提升权限。SQL 管理员来自与 registry 共用的权威人员库；不读取模拟 managed_platforms 配置补展示，不把中央管理员缓存作为展示资料来源，也不从文件权限等级推断管理员。
 

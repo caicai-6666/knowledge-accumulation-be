@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 class ListSubManagementPlatformsArguments(BaseModel):
-    """当你需要了解有哪些子管理平台、各自功能、平台代码、A2A职责和存活状态时，使用这个工具。无需参数，每次查询最新目录，包含离线平台，返回可折叠的完整列表。后续文件查询需要平台代码时，原样使用列表中的代码；按职责判断可能的协作对象。目录不是文件访问或管理授权，存活只表示平台会话有效，不保证业务健康或A2A可用；仅在实际提供相应工具时才能查询文件或发起求助，不能把本工具当成A2A调用。"""
+    """当你需要了解有哪些支持跨平台协作的子管理平台、各自功能、平台代码、A2A职责和存活状态时，使用这个工具。无需参数，每次查询最新目录（仅返回已开启A2A协作的子管理平台，包含离线平台），返回可折叠的完整列表，用于按职责选择协作求助对象及对应的平台代码。目录不是文件访问或管理授权，存活只表示平台会话有效，不保证业务健康或对方立即回复；仅在实际提供跨平台协作工具时才能发起求助，不能把本工具当成A2A调用。"""
 
     model_config = ConfigDict(extra='forbid', frozen=True)
 
@@ -176,8 +176,15 @@ class SubManagementPlatformViewer:
                     'message': '本次会话已结束，请在有效任务中重新查询目录。',
                 },
             )
-        # 只依据中间件明确的子管理标记，不从用户等级、管理员关系、在线或 A2A 标记推断。
-        platforms = [row for row in rows if row.is_sub_management_platform]
+        # 仅向模型展示实际开启 A2A 协作的子管理平台，与 PlatformA2AService 允许求助的目标集合一致；
+        # 未开启 supports_a2a 的子管理平台不暴露给模型。
+        platforms = [
+            row
+            for row in rows
+            if row.is_sub_management_platform
+            and row.supports_a2a
+            and row.code != 'knowledge-accumulation'
+        ]
         if not platforms:
             def clear() -> None:
                 self._page = None

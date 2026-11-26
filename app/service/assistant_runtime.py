@@ -8,9 +8,11 @@ import hashlib
 import logging
 from typing import Any
 
-from agent_core import AgentRuntime, Models, RuntimeSettings, SchedulerSettings, TreeAgent, TreeView
+from agent_core import AgentRuntime, Models, RuntimeSettings, SchedulerSettings, StorageConflict, TreeAgent, TreeView
 from agent_core.core.runtime import AgentCoreError
 from agent_core.core.tool.runtime_context import current_tool_runtime
+from agent_core.storage import Write
+from agent_core.tasks import TaskRepository
 
 from app.agent.assistant import (
     ASSISTANT_BUILTIN_TOOLS,
@@ -29,19 +31,32 @@ from app.service.exploration_runtime import build_default_models, build_default_
 logger = logging.getLogger(__name__)
 
 
-def _current_task_id(fallback: str | None = None) -> str:
-    """读取当前执行中工具对应的 agent-core task_id，回退到调用方提供值或新 UUID。"""
+def _current_runtime_task_meta() -> tuple[str | None, str | None, str | None]:
+    """读取当前执行中工具对应的 agent-core 任务元信息 (task_id, source, question)。"""
     try:
         runtime_ctx = current_tool_runtime()
     except RuntimeError:
         runtime_ctx = None
-    if runtime_ctx is not None:
-        journal = getattr(runtime_ctx, 'journal', None)
-        task = getattr(journal, 'task', None)
-        tid = getattr(task, 'id', None)
-        if isinstance(tid, str) and tid:
-            return tid
-    return fallback or new_tree_id()
+    if runtime_ctx is None:
+        return None, None, None
+    journal = getattr(runtime_ctx, 'journal', None)
+    task = getattr(journal, 'task', None)
+    if task is None:
+        return None, None, None
+    tid = getattr(task, 'id', None)
+    source = getattr(task, 'source', None)
+    question = getattr(task, 'question', None)
+    return (
+        tid if isinstance(tid, str) and tid else None,
+        source if isinstance(source, str) and source else None,
+        question if isinstance(question, str) and question else None,
+    )
+
+
+def _current_task_id(fallback: str | None = None) -> str:
+    """读取当前执行中工具对应的 agent-core task_id，回退到调用方提供值或新 UUID。"""
+    tid, _, _ = _current_runtime_task_meta()
+    return tid or fallback or new_tree_id()
 
 
 class AssistantRuntimeService:
@@ -103,6 +118,8 @@ class AssistantRuntimeService:
         self._runtime: AgentRuntime | None = None
         self._model_cleanups: list[Callable[[], Any]] = []
         self._agents: dict[str, TreeAgent] = {}
+        # 映射 agent-core SessionTask.id -> 中间件队列 record.task_id，保证外键与交付回查一致。
+        self._external_task_ids: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._closed = False
 
@@ -145,6 +162,29 @@ class AssistantRuntimeService:
             )
             return self._runtime
 
+    async def _resolve_ledger_task_id(
+        self,
+        assistant: Assistant,
+        fallback_task_id: str | None = None,
+    ) -> str:
+        """将当前 agent-core 任务 ID 映射为 assistant_task_executions 账本主键；1B 内部任务按需幂等补齐账本。"""
+        agent_task_id, task_source, task_question = _current_runtime_task_meta()
+        raw_id = agent_task_id or fallback_task_id or new_tree_id()
+        mapped = self._external_task_ids.get(raw_id)
+        if mapped is not None:
+            return mapped
+        if self._assistant_repository is not None:
+            existing = await self._assistant_repository.get_task(raw_id)
+            if existing is None and hasattr(self._assistant_repository, 'ensure_scheduled_execution'):
+                await self._assistant_repository.ensure_scheduled_execution(
+                    assistant,
+                    task_id=raw_id,
+                    node_id=raw_id,
+                    task_type=task_source or 'reminder',
+                    message=task_question or '定时调度任务',
+                )
+        return raw_id
+
     async def _build_tools(self, assistant: Assistant, user: AuthenticatedUser) -> list[Any]:
         mcp_tools: list[Any] = []
         if self._mcp_client is not None:
@@ -164,7 +204,7 @@ class AssistantRuntimeService:
         async def on_final_deliver(task_id: str | None, final_text: str, file_ids: list[str]) -> None:
             if self._assistant_repository is None:
                 return
-            effective_task_id = _current_task_id(task_id)
+            effective_task_id = await self._resolve_ledger_task_id(assistant, task_id)
             await self._assistant_repository.record_delivery(
                 userid=user.userid,
                 task_id=effective_task_id,
@@ -200,7 +240,7 @@ class AssistantRuntimeService:
         async def record_assistant_delivery(call_id: str, recipient_userid: str, message: str) -> None:
             if self._assistant_repository is None:
                 return
-            effective_task_id = _current_task_id()
+            effective_task_id = await self._resolve_ledger_task_id(assistant)
             last_delivery_task_id.clear()
             last_delivery_task_id.append(effective_task_id)
             key = 'call:' + hashlib.sha256(call_id.encode()).hexdigest()
@@ -215,8 +255,10 @@ class AssistantRuntimeService:
 
         async def flush_assistant_delivery() -> None:
             if self._delivery_service is not None:
-                fallback = last_delivery_task_id[0] if last_delivery_task_id else None
-                effective_task_id = _current_task_id(fallback)
+                if last_delivery_task_id:
+                    effective_task_id = last_delivery_task_id[0]
+                else:
+                    effective_task_id = await self._resolve_ledger_task_id(assistant)
                 await self._delivery_service.flush(effective_task_id)
 
         custom_tools = build_assistant_tools(
@@ -287,6 +329,40 @@ class AssistantRuntimeService:
             self._agents[assistant.tree_id] = agent
             return agent
 
+    async def run_task_with_id(
+        self,
+        assistant: Assistant,
+        *,
+        user: AuthenticatedUser,
+        question: str,
+        external_id: str | None = None,
+        attachments: Sequence[dict[str, Any]] = (),
+        thinking_effort: str = 'medium',
+        supplemental: str = '',
+        source: str = 'user',
+        priority: int = 0,
+    ) -> tuple[str, Any]:
+        """执行一次助理任务并返回 (agent-core 真实节点 ID, 执行结果)，期间维护外部任务 ID 映射。"""
+        agent = await self.get_agent(assistant, user=user)
+        job = await agent.generate(
+            question,
+            external_id=external_id,
+            attachments=attachments,
+            thinking_effort=thinking_effort,
+            supplemental=supplemental,
+            source=source,
+            priority=priority,
+            preview=False,
+        )
+        if external_id:
+            self._external_task_ids[job.id] = external_id
+        try:
+            result = await job.result()
+            return job.id, result
+        finally:
+            if external_id:
+                self._external_task_ids.pop(job.id, None)
+
     async def run_task(
         self,
         assistant: Assistant,
@@ -300,22 +376,51 @@ class AssistantRuntimeService:
         source: str = 'user',
         priority: int = 0,
     ) -> Any:
-        agent = await self.get_agent(assistant, user=user)
-        job = await agent.generate(
-            question,
+        _, result = await self.run_task_with_id(
+            assistant,
+            user=user,
+            question=question,
             external_id=external_id,
             attachments=attachments,
             thinking_effort=thinking_effort,
             supplemental=supplemental,
             source=source,
             priority=priority,
-            preview=False,
         )
-        return await job.result()
+        return result
 
     async def tick_user(self, assistant: Assistant, *, user: AuthenticatedUser) -> Any:
-        """驱动指定助理的 agent-core AgentScheduler.tick()（到期提醒 + 空闲心跳）。"""
+        """驱动指定助理的 agent-core AgentScheduler.tick()（到期提醒 + 空闲心跳），并在 tick 前自愈已终止心跳挂起。"""
         agent = await self.get_agent(assistant, user=user)
+        storage = await self._ensure_storage()
+        repo = TaskRepository(storage, owner='agent-core:trees', tree_id=assistant.tree_id, workspace_retention='latest')
+        hb = await storage.read(repo.scope, 'heartbeat')
+        pending_id = hb.value.get('heartbeat_pending') if hb is not None and isinstance(hb.value, dict) else None
+        if isinstance(pending_id, str) and pending_id:
+            task_rec = await storage.read(repo.scope, 'task:' + pending_id)
+            if task_rec is not None:
+                task_status = task_rec.value.get('status') if isinstance(task_rec.value, dict) else None
+                if task_status != 'generating':
+                    flushed = True
+                    if self._delivery_service is not None:
+                        flushed = await self._delivery_service.flush(pending_id)
+                    if flushed:
+                        await repo.acknowledge_heartbeat(pending_id)
+            else:
+                tree_rec = await storage.read(repo.scope, 'tree')
+                active_id = (
+                    tree_rec.value.get('active')
+                    if tree_rec is not None and isinstance(tree_rec.value, dict)
+                    else None
+                )
+                if tree_rec is None or active_id != pending_id:
+                    try:
+                        await storage.atomic(
+                            repo.scope,
+                            [Write('heartbeat', hb.version, {**hb.value, 'heartbeat_pending': None})],
+                        )
+                    except StorageConflict:
+                        pass
         sched = await agent.scheduler(settings=self._scheduler_settings)
         return await sched.tick()
 
@@ -328,8 +433,6 @@ class AssistantRuntimeService:
                 return await self._runtime.tree(tree_id, database=storage)
             except KeyError:
                 return None
-        from agent_core.tasks import TaskRepository
-
         repo = TaskRepository(storage, owner='agent-core:trees', tree_id=tree_id, workspace_retention='latest')
         tree_record = await storage.read(repo.scope, 'tree')
         if tree_record is None:

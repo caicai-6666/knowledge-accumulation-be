@@ -11,6 +11,7 @@ from app.infrastructure.assistant_queue import AssistantQueueError
 from app.model.assistant import TaskFileBinding
 from app.model.question_file import AttachmentReference, UploadedFile
 from app.model.question_tree import utc_now
+from app.repository.assistant_runtime import task_node_id
 from app.service.assistant_personal_context import AssistantEmployeeContextLoader
 
 logger = logging.getLogger(__name__)
@@ -156,7 +157,13 @@ class AssistantConsumer:
             return True
 
         record = await self._prepare_files(record, lease)
-        record = await self.repository.update(record.task_id, processing_status='running', error_code=None)
+        # 进入 running 前绑定占位 node_id，满足 AssistantTaskExecution 状态机校验；完成后再回写 agent-core 真实节点 ID。
+        record = await self.repository.update(
+            record.task_id,
+            node_id=record.node_id or task_node_id(record.task_id),
+            processing_status='running',
+            error_code=None,
+        )
 
         source_user = None
         if record.task_type == 'assistant_message':
@@ -168,20 +175,32 @@ class AssistantConsumer:
         source_kind = 'business' if record.task_type == 'assistant_message' else 'user'
 
         try:
-            result = await self.runtime.run_task(
-                assistant,
-                user=user,
-                question=question,
-                external_id=record.task_id,
-                attachments=attachments,
-                thinking_effort=self.settings.thinking_effort,
-                supplemental=supplemental,
-                source=source_kind,
-            )
-            node_id = getattr(result, 'task_id', None) or record.node_id
+            if hasattr(self.runtime, 'run_task_with_id'):
+                actual_node_id, _result = await self.runtime.run_task_with_id(
+                    assistant,
+                    user=user,
+                    question=question,
+                    external_id=record.task_id,
+                    attachments=attachments,
+                    thinking_effort=self.settings.thinking_effort,
+                    supplemental=supplemental,
+                    source=source_kind,
+                )
+            else:
+                result = await self.runtime.run_task(
+                    assistant,
+                    user=user,
+                    question=question,
+                    external_id=record.task_id,
+                    attachments=attachments,
+                    thinking_effort=self.settings.thinking_effort,
+                    supplemental=supplemental,
+                    source=source_kind,
+                )
+                actual_node_id = getattr(result, 'task_id', None)
             await self.repository.update(
                 record.task_id,
-                node_id=node_id,
+                node_id=actual_node_id or record.node_id,
                 processing_status='completed',
                 finished_at=utc_now(),
                 error_code=None,
