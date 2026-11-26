@@ -3,14 +3,32 @@
 import math
 import asyncio
 import socket
+import struct
 
 import httpx
 from llama_index.embeddings.openai_like import OpenAILikeEmbedding
 from pydantic import Field, PrivateAttr
 
 from app.config.embedding import EmbeddingSettings
-from app.model.question_memory import normalize_embedding
 from app.infrastructure.model_concurrency import get_model_request_limiter
+
+
+def normalize_embedding(value) -> tuple[float, ...]:
+    """统一为有限的 float32，保证写入与幂等比较使用同一数值精度。"""
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError('向量必须是非空数值序列')
+    result = []
+    for component in value:
+        if type(component) not in (int, float):
+            raise ValueError('向量分量必须是数值')
+        try:
+            number = struct.unpack('<f', struct.pack('<f', component))[0]
+        except (OverflowError, struct.error):
+            raise ValueError('向量分量超出 float32 范围') from None
+        if not math.isfinite(number):
+            raise ValueError('向量分量必须是有限数值')
+        result.append(number)
+    return tuple(result)
 
 
 def validate_vector(vector: list[float], dimensions: int) -> None:

@@ -8,7 +8,7 @@
 
 本规范不改变模型调用工具时的 JSON 参数 Schema，不改变 HTTP API 的 JSON 契约，也不禁止模型在独立生成任务中按 JSON Schema 输出。业务资料本身需要展示 JSON 或代码时，可以作为明确标注的资料呈现，但不能用它替代执行状态与错误反馈的渲染。
 
-**当前内置工具已完成迁移。** Core 的 20 个具体工具、最终输出历史回执、探索 `emit_progress` 及个人助理 19 个专属工具均已接入独立末尾渲染钩子，内部检索与整理工具循环也已覆盖。旧历史和兼容注册项保留 JSON 回退，不要求改写历史数据。[工具迁移清单](../architecture/workflow/question-answering/tool-content-contract.md#模式专属工具反馈清单)记录具体范围与验证边界；此结论不覆盖外部提供方托管的工具。
+**当前全部工具已完成迁移。** `agent-core` 内置工具、MCP 二次封装工具（7 个）、探索共享本地工具及个人助理专属工具均已统一接入末尾 `agent_core.FeedbackOnlyHook` 渲染钩子。完整清单与契约见[工具内容与反馈契约](../architecture/workflow/question-answering/tool-content-contract.md)。
 
 ---
 
@@ -121,7 +121,7 @@
 1. 追踪注册项、执行器、执行后钩子、公共渲染、资料展示、持久化和历史恢复，覆盖主 Agent 与子智能体实际使用的路径；不能仅凭 Python 返回 dict 判断模型看到的格式。
 2. 列明成功、有数据/无数据、无变化、参数错误、权限拒绝、依赖故障、超时及结果不确定中实际存在的分支，明确各分支已确认的执行事实。
 3. 核对是否有事务钩子解析工具历史中的 JSON、按结果字段提交业务动作或恢复幂等状态；先保证结构化结果独立可用，不破坏事务原子性、重试和旧数据恢复。不得直接将这些程序依赖的回执字符串替换为展示文本。
-4. 核对每个工具独立注册的末尾渲染钩子及成功、失败路径覆盖，优先复用公共能力。当前普通工具可以使用 `OrdinaryToolContent(text=...)`，可折叠工具可以使用 `FoldableToolContent(feedback=FoldableReceiptText(...))`，由钩子提供展示、隐藏和不可读三种正文；`view_memory_query` 已接入。其适用边界、历史保存及旧 JSON 兼容机制见[Core 返回契约](../architecture/workflow/question-answering/tool-content-contract.md)。可折叠工具和内部子循环须检查各自真正的消息构建路径，不能只改普通渲染器。
+4. 核对每个工具独立注册的末尾 `agent_core.FeedbackOnlyHook` 渲染钩子及成功、失败路径覆盖，优先复用公共能力。普通工具使用 `OrdinaryToolContent(text=...)`，可折叠工具使用 `FoldableToolContent(feedback=FoldableReceiptText(...))`，由钩子提供展示、隐藏和不可读三种正文；其适用边界见[工具内容与反馈契约](../architecture/workflow/question-answering/tool-content-contract.md)。可折叠工具和内部子循环须检查各自真正的消息构建路径，不能只改普通渲染器。
 5. 检查传给模型的实际 messages：成功及错误正文已经可读，没有 JSON 外壳、无意义重复说明、私有字段或异常原文；需要的业务 ID、时间和分页信息完整。计数与生成使用同一份展示内容。
 6. 验证可纠正反馈实际到达下一轮，成功后失败轨迹全部清理，私有审计仍在；终止分支检查没有自动重放，不声称模型已收到未发送的提示。
 7. 验证业务结果、权限、提交与历史恢复未因展示变化而失效；提供给用户审核的反馈样例必须与程序实际输出一致，并同步工具专题文档。

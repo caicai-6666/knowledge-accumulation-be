@@ -1,5 +1,20 @@
 """个人助理装配入口；导入不读取配置、不建立外部连接。"""
-from .factory import build_core,build_service
-from .context import AssistantContext,ContextMaterial,build_context
+from .context import AssistantContext, ContextMaterial, build_context
+from .factory import (
+    ASSISTANT_BUILTIN_TOOLS,
+    ASSISTANT_OUTPUT_GUIDANCE,
+    build_assistant_prompt_options,
+    build_assistant_role_prompt,
+    build_assistant_tools,
+)
 
-__all__=['build_core','build_service','AssistantContext','ContextMaterial','build_context']
+__all__ = [
+    'ASSISTANT_BUILTIN_TOOLS',
+    'ASSISTANT_OUTPUT_GUIDANCE',
+    'AssistantContext',
+    'ContextMaterial',
+    'build_assistant_prompt_options',
+    'build_assistant_role_prompt',
+    'build_assistant_tools',
+    'build_context',
+]

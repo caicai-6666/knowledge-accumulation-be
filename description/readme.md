@@ -17,104 +17,83 @@
 
 ## 专题文档归档
 
-当前已实现平台会话、用户基础设施、自动执行的启动用户/管理员全表同步与首次登录用户登记，以及显式用户登录、中央 token 查询、复用认证的头像读取及平台信息查询。问答已提供内部 Agent Core、树状上下文、节点持久化与模式工厂，已接入探索问答树创建、列表、改名、完整打开与删除，已接入先注册再由 SSE 订阅激活的探索问答任务。已有专题文档：
+### 开发规范（`standard/`）
 
 - [提示词工程规范](standard/prompt-engineering.md)
-- [工具反馈渲染规范](standard/tool-feedback.md)：结构化结果与模型正文分离，成功/失败反馈、可折叠回执及逐项迁移验收要求。
-- [工具失败处理与诚实反馈](architecture/workflow/question-answering/tool-failures.md)：执行失败、参数纠错与必须停止边界。
+- [工具反馈渲染规范](standard/tool-feedback.md)：结构化结果与模型正文分离，统一采用 `agent_core.FeedbackOnlyHook` 渲染面向模型的中文正文。
 - [多轮上下文规范](standard/agent-context-management.md)
 - [实验验证规范](standard/experiment.md)
+
+### 对外接口契约（`api/`）
+
+- [API 接口导航](api/readme.md)：汇总全部 14 个对外 HTTP / SSE 端点。
+- [用户认证 API](api/auth.md)
+- [用户资源 API](api/resource.md)：头像读取与本人探索树附件读取。
+- [员工头像补齐 API](api/employee-avatar.md)
+- [平台信息 API](api/platform.md)
+- [探索问答树 API](api/exploration.md)：探索树 CRUD、打开与任务/SSE 全部 9 个端点。
+
+### 系统与数据契约（`architecture/system/`、`architecture/data/`）
+
+- [登录与会话管理](architecture/system/user-auth.md)
+- [人员与权限数据契约](architecture/data/personnel.md)
+- [探索树与 agent-core 存储契约](architecture/data/question-tree.md)：`agent-core` 5 张核心表与 `exploration_trees`（含 `main_leaf_id`）/ `exploration_tree_files` 业务表。
+- [用户附件引用与文件定位](architecture/data/question-file.md)：`AttachmentReference`、`UploadFileStore` 与跨模式读取授权。
+- [个人助理存储契约](architecture/data/assistant-storage.md)：`MySQLRepositoryBase`、`assistants`、`assistant_task_executions`、`assistant_deliveries`、`assistant_tree_files` 与画像/入站账本。
+- [上传文件元信息与个人备忘](architecture/data/assistant-file-notes.md)：2A 方案保留 `uploaded_files` 与 `assistant_file_notes` 表及全部工具。
+
+### 问答与助理工作流（`architecture/workflow/question-answering/`）
+
+- [问答智能体总览](architecture/workflow/question-answering/readme.md)
+- [探索与助理模式装配](architecture/workflow/question-answering/agent-modes.md)
+- [探索任务注册与 SSE 执行](architecture/workflow/question-answering/exploration-session.md)：注册、订阅激活、流式预览、回放、取消、改向与分支。
+- [公司背景与默认指代](architecture/workflow/question-answering/company-background.md)
+- [工具内容与折叠契约](architecture/workflow/question-answering/tool-content-contract.md)
+- [工具失败处理与诚实反馈](architecture/workflow/question-answering/tool-failures.md)
+- [注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)
+- [双源 PDF 文件查看](architecture/workflow/question-answering/registry-file-reading.md)
+- [子管理平台查看](architecture/workflow/question-answering/sub-management-platform.md)
+- [跨平台广播与续聊](architecture/workflow/question-answering/platform-a2a.md)
+- [个人助理记忆与工作区管理](architecture/workflow/question-answering/assistant-memory.md)
+- [员工个人信息与助理私有画像](architecture/workflow/question-answering/assistant-personal-context.md)
+- [助理最终正文转换](architecture/workflow/question-answering/assistant-message-rendering.md)
+- [文件内容告知检查](architecture/workflow/question-answering/file-disclosure.md)
+
+### 应用能力（`capability/application/`）
+
+- [独立 Agent Core 库接入](capability/application/agent-core-library.md)
 - [Python 环境与依赖](capability/application/dependencies.md)
 - [Docker 构建与部署](capability/application/docker.md)
-- [中间件平台注册与心跳](capability/infrastructure/middleware.md)
-- [人员与权限数据契约](architecture/data/personnel.md)
-- [问答智能体](architecture/workflow/question-answering/readme.md)
-- [上下文渲染与消息](architecture/workflow/question-answering/context-rendering.md)
-- [失败反馈与修复边界](architecture/workflow/question-answering/error-feedback.md)
-- [探索任务注册与 SSE 执行](architecture/workflow/question-answering/exploration-session.md)：六项输入、订阅激活、回放、取消和删除协调。
-- [多轮工作区精简](architecture/workflow/question-answering/workspace-compression.md)
-- [主题发现与工作记忆总结](architecture/workflow/question-answering/topic-summary.md)
-- [Agent Core 包结构](architecture/workflow/question-answering/package-structure.md)
-- [独立 Agent Core 库与隔离接入实验](capability/application/agent-core-library.md)
-- [助理与探索模式装配](architecture/workflow/question-answering/agent-modes.md)
-- [公司背景与默认指代](architecture/workflow/question-answering/company-background.md)：公开业务背景、公司指代和资料核实边界。
-- [问答树存储与内存索引](architecture/data/question-tree.md)
-- [个人助理、任务与提醒存储](architecture/data/assistant-storage.md)
-- [助理最近摘要记忆加载](architecture/workflow/question-answering/assistant-memory.md)
-- [员工个人信息与助理私有画像](architecture/workflow/question-answering/assistant-personal-context.md)：员工事实背景、画像全文查询与 LRU 分页，以及逐条增删与事务恢复。
-- [助理消息发布、领取与确认](capability/infrastructure/assistant-queue.md)
-- [助理消费、消息工具与交付](capability/application/assistant-consumption.md)
-- [助理最终正文转换](architecture/workflow/question-answering/assistant-message-rendering.md)
-- [助理一日场景与三用户实验](capability/application/assistant-lifecycle-experiment.md)：真实队列/模型、模拟钉钉、压力指标与对话审阅。
-- [助理定时任务](capability/application/assistant-reminders.md)：查看、创建、删除、到期入队和事务交付。
-- [助理日程集查询](capability/application/assistant-calendar.md)：指定员工和时间窗口查询钉钉日程集，分页查看安排及参与人员邀约响应。
-- [助理空闲心跳](capability/application/assistant-heartbeat.md)：中央状态判定、全局间隔与稳定请求去重。
-- [钉钉单聊机器人接入](capability/infrastructure/dingtalk-robot.md)
-- [钉钉消息入站与整条校验](capability/application/assistant-inbound.md)
 - [附件分类转换为 PDF](capability/application/attachment-conversion.md)
-- [节点落盘与恢复](architecture/data/node-persistence.md)
-- [用户附件引用与文件定位](architecture/data/question-file.md)
-- [上传文件元信息与个人备忘](architecture/data/assistant-file-notes.md)：上传者与记录者分别归属，每位用户对同一文件最多一条备忘，外键关联，名称与摘要支持中文全文索引，转换落盘后自动登记上传元信息，个人助理可查看/修改本人文件可见范围；备忘工具和共享读取待接入。
-- [Core 工具注册、返回与自动折叠](architecture/workflow/question-answering/tool-content-contract.md)
-- [注册中心文件图像查看](architecture/workflow/question-answering/registry-file-reading.md)
-- [注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)
-- [Core 子管理平台查看](architecture/workflow/question-answering/sub-management-platform.md)
-- [跨平台广播与续聊](architecture/workflow/question-answering/platform-a2a.md)：两项工具、共享反馈调度、响应缓冲、私有账本与 a2a 展示状态。
-- [Core 网页搜索与正文读取](architecture/workflow/question-answering/web-search.md)
-- [Core 外部专家问答](architecture/workflow/question-answering/external-expert.md)
-- [Core 图像文件阅读](architecture/workflow/question-answering/image-reading.md)
-- [节点生命周期与用户控制](architecture/workflow/question-answering/node-lifecycle.md)
-- [节点记忆向量存储](architecture/data/question-memory.md)
-- [节点记忆自动向量化](capability/application/memory-embedding.md)
-- [祖先任务记忆召回](architecture/workflow/question-answering/memory-retrieval.md)
-- [节点记忆全文检索](capability/infrastructure/fulltext.md)
-- [节点记忆的 MyVector 检索](capability/infrastructure/myvector.md)
-- [vLLM 模型配置与异步客户端](capability/infrastructure/vllm-models.md)
-- [可选工具格式注入](capability/infrastructure/tool-tag.md)
-- [用户基础设施](capability/infrastructure/user-infrastructure.md)
 - [用户全表注册协调](capability/application/startup-user-sync.md)
 - [启动平台管理员全表同步](capability/application/startup-admin-sync.md)
-- [API 接口导航](api/readme.md)
-- [用户认证 API](api/auth.md)
-- [用户资源 API](api/resource.md)
-- [平台信息 API](api/platform.md)
-- [探索问答树 API](api/exploration.md)
-- [登录与会话管理](architecture/system/user-auth.md)
+- [助理消费、运行时与可靠交付](capability/application/assistant-consumption.md)
+- [助理定时提醒（1B agent-core 内置方案）](capability/application/assistant-reminders.md)
+- [助理空闲心跳（1B agent-core 原生方案）](capability/application/assistant-heartbeat.md)
+- [助理日程集查询](capability/application/assistant-calendar.md)
+- [钉钉消息入站与附件转换](capability/application/assistant-inbound.md)
 
-当前目录职责如下；新增专题时在本页维护入口，具体实现状态以对应专题为准。
+### 基础设施能力（`capability/infrastructure/`）
+
+- [外部 MCP 工具服务接入](capability/infrastructure/mcp-server.md)
+- [vLLM 模型配置与异步客户端](capability/infrastructure/vllm-models.md)
+- [中间件平台注册与心跳](capability/infrastructure/middleware.md)
+- [用户基础设施](capability/infrastructure/user-infrastructure.md)
+- [助理消息发布、领取与确认](capability/infrastructure/assistant-queue.md)
+- [钉钉单聊机器人接入](capability/infrastructure/dingtalk-robot.md)
+
+---
+
+## 目录职责与维护约定
 
 | 文档目录 | 收录内容 |
 | --- | --- |
-| `api/` | 用户与认证、问答会话和消息等对外接口契约；统一由 `api/readme.md` 汇总入口。 |
-| `architecture/system/` | 身份接入、问答服务协调、组件边界和业务状态流转。 |
-| `architecture/data/` | 用户身份关联、会话、消息等数据契约。 |
-| `architecture/workflow/` | 本项目实际承载的 Agent 工作流及其节点、工具和上下文。 |
-| `capability/application/` | 应用框架、服务装配和运行配置。 |
-| `capability/infrastructure/` | 钉钉、存储和企业知识沉淀其他组件的接入说明。 |
-| `standard/` | 随开发需要补充的跨模块专项规范。 |
-
----
-
-## 维护约定
+| `api/` | 用户与认证、资源、平台与探索问答树对外接口契约；统一由 `api/readme.md` 汇总入口。 |
+| `architecture/system/` | 身份接入、服务协调、组件边界和业务状态流转。 |
+| `architecture/data/` | 用户身份关联、`agent-core` 核心表及探索/助理业务表数据契约。 |
+| `architecture/workflow/` | 本项目承载的 Agent 工作流、工具契约、提示词与上下文。 |
+| `capability/application/` | 应用框架、运行装配、依赖与部署配置。 |
+| `capability/infrastructure/` | 外部 MCP 服务、vLLM、钉钉、中间件等基础设施适配说明。 |
+| `standard/` | 跨模块专项开发与渲染规范。 |
 
 新增或调整专题文档时，同步更新本导航及相关入站链接。项目总览只维护定位与全局边界，专题文档维护具体设计、接口及运行说明，避免多处维护同一份规则。
-
-应用启动及中间件联调说明见[中间件平台注册与心跳](capability/infrastructure/middleware.md)。用户与问答业务的使用步骤随相应功能实现补充。
-
-测试和实验链接用于历史追溯。`tests/` 与 `experiment/` 的代码和产物不纳入版本追踪，部分目标在当前工作区也已缺失；保留的历史验证记录不代表当前副本可复跑，也不能代替最新功能验收。详见[版本追踪范围](project.md#版本追踪范围)。
-
-
----
-
-## 2026-10-30 文档一致性检查
-
-本次以当前工作区代码和配置为准，扫描 `description/` 的 60 份 Markdown，重点核对近期变更涉及的工具钩子、助理正文转换、记忆与工作区、文件授权、启动地址及运行状态。发现并修订 22 份文档：移除与实现冲突的旧状态，修正最小调用示例和两个部署 SQL 链接，补全导航，并将历史验证与当前契约分开。
-
-验证结果：
-
-- API 总目录的 14 个方法/路径组合与实际生成的 OpenAPI 一致。
-- 最小调用示例语法、实际模式工厂构造，以及助理 7 项、探索 8 项基础工具集合校验通过；没有调用模型或数据库。
-- 当前源码、配置及文档相对链接与 Markdown 标题锚点无缺失。仍有 137 处历史测试/实验引用指向本地缺失的 124 个目标；保留原记录，未补造历史产物。外部网站链接未联网验证。
-- `git diff --check` 通过。本次仅修改文档，未执行完整业务回归、数据库迁移、服务重启或真实钉钉收发验收。
-
-这些结果说明已识别的文档偏差已修正，不代表所有历史结论已复现，也不代表外部依赖当前健康。

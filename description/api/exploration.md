@@ -60,7 +60,7 @@ curl -i http://127.0.0.1:24000/knowledge-accumulation/api/exploration/trees \
 
 `updated_at` 直接取数据库树记录，与列表排序依据一致；创建时初始化，改名、追加节点及任务结束持久化等树数据更新会刷新该时间，重复提交相同名称不刷新。普通列表读取、打开树及尚未落盘的流式输出不代表树数据更新。返回 ISO 8601 UTC 时间（例如 `2026-10-26T02:30:00Z`），前端按展示需要转换为本地时区。
 
-执行标识批量读取当前用户的任务状态，不按树查询节点，也不将 SQL 遗留的 `generating` 当作仍在执行。当前任务调度仅驻留本进程；多实例时列表请求必须与该用户的任务路由到同一实例，不能用任意实例的列表判断全局状态，详见[任务生命周期边界](../architecture/workflow/question-answering/exploration-session.md#停止删除与生命周期)。
+执行标识批量读取当前用户的任务状态，结合 `TreeView.active` 与进程内运行态判断；多实例时列表请求必须与该用户的任务路由到同一实例，详见[探索任务注册与 SSE 执行](../architecture/workflow/question-answering/exploration-session.md)。
 
 ---
 
@@ -233,7 +233,7 @@ curl -i -X POST http://127.0.0.1:24000/knowledge-accumulation/api/exploration/tr
   -H 'Authorization: Bearer <access_token>'
 ```
 
-每次打开都重新确认数据库归属与用途，并在同一 REPEATABLE READ 事务中复用同版本驻留结构（未命中时批量加载），读取完整正文及公开消息。结构在事务提交成功后驻留，与后续问答执行共用。失败不返回旧缓存或不完整树。打开本身不更新活动时间、节点状态或工作区；内存快照的刷新、容量与停机行为见[内存构树与正文加载](../architecture/data/question-tree.md#内存构树与正文加载)。
+每次打开都重新确认数据库归属，并只读加载 `agent-core` `TreeView`，结合 `TreeView.head` 与在途活跃节点的 `TreeNode.advance_head` 回溯主干标注 `main`/`branch`，组装完整节点与公开消息。存储结构与主干语义详见[探索树与 agent-core 存储契约](../architecture/data/question-tree.md)。
 
 ---
 
@@ -265,7 +265,7 @@ curl -i -X DELETE http://127.0.0.1:24000/knowledge-accumulation/api/exploration/
 
 数据库删除和文件系统没有共同事务：数据库阶段失败会回滚且不删除附件；数据库已经提交、文件清理失败时，树已从列表和打开入口消失，但待清理的文件清单仍在数据库。客户端应重试相同 DELETE，服务端按本人清单继续清理，已缺失文件按已完成处理。全部清理成功后移除清单；之后再次删除返回 `404`，不伪造另一份成功记录。
 
-部署前须手工执行 [009-question-tree-deletion.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/009-question-tree-deletion.sql)，应用不自动建表，本轮没有修改真实数据库。完整数据范围、安全边界与并发约束见[整树删除与附件清理](../architecture/data/question-tree.md#整树删除与附件清理)。不新增定时扫描任务；重启后同一 DELETE 仍可恢复清理。
+应用启动不自动建表；完整数据范围、清理顺序与并发约束见[关键操作与删树清理](../architecture/data/question-tree.md#4-关键操作与删树清理)。删除操作支持幂等重试。
 
 ---
 

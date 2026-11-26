@@ -6,7 +6,7 @@
 
 本项目围绕两个核心能力建设：管理用户的注册、登录等身份事务；管理用户的智能体问答数据，协调相关组件，为用户提供完整的问答服务。
 
-> **当前状态：** 已实现平台会话、用户基础设施、启动用户及管理员总表同步，以及钉钉/开发显式登录、中央 token 身份查询、头像读取和平台信息查询。登录为直接装配的核心能力，用户与管理员全表启动自动同步，已通过本地隔离回归；中间件适配由用户确认，完整权威源及跨后端覆盖保障由部署侧落实；问答核心循环、树状上下文、节点持久化与模式工厂已实现，已接入探索问答树创建、列表、改名、打开与删除，已接入先注册再由 SSE 订阅激活的探索问答任务。
+> **当前状态：** 已实现平台会话、用户基础设施、启动用户及管理员总表同步，以及钉钉/开发显式登录、中央 token 身份查询、头像读取和平台信息查询。探索模式（Exploration）与个人助理（Assistant）均已全面切换至独立库 `agent-core` 与外部 MCP 服务（`knowledge-accumulation-mcp-server`），历史自研 `app/agent/core/` 与本地 `file_conversion` 已彻底移除。当前 33 项自动化测试全部通过，独立隔离容器已完成 Exploration 全链路真实联调（认证、树管理、主线/分支 SSE、MCP 工具、取消与删树）；个人助理（1B 内置提醒/心跳 + 2A 个人文件备忘 + 钉钉正文转换）已通过自动化隔离验证，尚未执行真实钉钉单聊线上收发验收。
 
 ---
 
@@ -20,9 +20,7 @@
 
 已准备服务端开发模拟身份、钉钉 HTTP 适配、人员异步仓库和头像存储。知识后端负责用户全表注册和显式登录，生成随机用户 token，经中央成功绑定后返回；普通验证只查询已有中央登录。用户 update、权限与 SQL 管理员关系编辑、管理员增量维护保留在 registry；知识后端另承担启动管理员全表镜像，复用用户注册协调器启动自动发布，无独立启停开关。下游直接查询中间件用户 token，不再依赖知识后端 verify。
 
-新后端对外业务前缀为 `/knowledge-accumulation/api`，registry 继续使用 `/knowledge-accumulation/registry/api`。当前提供 `auth/login`、`auth/me`、`resource/avatar/{filename}` 和 `platform/list`。平台查询聚合中间件基础信息及数据库管理员展示资料，不迁移权限或管理员增量维护。
-
-注册中心人工刷新员工时，可通过[员工头像补齐接口](api/employee-avatar.md)转发管理员用户凭据，知识后端校验中央身份和SQL管理关系后只补空头像，复用现有存储与转码。
+对外业务前缀为 `/knowledge-accumulation/api`，registry 继续使用 `/knowledge-accumulation/registry/api`。身份与平台相关接口包括 `auth/login`、`auth/me`、`resource/avatar/{filename}`、`resource/attachment/{tree_id}/{file_id}`、`employee/avatar/fill` 和 `platform/list`。
 
 ### 智能体问答服务
 
@@ -31,31 +29,11 @@
 - 与企业知识沉淀相关组件交互，协调请求、结果及失败反馈，为用户提供完整服务。
 - 确保问答数据按用户及授权范围访问，避免用户间的数据混用。
 
-已准备[问答树存储与内存索引](architecture/data/question-tree.md)：独立树表、任务/摘要节点、按需加载正文、工作区版本及最近摘要回溯。另已提供[节点落盘与恢复](architecture/data/node-persistence.md)，保存完整生成、公开消息和检查点快照。[核心 Agent 循环与上下文管理](architecture/workflow/question-answering/readme.md)已接入内部节点生成入口，支持工作区、中途与最终输出、受控摘要及私有生成落盘。另支持[用户附件登记与读取](architecture/data/question-file.md)，使用 UUID 和固定类型后缀定位磁盘文件；个人助理接收的附件在转换、校验并持久保存后自动登记[上传元信息](architecture/data/assistant-file-notes.md)，任务引用继续负责当前读取授权；个人助理另提供文件备忘新增、删除、名称/摘要独立全文查找与 LRU 结果集查看，支持在旧结果内继续筛选。生成支持内部 Python 入口及[探索任务注册与 SSE](architecture/workflow/question-answering/exploration-session.md)，HTTP 可直接上传 PDF、图片、Word、Excel 和 PowerPoint，并由后端统一转为 PDF；已接入[注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)，支持名称/摘要组合检索、单个通行证精确查找、平台过滤与分页列表，已接入[注册中心PDF逐页查看](architecture/workflow/question-answering/registry-file-reading.md)，通过平台认证及可信任务 userid 远程授权读取，不依赖网页登录；应用不自动执行数据库迁移。
+智能体底层能力统一由独立库 `agent-core`（见[独立 Agent Core 库接入](capability/application/agent-core-library.md)）和外部[MCP 工具服务](capability/infrastructure/mcp-server.md)提供：
 
-节点记忆另提供 [MyVector/vLLM 基础设施](capability/infrastructure/myvector.md)，以权威记忆和消息表刷新独立缓存，支持 HNSW 向量及[原生中文全文检索](capability/infrastructure/fulltext.md)，按用户与树过滤、返回前回查。已接入[节点记忆自动向量化](capability/application/memory-embedding.md)，配置 Embedding 地址后后台加工终态任务的完整公开消息；已接入[祖先任务记忆召回](architecture/workflow/question-answering/memory-retrieval.md)，检索时按需刷新缓存、混合召回并分页查看，范围限于当前任务的祖先父链。插件和模型部署由运行环境显式准备。
-
-已实现[探索问答树列表 API](api/exploration.md#获取问答树列表)，中央身份校验后返回本人 exploration 树的 ID、名称及正在执行任务的标识 `has_running_task`；助理树不返回；另提供[本人探索树改名](api/exploration.md#修改问答树名称)。[打开接口](api/exploration.md#打开问答树)已支持将完整结构及公开历史加载到内存并返回，[删除接口](api/exploration.md#删除问答树)清理关联 SQL、内存快照及已登记附件，支持失败后重试。
-
-Core 已提供[独立图像文件阅读工具](architecture/workflow/question-answering/image-reading.md)，支持多图逐页原生图片展示与 LRU 文件模型驻留；音频和视频阅读尚未接入。
-
-个人助理已接入[员工背景与私有画像名称全文查询](architecture/workflow/question-answering/assistant-personal-context.md)，查询结果复用已有 LRU 结果池，按用户分组分页查看；单条新增和删除已接入检查点同事务提交与去重。个人助理已准备[助理绑定、任务执行、交付与提醒存储](architecture/data/assistant-storage.md)：每位用户绑定唯一 assistant 树，队列附件复用现有上传目录、节点登记和 Core 查看工具。生成路径已支持[持久化压缩窗口与当前工作区加载](architecture/workflow/question-answering/assistant-memory.md)；另提供[中间件队列发布、领取、续租与确认](capability/infrastructure/assistant-queue.md)及单次消费处理器。已接入[后台消费、助理消息工具与可靠交付](capability/application/assistant-consumption.md)，默认关闭；已实现[查看、创建、删除定时任务及到期调度](capability/application/assistant-reminders.md)，已接入[空闲心跳调度](capability/application/assistant-heartbeat.md)，已接入[钉钉消息原子接收与发布](capability/application/assistant-inbound.md)，图片、Word、Excel、PowerPoint（PPT/PPTX）由独立转换器统一转 PDF，不支持的附件导致整条拒绝；首次从机器人发起的有效消息会初始化未建档员工，再继续处理原消息，无需先登录主页；新空库统一使用 deploy 的 `mysql/init/001-schema.sql`，已有库按[数据与迁移](capability/application/docker.md#数据与迁移)核对结构与历史数据。最终正文通过[工具独立钩子与转换子智能体](architecture/workflow/question-answering/assistant-message-rendering.md)转换后再正常提交，后续上下文读取转换后的正文。
-
-已实现[跨平台广播与续聊工具](architecture/workflow/question-answering/platform-a2a.md)，经中间件平台 A2A 队列通信，探索与个人助理共享反馈接收、并发分发、响应缓冲和私有 SQL 账本；默认关闭；新空库初始化已包含所需结构，已有库启用前需核对结构。尚未执行真实跨平台收发。
-
-个人助理已接入[日程集查询](capability/application/assistant-calendar.md)，支持指定本项目员工和时间范围读取钉钉主日历，返回任务内隔离的查询 ID、数量和分页信息，再用查看工具读取可折叠日程正文及参与人员邀约响应。
-
-另已准备[钉钉单聊机器人基础设施](capability/infrastructure/dingtalk-robot.md)：Stream 接收、可信单聊过滤、OpenAPI 完整回复和主动发送、附件下载。已通过可靠接收器接入队列，与助理消费共用默认关闭的启动开关，已观察到真实消息入站、队列发布及助理执行；最终转换与交付的验证边界见[真实任务观察](capability/infrastructure/dingtalk-robot.md#真实任务观察与验证边界)。
-
-[vLLM 模型基础设施](capability/infrastructure/vllm-models.md)已准备 MLLM/Embedding 配置、异步生成、工具及流式响应、原生推理返回、共享并发和服务端分词；已有合成样例联通记录，但历史成功不代表当前服务持续可用；已供[问答 Agent Core](architecture/workflow/question-answering/readme.md)调用。
-
----
-
-个人助理新增[文件内容告知检查](architecture/workflow/question-answering/file-disclosure.md)，模型在向其他用户转述平台文件资料前主动核对当前访问权限；该方案不包含自动来源追踪或发送正文强制门禁。
-
-## Agent Core 独立封装
-
-已在独立目录提取可安装的 `agent-core` 库，保留核心运行与压缩机制，提供三类模型接口、可替换存储和 SQLite 参考实现，并在本项目执行隔离接入实验。生产个人助理和探索模式尚未切换，详见[独立库接入实验](capability/application/agent-core-library.md)。
+- **探索模式（Exploration）**：基于 `agent_core.AgentRuntime` 与 `TreeAgent(execution_mode='interruptible', workspace_retention='per_node')`，由[探索树与 agent-core 存储契约](architecture/data/question-tree.md)维护 `exploration_trees`（含真实主干末尾 `main_leaf_id`）与 `exploration_tree_files`；支持[探索问答树 API](api/exploration.md)全部 9 个端点（建树、列表、改名、全量打开、删树，以及先注册再由 SSE 订阅激活的[探索任务与 SSE 执行](architecture/workflow/question-answering/exploration-session.md)、历史节点持久化 `branch` 分叉、取消与改向）。附件经 MCP `file_conversion` 统一转 PDF 并写入 `UploadFileStore`（见[用户附件引用与文件定位](architecture/data/question-file.md)）。
+- **个人助理（Assistant）**：基于 `agent_core.AgentRuntime` 与 `TreeAgent(execution_mode='queue', workspace_retention='latest')`，保留中间件队列消费（`GET_LOCK` 跨实例用户锁、租约与确认，见[助理消费、运行时与可靠交付](capability/application/assistant-consumption.md)）、[钉钉单聊机器人接入](capability/infrastructure/dingtalk-robot.md)与[钉钉消息入站与附件转换](capability/application/assistant-inbound.md)（附件经 MCP `file_conversion` 转 PDF）。采用 **1B 方案**使用 `agent-core` 内置[定时提醒](capability/application/assistant-reminders.md)与[空闲心跳及原生裁剪](capability/application/assistant-heartbeat.md)，采用 **2A 方案**保留 BE 独立[上传文件元信息与个人备忘](architecture/data/assistant-file-notes.md)，保留[私有画像](architecture/workflow/question-answering/assistant-personal-context.md)、[钉钉日程集查询](capability/application/assistant-calendar.md)、[文件内容告知检查](architecture/workflow/question-answering/file-disclosure.md)及[助理最终正文转换](architecture/workflow/question-answering/assistant-message-rendering.md)。
+- **共享工具与模型**：复用[vLLM 模型配置与异步客户端](capability/infrastructure/vllm-models.md)、[注册中心文件查询](architecture/workflow/question-answering/file-retrieval.md)、[双源 PDF 文件查看](architecture/workflow/question-answering/registry-file-reading.md)、[子管理平台查看](architecture/workflow/question-answering/sub-management-platform.md)、[跨平台广播与续聊](architecture/workflow/question-answering/platform-a2a.md)及 7 个 MCP 外部工具。
 
 ---
 
@@ -66,17 +44,16 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 | 前端 `knowledge-accumulation-fe` | 提供面向用户的页面和交互，调用本项目服务。 |
 | 本项目 `knowledge-accumulation-be` | 提供身份接入、用户问答数据管理及跨组件服务协调。 |
 | 钉钉 | 提供生产环境所依托的用户管理和身份能力。 |
-| 中间件 `middleware-service` | 管理平台白名单与会话，本项目以 `knowledge-accumulation` 身份登录并维持心跳。 |
-| 企业知识沉淀其他组件 | 按后续约定的接口提供智能体问答所需能力。 |
+| 中间件 `middleware-service` | 管理平台白名单、用户会话与助理任务队列，本项目以 `knowledge-accumulation` 身份登录并维持心跳。 |
+| 外部 MCP 服务 `knowledge-accumulation-mcp-server` | 提供时间/日期、网页搜索/读取、外部专家问答及 `file_conversion`（文档/图片转 PDF）。 |
+| 企业知识沉淀其他组件 | 按约定接口提供注册中心文件检索、远程 PDF 读取与跨平台 A2A 协作。 |
 
 当前前端问答交互如下，具体协议见[API 接口导航](api/readme.md)：
 
 1. 用户通过前端进入系统；生产环境结合钉钉身份完成登录与用户关联。
 2. 前端携带有效身份向本项目提交问答请求。
-3. 本项目校验用户及数据访问权限，管理会话与消息，并调用所需组件。
+3. 本项目校验用户及数据访问权限，管理会话与消息，并调用 `agent-core` 与外部组件。
 4. 本项目处理调用结果与失败状态，将用户可用的结果返回前端，并维护相应问答数据。
-
-其他组件内部的知识采集、加工、检索或智能体执行逻辑不自动纳入本项目范围。只有明确由本项目承担的能力，才在此实现；外部能力通过适配接口接入。
 
 ---
 
@@ -84,9 +61,9 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 
 - 身份边界清晰：用户身份、钉钉身份和业务数据归属应有明确关联，接口必须校验访问权限。
 - 数据状态可靠：明确请求、处理中、成功与失败等业务语义，避免将未完成结果当作正式答案。
-- 组件职责独立：业务服务与钉钉、存储、外部问答组件的适配逻辑保持清晰边界。
-- 配置以实际实现为准：已选用 FastAPI、OpenAI 异步 SDK、LangGraph 和 MySQL 异步驱动 asyncmy，环境说明见[Python 环境与依赖](capability/application/dependencies.md)；中间件接入已有配置，其他组件配置与部署方式随实现补充，不沿用其他项目的配置假设。
-- 代码与文档同步：接口、数据契约、组件依赖及运行方式随实现维护，区分规划、实验和已实现能力。
+- 组件职责独立：业务服务与钉钉、存储、外部 MCP 及模型组件的适配逻辑保持清晰边界。
+- 配置以实际实现为准：选用 FastAPI、`agent-core[mysql,pdf]`、`mcp>=2.3.0`、OpenAI 异步 SDK 与 MySQL 异步驱动 `asyncmy`，环境说明见[Python 环境与依赖](capability/application/dependencies.md)。
+- 代码与文档同步：接口、数据契约、组件依赖及运行方式随实现维护，区分规划、已验证与未线上验证能力。
 
 ---
 
@@ -94,11 +71,11 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 
 | 路径 | 当前用途 |
 | --- | --- |
-| `app/` | FastAPI 入口、Agent 与模式工具、业务服务、数据仓库及外部基础设施适配。 |
+| `app/` | FastAPI 入口、探索与助理工具装配、业务服务、数据仓库及外部基础设施适配。 |
 | `tests/` | 使用隔离配置及模拟外部服务的自动化测试。 |
-| `data/` | 项目真实运行数据目录；头像迁移仅按用户单独授权执行。 |
+| `data/` | 项目真实运行数据目录；测试与实验禁止写入此目录。 |
 | `experiment/` | 实验数据、运行产物与分析记录目录。 |
-| `description/` | 项目说明、文档规范与后续专题文档。 |
+| `description/` | 项目说明、文档规范与专题文档。 |
 
 开始开发前阅读[项目开发规范](../AGENTS.md)；文档组织遵循[文档撰写风格手册](documentation.md)。专题入口统一维护在[项目文档导航](readme.md)。
 
@@ -110,8 +87,8 @@ Core 已提供[独立图像文件阅读工具](architecture/workflow/question-an
 
 | 范围 | 保留内容 |
 | --- | --- |
-| 部署必需文件 | `app/**/*.py`、`assets/tool-tag/*.txt`、`assets/fonts/` 字体与许可证、`requirement.txt`、`.env.example`、`Dockerfile` 和 `.dockerignore`。 |
+| 部署必需文件 | `app/**/*.py`、`requirement.txt`、`.env.example`、`Dockerfile` 和 `.dockerignore`。 |
 | 描述与维护规范 | `README.md`、`description/**/*.md`、`AGENTS.md` 和 `.gitignore`。 |
 | 必要目录层级 | 通过 `.gitkeep` 保留 `data/user/avatar/`、`data/user/upload-file/`、`tests/fixtures/`、`tests/tmp/` 和 `experiment/`。 |
 
-真实 `.env`、用户数据、测试代码及样本、实验脚本及产物、IDE 配置和缓存均不纳入追踪；忽略规则不会删除本地文件。文档中的测试和实验链接用于已有本地工作区的历史追溯，按此范围获取的部署副本不包含这些目标，也不能据此在部署副本复跑历史测试。实际运行配置和数据由部署环境独立提供，空目录占位不替代数据迁移。
+真实 `.env`、用户数据、测试代码及样本、实验脚本及产物、IDE 配置和缓存均不纳入追踪；实际运行配置和数据由部署环境独立提供，应用启动不自动执行数据库迁移。

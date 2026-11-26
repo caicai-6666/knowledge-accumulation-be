@@ -6,7 +6,7 @@
 
 本契约用于新后端的用户基础设施及全表注册。沿用来源项目的人员字段语义，不迁入注册中心的资源、审核表或工作流。仓库和运行配置见[用户基础设施](../../capability/infrastructure/user-infrastructure.md)，注册发布规则见[用户全表注册协调](../../capability/application/startup-user-sync.md)。
 
-表结构以部署项目的 [003-personnel.sql](../../../../knowledge-accumulation-deploy/mysql/init/003-personnel.sql) 和 [004-platform-admins.sql](../../../../knowledge-accumulation-deploy/mysql/init/004-platform-admins.sql) 为参考。链接依赖当前同级多项目布局。人员扩展迁移由本项目 `schema/` 维护，部署时手工执行；应用启动不执行 DDL，不复制生产数据；目标库的建立、数据迁移和账号授权留待部署切换。
+表结构以部署仓库 `knowledge-accumulation-deploy` 的 `mysql/init/001-schema.sql`（历史参考 `003-personnel.sql`、`004-platform-admins.sql`）为准。应用启动不执行 DDL，不复制生产数据；目标库的建立、数据迁移和账号授权留待部署侧落实。
 
 ---
 
@@ -63,9 +63,9 @@
 UPDATE employees SET employment_status='resigned' WHERE userid='目标员工userid';
 ```
 
-员工查询、全表读取及登录/me 身份返回该字段；个人助理按宿主每轮读取的 SQL 员工身份显示“在职状态：在职／离职”，详见[员工事实资料](../workflow/question-answering/assistant-personal-context.md#员工事实资料)。开发模拟员工默认在职。缺字段或非法存储值属于部署或数据错误，仓库不会静默伪装为在职。
+员工查询、全表读取及登录/me 身份返回该字段；个人助理按宿主每轮读取的 SQL 员工身份显示“在职状态：在职／离职”，详见[员工个人信息与助理私有画像](../workflow/question-answering/assistant-personal-context.md)。开发模拟员工默认在职。缺字段或非法存储值属于部署或数据错误，仓库不会静默伪装为在职。
 
-状态用于资料展示及个人助理最终通知校验：所属员工离职时，`finish_task.send_to_user=true` 在提交前被拒绝，须改为 false 静默保存，详见[交付门禁](../../capability/application/assistant-consumption.md#finish_task)。不自动禁用登录、助理间通信或跨平台 A2A；同步边界见[中间件资料映射](#中间件资料映射)。本次不修改注册中心、中间件或 deploy 项目。
+状态用于资料展示及个人助理最终通知校验：所属员工离职时，`finish_task.send_to_user=true` 在提交前被拒绝，须改为 false 静默保存，详见[助理消费、运行时与可靠交付](../../capability/application/assistant-consumption.md)。不自动禁用登录、助理间通信或跨平台 A2A；同步边界见[中间件资料映射](#中间件资料映射)。本次不修改注册中心、中间件或 deploy 项目。
 
 2026-11-02 验证：员工状态、建档、助理背景、多部门及用户同步隔离测试共 33 项通过，覆盖四类助理任务的实际上下文构建、离职员工保留在同步集合中和现有出站 DTO 边界。[专项测试](../../../tests/test_employee_employment_status.py)另准备 3 项显式启用的 MySQL 用例；一次性 MySQL 8.4 容器因 Docker OCI runtime 创建失败而未启动，实库迁移及数据库约束尚未验证。失败容器已清理，未连接业务数据库，未执行真实 022 迁移或重启服务。
 
@@ -100,7 +100,7 @@ UPDATE employees SET employment_status='resigned' WHERE userid='目标员工user
 
 ## 助理姓名目录
 
-`MySQLEmployeeRepository.search_user_names(username=None, department=None, offset=0, limit=11)` 返回 userid、展示姓名、employment_status（employed/resigned）与完整一级部门 departments（id/name）列表；在职和离职员工均保留，状态必须来自 SQL，缺失或非法时拒绝结果，不默认推测为在职；复用员工身份查询的部门投影，历史 department_ids 为 NULL 时回退旧 department_id。按员工限量，部门聚合不会增加结果人数；部门按 ID 排列，不按名称合并。姓名和部门均为空时列出全部员工，按展示姓名、userid稳定排序，姓名为null时回退userid；姓名和一级部门名称各自使用全文及字面包含查询；双路取并集并按用户去重、等权排名融合。省略、null、空串、全空白跳过对应条件；非法类型、超长条件和非法分页参数在查询前拒绝。模型工具的数量上限、分页快照与LRU使用规则统一见[助理目录](../../capability/application/assistant-consumption.md#按用户名查找助理)。
+`MySQLEmployeeRepository.search_user_names(username=None, department=None, offset=0, limit=11)` 返回 userid、展示姓名、employment_status（employed/resigned）与完整一级部门 departments（id/name）列表；在职和离职员工均保留，状态必须来自 SQL，缺失或非法时拒绝结果，不默认推测为在职；复用员工身份查询的部门投影，历史 department_ids 为 NULL 时回退旧 department_id。按员工限量，部门聚合不会增加结果人数；部门按 ID 排列，不按名称合并。姓名和部门均为空时列出全部员工，按展示姓名、userid稳定排序，姓名为null时回退userid；姓名和一级部门名称各自使用全文及字面包含查询；双路取并集并按用户去重、等权排名融合。省略、null、空串、全空白跳过对应条件；非法类型、超长条件和非法分页参数在查询前拒绝。模型工具的数量上限、分页快照与 LRU 使用规则统一见[员工个人信息与助理私有画像](../workflow/question-answering/assistant-personal-context.md)。
 
 
 ---

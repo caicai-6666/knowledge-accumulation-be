@@ -1,14 +1,59 @@
-"""助理专用工具组合点；带身份的通信与提醒工具由消费宿主逐任务注入。"""
-from app.agent.core.tool import build_registry as build_core_registry
-from .finish_task import AssistantFinishTask
+"""个人助理专属工具导出入口（基于 agent-core 契约）。"""
+from .file_disclosure import build_file_disclosure_registration
+from .file_note import FileNoteTools
+from .file_note_query import FileNoteQueryPool, FileNoteQueryTools
+from .file_visibility import FileVisibilityTools
+from .finish_task import AssistantFinishTask, FinishAssistantTaskArguments
+from .image_authorization import wrap_image_authorize
+from .memory_window import MemoryWindowError, build_memory_window_registration
+from .portrait_mutation import PortraitMutationTools
+from .portrait_query import (
+    PortraitQueryViewer,
+    build_portrait_query_pool,
+    build_search_portraits_registration,
+    build_view_portrait_query_registration,
+)
+from .search_assistants import (
+    build_assistant_query_pool,
+    build_search_assistants_registration,
+)
+from .search_calendar_events import (
+    build_calendar_query_pool,
+    build_search_calendar_events_registration,
+)
+from .send_assistant_message import send_registration
+from .view_assistant_query import (
+    AssistantQueryViewer,
+    build_view_assistant_query_registration,
+)
+from .view_calendar_query import (
+    CalendarQueryViewer,
+    build_view_calendar_query_registration,
+)
 
-
-def build_registrations():
-    return ()
-
-
-def build_registry(*,additional=(),finish_hooks=(),user=None,task_type=None,validate_pruning=None):
-    return build_core_registry(finish_task=AssistantFinishTask(user=user,hooks=finish_hooks,task_type=task_type,validate_pruning=validate_pruning),
-                               additional=(*build_registrations(), *additional))
-
-__all__=['build_registrations','build_registry']
+__all__ = [
+    'AssistantFinishTask',
+    'AssistantQueryViewer',
+    'CalendarQueryViewer',
+    'FileNoteQueryPool',
+    'FileNoteQueryTools',
+    'FileNoteTools',
+    'FileVisibilityTools',
+    'FinishAssistantTaskArguments',
+    'MemoryWindowError',
+    'PortraitMutationTools',
+    'PortraitQueryViewer',
+    'build_assistant_query_pool',
+    'build_calendar_query_pool',
+    'build_file_disclosure_registration',
+    'build_memory_window_registration',
+    'build_portrait_query_pool',
+    'build_search_assistants_registration',
+    'build_search_calendar_events_registration',
+    'build_search_portraits_registration',
+    'build_view_assistant_query_registration',
+    'build_view_calendar_query_registration',
+    'build_view_portrait_query_registration',
+    'send_registration',
+    'wrap_image_authorize',
+]

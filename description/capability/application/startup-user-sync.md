@@ -80,7 +80,7 @@
 
 2026-10-29 多部门契约：新增[部门同步测试](../../../tests/test_user_sync_departments.py)，验证完整列表优先、同名去重、旧单部门和模拟身份回退、空列表、出站字段隔离、启动与缺失用户补登记的实际 HTTP 请求体，以及新版登录查询响应。另以[相邻中间件真实路由](../../../tests/test_middleware_source_contract.py)验证多部门注册与登录查询；存储、身份会话使用替身，不启动生命周期或发布共享全表。
 
-[同步测试](../../../tests/test_user_sync.py)保留字段映射、精确 DTO/count、token 等待、失败重试、401 与清理覆盖；[注册测试](../../../tests/test_user_registration.py)新增前台登记、批次复用、权威权限保留、缺失/冲突拒绝及外部覆盖风险刻画。[维护并发测试](../../../tests/test_user_maintenance.py)保留共享锁交错、普通 token 查询不取锁、超时与取消测试。
+历史同步、注册与维护并发隔离测试覆盖字段映射、精确 DTO/count、token 等待、失败重试、401 与清理，以及前台登记、批次复用、权威权限保留、缺失/冲突拒绝、共享锁交错、普通 token 查询不取锁、超时与取消。
 
 ```bash
 python -m unittest discover -s tests -v

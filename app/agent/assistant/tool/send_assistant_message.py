@@ -1,10 +1,25 @@
-"""助理间文字通信工具；发送身份与交付由可信宿主绑定。"""
+"""助理间文字通信工具；发送身份与幂等交付由可信宿主绑定。"""
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+import logging
 from textwrap import dedent
+
+from agent_core import (
+    FeedbackOnlyHook,
+    RegisteredTool,
+    ToolExecution,
+    ToolExecutionResult,
+)
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.progress import DEFAULT_TOOL_PROGRESS
+from agent_core.core.tool.registry import current_tool_call_id
+from agent_core.core.workspace import WorkspaceObject
 from pydantic import Field
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult
-from app.agent.core.tool.progress import DEFAULT_TOOL_PROGRESS
-from app.agent.core.tool.feedback import with_feedback
+
+logger = logging.getLogger(__name__)
+
+DeliveryRecorder = Callable[[str, str, str], Awaitable[None]]
 
 
 def render_send_feedback(arguments, execution, context):
@@ -17,7 +32,7 @@ def render_send_feedback(arguments, execution, context):
             原因及处理方向：{message}
         """).strip().format(**result)
     else:
-        # 登记与检查点同事务提交；刷新交付不等于对方已经收到或处理。
+        # 登记成功后在提交后触发异步刷新；刷新交付不等于对方已经收到或处理。
         text = dedent("""
             ### 助理消息发送
 
@@ -39,21 +54,87 @@ class SendAssistantMessageArguments(WorkspaceObject):
 
     成功反馈表示发送请求已受理，不代表对方已经处理或答复；目标不可用时核对对象，失败时不宣称发送成功。这个工具不直接通知用户本人，也不结束本轮，后续仍需调用 finish_task。
     """
-    recipient_userid: str = Field(strict=True,min_length=1,max_length=128,pattern=r'^\S(?:.*\S)?$',
-        description='接收消息的助理所属用户的准确 userid，区分大小写；原样使用已确认的查询结果或来源消息中的用户标识，不填用户名，也不猜测；目标员工已离职也可向其助理发送消息，在职状态不决定助理是否可接收。此userid必须与内容告知检查的接收用户一致；代收转发者同样须有权限，不能填未获授权的中转人。')
-    message: str = Field(strict=True,min_length=1,max_length=10000,pattern=r'\S',
-        description='发送给目标助理的纯文字消息，可包含 Markdown。说明沟通目的、必要依据和希望对方处理的事项，不附带文件、访问令牌或私有推理。文件相关事实及衍生结论须先对实际接收人通过 check_file_disclosure；来源不明或未通过的内容不得写入正文。')
+
+    recipient_userid: str = Field(
+        strict=True,
+        min_length=1,
+        max_length=128,
+        pattern=r'^\S(?:.*\S)?$',
+        description='接收消息的助理所属用户的准确 userid，区分大小写；原样使用已确认的查询结果或来源消息中的用户标识，不填用户名，也不猜测；目标员工已离职也可向其助理发送消息，在职状态不决定助理是否可接收。此userid必须与内容告知检查的接收用户一致；代收转发者同样须有权限，不能填未获授权的中转人。',
+    )
+    message: str = Field(
+        strict=True,
+        min_length=1,
+        max_length=10000,
+        pattern=r'\S',
+        description='发送给目标助理的纯文字消息，可包含 Markdown。说明沟通目的、必要依据和希望对方处理的事项，不附带文件、访问令牌或私有推理。文件相关事实及衍生结论须先对实际接收人通过 check_file_disclosure；来源不明或未通过的内容不得写入正文。',
+    )
 
 
-def send_registration(*,recipient_exists,flush):
-    async def execute(arguments):
+def send_registration(
+    *,
+    recipient_exists,
+    flush,
+    record_delivery: DeliveryRecorder | None = None,
+) -> RegisteredTool:
+    """构建 `send_assistant_message` 工具；凭 `current_tool_call_id` 幂等落盘并在提交后触发刷新。"""
+
+    async def execute(arguments: SendAssistantMessageArguments):
         if not await recipient_exists(arguments.recipient_userid):
-            return ToolExecutionResult(status='failed',tool_result={
-                'code':'recipient_unavailable','message':'未找到可接收消息的目标用户助理，请核对 userid。'})
-        # 此处不发送。节点提交钩子原子登记交付；提交后才刷新该任务的发送记录。
-        return ToolExecution(ToolExecutionResult(status='succeeded',tool_result={
-            'status':'accepted','message':'已登记助理消息发送请求，不代表对方已处理或答复。'}),after_commit=flush)
-    return RegisteredTool('send_assistant_message',
-        SendAssistantMessageArguments.__doc__,
-        SendAssistantMessageArguments,lambda name,raw,workspace,args:workspace,
-        executor=execute,progress=DEFAULT_TOOL_PROGRESS,hooks=(render_send_feedback,))
+            return ToolExecutionResult(
+                status='failed',
+                tool_result={
+                    'code': 'recipient_unavailable',
+                    'message': '未找到可接收消息的目标用户助理，请核对 userid。',
+                },
+            )
+        if record_delivery is not None:
+            call_id = current_tool_call_id.get()
+            if not call_id:
+                return ToolExecutionResult(
+                    status='failed',
+                    failure_mode='dependency',
+                    tool_result={
+                        'code': 'missing_tool_call_id',
+                        'message': '缺少可信工具调用标识，本次发送请求未登记。',
+                    },
+                )
+            try:
+                await record_delivery(call_id, arguments.recipient_userid, arguments.message)
+            except Exception as error:
+                logger.warning('助理消息幂等登记失败：error_type=%s', type(error).__name__)
+                return ToolExecutionResult(
+                    status='unknown',
+                    tool_result={
+                        'code': 'delivery_record_uncertain',
+                        'message': '助理消息登记结果尚未确认，已停止自动重试，请勿重复发送。',
+                    },
+                )
+        return ToolExecution(
+            ToolExecutionResult(
+                status='succeeded',
+                tool_result={
+                    'status': 'accepted',
+                    'message': '已登记助理消息发送请求，不代表对方已处理或答复。',
+                },
+            ),
+            after_commit=flush,
+        )
+
+    return RegisteredTool(
+        'send_assistant_message',
+        (SendAssistantMessageArguments.__doc__ or '').strip(),
+        SendAssistantMessageArguments,
+        lambda name, raw, workspace, args: workspace,
+        executor=execute,
+        progress=DEFAULT_TOOL_PROGRESS,
+        hooks=(FeedbackOnlyHook(render_send_feedback),),
+    )
+
+
+__all__ = [
+    'DeliveryRecorder',
+    'SendAssistantMessageArguments',
+    'render_send_feedback',
+    'send_registration',
+]

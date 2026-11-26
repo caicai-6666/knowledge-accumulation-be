@@ -14,6 +14,14 @@ NodeStatus = Literal['generating','complete','cancelled','superseded','failed']
 TERMINAL_NODE_STATUSES = frozenset({'complete','cancelled','superseded','failed'})
 
 
+class QuestionTreeNotFound(LookupError):
+    """树不存在或不属于当前用户，统一处理以避免泄漏归属。"""
+
+
+class QuestionTreeConflict(ValueError):
+    """调用方持有旧版本或状态冲突，需重新读取后决定是否重试。"""
+
+
 def new_tree_id() -> str:
     return uuid4().hex
 

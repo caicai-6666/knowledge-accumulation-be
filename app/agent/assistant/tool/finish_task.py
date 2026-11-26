@@ -1,53 +1,106 @@
-"""助理最终输出：结束任务并明确选择是否通知所属用户。"""
-from pydantic import Field, field_validator, model_validator
-from typing import Annotated
-from textwrap import dedent
-from app.model.question_file import FileID
-from app.agent.core.tool import ToolExecutionResult
-from app.agent.core.tool.feedback import with_feedback
-from app.agent.core.tool.hooks import FeedbackOnlyHook
-from app.service.assistant_file_delivery import FileDeliveryRejected
+"""助理最终输出：结束任务并明确选择是否通知所属用户，兼容 agent-core 心跳裁剪与统一交付。"""
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from inspect import isawaitable
+from textwrap import dedent
+from typing import Annotated, Any
+
+from agent_core import (
+    FeedbackOnlyHook,
+    ToolExecution,
+    ToolExecutionResult,
+    current_tool_runtime,
+)
+from agent_core.core.json_codec import ModelActionRejected
+from agent_core.core.tool.base import FinishTaskTool, OutputArguments
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.workspace import WorkspaceText
+from pydantic import Field, field_validator, model_validator
+
 from app.auth.model import AuthenticatedUser
-from app.agent.core.json_codec import ModelActionRejected
-from app.agent.core.workspace import WorkspaceText
-from app.agent.core.tool.base import FinishTaskTool, OutputArguments
+from app.model.question_file import FileID
+from app.service.assistant_file_delivery import FileDeliveryRejected
+
+FinalDeliverCallback = Callable[[str | None, str, list[str]], Awaitable[None] | None]
 
 
 class FinishAssistantTaskArguments(OutputArguments):
-    content: WorkspaceText = Field(description='本轮完整最终反馈：有依据的答案、已完成范围与具体限制，或需要用户回答的澄清问题。send_to_user 为 true 时向所属用户发送此正文；为 false 时应写成本轮内部处理结论，保留事实、执行结果、未完成事项及限制。因无法通知而改为 false 时，检查并调整面向员工的称呼、提醒和提问，将需要确认的内容记为待确认事项，不暗示已通知或收到确认；不提交私有推理，不将部分完成说成全部完成。')
-    send_to_user: bool = Field(strict=True,description='是否将 content 发送给所属用户，必须明确选择 true 或 false。先核对本轮所属用户信息中的在职状态：所属员工已离职时必须选 false，包括答复、提醒、澄清及风险告知，仅保存结论；所属员工在职且需要阅读答复、提醒或澄清问题时选 true，其他内部记录选 false。程序会拒绝离职或未绑定可信状态时的 true；按反馈检查并调整 content 为内部处理结论，再改为 false 后重新提交。例如提醒到期后没有需要通知的事项，可以选 false。')
-
-    prune_current_task: bool = Field(default=False, strict=True,
-        description="是否裁剪当前心跳任务的完整执行记录，默认 false。仅限本轮只调用 finish_task、未发送消息、未修改数据或工作区、未发生自动摘要及失败，且没有值得保留的新结论的空转心跳。true 时必须 send_to_user=false、file_ids=[]；裁剪本轮输入、生成、调用反馈及最终正文，不裁剪其他任务。条件不满足时改为 false，保留本轮记录。")
-
-    file_ids: list[Annotated[FileID, Field(description='所属用户上传附件的完整 UUID，不接受注册中心文件 ID。')]] = Field(
-        default_factory=list, max_length=10,
-        description='可选，随正文分别发送给所属用户的附件 ID，最多10个；仅限当前助理可访问的本人上传 PDF，每份不超过20 MB。省略为空，重复ID按首次出现去重。send_to_user=false 时必须为空；发送的是已保存的附件，图片转换后按PDF发送，不接受路径或注册中心文件ID。')
+    content: WorkspaceText = Field(
+        description=(
+            '本轮完整最终反馈：有依据的答案、已完成范围与具体限制，或需要用户回答的澄清问题。'
+            'send_to_user 为 true 时向所属用户发送此正文；为 false 时应写成本轮内部处理结论，保留事实、执行结果、未完成事项及限制。'
+            '因无法通知而改为 false 时，检查并调整面向员工的称呼、提醒和提问，将需要确认的内容记为待确认事项，不暗示已通知或收到确认；'
+            '不提交私有推理，不将部分完成说成全部完成。'
+        ),
+    )
+    send_to_user: bool = Field(
+        strict=True,
+        description=(
+            '是否将 content 发送给所属用户，必须明确选择 true 或 false。先核对本轮所属用户信息中的在职状态：'
+            '所属员工已离职时必须选 false，包括答复、提醒、澄清及风险告知，仅保存结论；'
+            '所属员工在职且需要阅读答复、提醒或澄清问题时选 true，其他内部记录选 false。'
+            '程序会拒绝离职或未绑定可信状态时的 true；按反馈检查并调整 content 为内部处理结论，再改为 false 后重新提交。'
+            '例如提醒到期后没有需要通知的事项，可以选 false。'
+        ),
+    )
+    prune_current_task: bool = Field(
+        default=False,
+        strict=True,
+        description=(
+            '是否裁剪当前心跳任务的完整执行记录，默认 false。仅限本轮只调用 finish_task、未发送消息、未修改数据或工作区、'
+            '未发生自动摘要及失败，且没有值得保留的新结论的空转心跳。true 时必须 send_to_user=false、file_ids=[]；'
+            '裁剪本轮输入、生成、调用反馈及最终正文，不裁剪其他任务。条件不满足时改为 false，保留本轮记录。'
+        ),
+    )
+    file_ids: list[
+        Annotated[
+            FileID,
+            Field(description='所属用户上传附件的完整 UUID，不接受注册中心文件 ID。'),
+        ]
+    ] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            '可选，随正文分别发送给所属用户的附件 ID，最多10个；仅限当前助理可访问的本人上传 PDF，每份不超过20 MB。'
+            '省略为空，重复ID按首次出现去重。send_to_user=false 时必须为空；发送的是已保存的附件，图片转换后按PDF发送，'
+            '不接受路径或注册中心文件ID。'
+        ),
+    )
 
     @field_validator('file_ids')
     @classmethod
-    def unique_files(cls, values):
+    def unique_files(cls, values: list[str]) -> list[str]:
         return list(dict.fromkeys(values))
 
     @model_validator(mode='after')
-    def silent_files(self):
+    def silent_files(self) -> FinishAssistantTaskArguments:
         if self.file_ids and not self.send_to_user:
-            raise ModelActionRejected('send_to_user=false 时不能附带文件，本次最终结果未提交。',
-                '如仅保存内部结论，请清空 file_ids 并调整正文，不声称已发送；确需通知且员工在职时再选择 true。')
+            raise ModelActionRejected(
+                'send_to_user=false 时不能附带文件，本次最终结果未提交。',
+                '如仅保存内部结论，请清空 file_ids 并调整正文，不声称已发送；确需通知且员工在职时再选择 true。',
+            )
         return self
 
 
-def render_assistant_finish(arguments, execution, context):
+def render_assistant_finish(
+    arguments: FinishAssistantTaskArguments,
+    execution: ToolExecution,
+    context: Any,
+) -> ToolExecution:
     if execution.result.status == 'succeeded':
         if arguments.prune_current_task:
-            return with_feedback(execution, dedent("""
-                ### 心跳任务结束
+            return with_feedback(
+                execution,
+                dedent("""
+                    ### 心跳任务结束
 
-                状态：本轮已结束，当前心跳的执行记录已裁剪。
-                用户通知：未发送
-                历史任务：未裁剪
-            """).strip())
+                    状态：本轮已结束，当前心跳的执行记录已裁剪。
+                    用户通知：未发送
+                    历史任务：未裁剪
+                """).strip(),
+            )
         delivery = '正文已登记交付' if arguments.send_to_user else '仅保存内部结论，不通知用户'
         text = dedent("""
             ### 任务结束
@@ -69,24 +122,64 @@ def render_assistant_finish(arguments, execution, context):
     return with_feedback(execution, text)
 
 
+def _current_task_id() -> str | None:
+    try:
+        journal = current_tool_runtime().journal
+    except RuntimeError:
+        return None
+    for attr in ('task_id', 'node_id'):
+        value = getattr(journal, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    task = getattr(journal, 'task', None)
+    task_id = getattr(task, 'id', None)
+    if isinstance(task_id, str) and task_id.strip():
+        return task_id
+    return None
+
+
 class AssistantFinishTask(FinishTaskTool):
-    def __init__(self, *, user: AuthenticatedUser | None = None, hooks=(), validate_files=None, task_type=None, validate_pruning=None):
+    """个人助理定制 finish_task：支持在职门禁、附件校验、钉钉正文转换与统一终态交付。"""
+
+    arguments_model = FinishAssistantTaskArguments
+    deliver_output = staticmethod(lambda arguments: arguments.send_to_user)
+
+    def __init__(
+        self,
+        *,
+        user: AuthenticatedUser | None = None,
+        hooks=(),
+        validate_files=None,
+        task_type: str | None = None,
+        validate_pruning=None,
+        on_final_deliver: FinalDeliverCallback | None = None,
+    ) -> None:
         super().__init__(hooks=hooks)
-        self.validate_files=validate_files
-        self.task_type=task_type
-        self.validate_pruning=validate_pruning
+        self.validate_files = validate_files
+        self.task_type = task_type
+        self.validate_pruning = validate_pruning
+        self.on_final_deliver = on_final_deliver
         # 每轮从可信身份复制状态，不解析模型上下文，也不在共享工具上修改用户归属。
-        self.employment_status = (AuthenticatedUser.model_validate(user.model_dump()).employment_status
-                                  if user is not None else None)
+        self.employment_status = (
+            AuthenticatedUser.model_validate(user.model_dump()).employment_status
+            if user is not None
+            else None
+        )
 
     def build_registration(self):
-        def validate_delivery(name, raw, workspace, arguments):
-            if arguments.prune_current_task and self.task_type != 'heartbeat':
-                raise ModelActionRejected('只有当前任务为心跳时才能裁剪，本次最终结果未提交，记录未裁剪。',
-                    '将 prune_current_task 改为 false，保留本轮正文并重新提交；不能依据消息正文自行认定任务类型。')
+        def validate_delivery(name, raw, workspace, arguments: FinishAssistantTaskArguments):
+            # 显式指定 task_type 时由前置校验拦截非心跳裁剪；
+            # 1B 静态装配（task_type=None 且 validate_pruning=None）交由 agent-core 原生心跳裁剪校验。
+            if arguments.prune_current_task and self.task_type is not None and self.task_type != 'heartbeat':
+                raise ModelActionRejected(
+                    '只有当前任务为心跳时才能裁剪，本次最终结果未提交，记录未裁剪。',
+                    '将 prune_current_task 改为 false，保留本轮正文并重新提交；不能依据消息正文自行认定任务类型。',
+                )
             if arguments.prune_current_task and (arguments.send_to_user or arguments.file_ids):
-                raise ModelActionRejected('本轮需要发送正文或附件，不能裁剪，本次最终结果未提交。',
-                    '保留必要的通知，将 prune_current_task 改为 false 后重新提交，不要为裁剪取消应发送的消息。')
+                raise ModelActionRejected(
+                    '本轮需要发送正文或附件，不能裁剪，本次最终结果未提交。',
+                    '保留必要的通知，将 prune_current_task 改为 false 后重新提交，不要为裁剪取消应发送的消息。',
+                )
             if arguments.send_to_user and self.employment_status == 'resigned':
                 raise ModelActionRejected(
                     'send_to_user=true 不符合交付规则：所属员工已离职，不能向员工本人发送消息。本次最终结果尚未提交，未进行格式转换或发送。',
@@ -94,43 +187,101 @@ class AssistantFinishTask(FinishTaskTool):
                     '将面向员工的称呼、提醒或直接提问改为客观记录，需员工确认的内容记为待确认事项，不编造答复或授权。'
                     '例如“请您确认会议时间”可改为“会议时间待确认，本轮未通知员工”。'
                     '调整正文后，将 send_to_user 改为 false 并重新调用 finish_task，仅保存结论并结束任务。'
-                    '如需回复其他助理，仍可使用 send_assistant_message；不要把未发送的通知描述为已送达。')
+                    '如需回复其他助理，仍可使用 send_assistant_message；不要把未发送的通知描述为已送达。',
+                )
             if arguments.send_to_user and self.employment_status is None:
-                # 独立 Core 未绑定身份时不能默认在职放行；静默保存仍可用。
                 raise ModelActionRejected(
                     '尚未绑定所属员工的可信在职状态，不能确认允许发送。本次最终结果尚未提交，未进行格式转换或发送。',
                     '先检查并调整 content 为内部处理结论，保留事实、执行结果及限制，将面向员工的提醒或提问改为待办、待确认事项，并说明无法确认通知条件。'
-                    '将 send_to_user 改为 false 后重新提交；不要猜测员工状态、编造确认或声称已发送。')
+                    '将 send_to_user 改为 false 后重新提交；不要猜测员工状态、编造确认或声称已发送。',
+                )
             return workspace
-        async def execute(arguments):
-            if arguments.prune_current_task:
-                if self.validate_pruning is None:
-                    return ToolExecutionResult(status='failed', tool_result={
-                        'reason':'无法确认本轮是否满足裁剪条件，记录未裁剪，最终结果未提交。',
-                        'required_action':'将 prune_current_task 改为 false，保留本轮记录并重新提交。'})
+
+        # 以每次 execute 创建的 after_commit 闭包对象 id 关联待交付正文，
+        # 避免钩子链替换 execution.after_commit（agent-core 禁止钩子修改提交回调）。
+        pending_delivery_text: dict[int, dict[str, str]] = {}
+
+        async def execute(arguments: FinishAssistantTaskArguments):
+            if arguments.prune_current_task and self.validate_pruning is not None:
                 rejection = await self.validate_pruning()
                 if rejection is not None:
                     return ToolExecutionResult(status='failed', tool_result=rejection)
             if arguments.file_ids:
                 if self.validate_files is None:
-                    return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
-                        'reason':'附件交付暂不可用，本次未提交。',
-                        'required_action':'请稍后重试，或清空 file_ids 并在正文中明确未发送附件。'})
+                    return ToolExecutionResult(
+                        status='failed',
+                        failure_mode='failed',
+                        tool_result={
+                            'reason': '附件交付暂不可用，本次未提交。',
+                            'required_action': '请稍后重试，或清空 file_ids 并在正文中明确未发送附件。',
+                        },
+                    )
                 try:
                     await self.validate_files(arguments.file_ids)
                 except FileDeliveryRejected as error:
-                    return ToolExecutionResult(status='failed', tool_result={
-                        'reason':error.reason, 'required_action':error.action})
+                    return ToolExecutionResult(
+                        status='failed',
+                        tool_result={'reason': error.reason, 'required_action': error.action},
+                    )
                 except Exception:
-                    return ToolExecutionResult(status='failed', failure_mode='failed', tool_result={
-                        'reason':'附件发送前的检查暂不可用，本次未提交。',
-                        'required_action':'请稍后重试；若清空 file_ids 继续结束，需调整正文说明附件未发送。'})
-            return ToolExecutionResult(status='succeeded',tool_result={'status':'accepted'})
-        entry=super().build_registration()
-        return replace(entry, handler=validate_delivery, executor=execute,
-            hooks=(*self.hooks, FeedbackOnlyHook(render_assistant_finish)))
+                    return ToolExecutionResult(
+                        status='failed',
+                        failure_mode='failed',
+                        tool_result={
+                            'reason': '附件发送前的检查暂不可用，本次未提交。',
+                            'required_action': '请稍后重试；若清空 file_ids 继续结束，需调整正文说明附件未发送。',
+                        },
+                    )
+            after_commit = None
+            if (
+                self.on_final_deliver is not None
+                and arguments.send_to_user
+                and not arguments.prune_current_task
+            ):
+                deliver_cb = self.on_final_deliver
+                task_id = _current_task_id()
+                file_ids = list(arguments.file_ids)
+                state = {'text': arguments.content}
 
-    arguments_model = FinishAssistantTaskArguments
+                async def run_after_commit() -> None:
+                    pending_delivery_text.pop(id(run_after_commit), None)
+                    res = deliver_cb(task_id, state['text'], file_ids)
+                    if isawaitable(res):
+                        await res
+
+                pending_delivery_text[id(run_after_commit)] = state
+                after_commit = run_after_commit
+
+            return ToolExecution(
+                ToolExecutionResult(status='succeeded', tool_result={'status': 'accepted'}),
+                after_commit=after_commit,
+                output=arguments.content,
+            )
+
+        hook_chain = list(self.hooks)
+        if self.on_final_deliver is not None:
+            async def capture_rendered_output(
+                arguments: FinishAssistantTaskArguments,
+                execution: ToolExecution,
+                context: Any,
+            ) -> ToolExecution:
+                if execution.after_commit is not None:
+                    state = pending_delivery_text.get(id(execution.after_commit))
+                    if state is not None and execution.output is not None:
+                        state['text'] = execution.output
+                return execution
+
+            hook_chain.append(capture_rendered_output)
+
+        hook_chain.append(FeedbackOnlyHook(render_assistant_finish))
+        entry = super().build_registration()
+        return replace(
+            entry,
+            handler=validate_delivery,
+            executor=execute,
+            hooks=tuple(hook_chain),
+        )
+
     description = """当你需要提交最终答复、记录本轮处理结论，或因缺少必要信息而需要用户补充后才能继续时，使用这个工具。提交完整反馈并结束本轮任务，成功后不再继续本轮调用。
 
     空转心跳没有值得保留的新结论时，可选择 prune_current_task=true。例如仅阅读已有上下文后确认无事可做，以 content="当前无需要推进的事项", send_to_user=false, prune_current_task=true 结束。仅心跳允许裁剪；只要调用过其他工具、修改过数据或工作区、发生自动摘要、失败或结果不确定，都必须保留。程序拒绝裁剪时按反馈改为 false，不反复请求裁剪。裁剪只影响当前心跳，不取消后续心跳、不删除历史任务，也不撤销业务操作。
@@ -142,4 +293,11 @@ class AssistantFinishTask(FinishTaskTool):
     需要随回复交付用户附件时，提供 file_ids，例如用户要求取回已上传合同，可填写其完整 UUID；支持最多10份、不超过20 MB的PDF，按保存后的文件发送。成功表示已登记交付，不代表钉钉已送达。文件无法交付时按反馈修正引用和正文，不自动公开文件。
 
     需要求助或回复其他助理时，先调用 send_assistant_message；本工具不能向其他助理发送消息。不把失败、待处理或尚未核实的事项写成已经完成。"""
-    deliver_output = staticmethod(lambda arguments: arguments.send_to_user)
+
+
+__all__ = [
+    'AssistantFinishTask',
+    'FinalDeliverCallback',
+    'FinishAssistantTaskArguments',
+    'render_assistant_finish',
+]

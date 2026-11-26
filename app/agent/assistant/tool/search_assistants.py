@@ -4,13 +4,12 @@ from textwrap import dedent
 from typing import Annotated
 
 from pydantic import Field, TypeAdapter, field_validator
-from app.agent.core.query_pool import QueryResultPool
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.workspace import WorkspaceObject
 from app.model.personnel import EmployeeName
 from app.agent.assistant.rendering import employee_field, render_departments
-
-from app.agent.core.tool.feedback import with_feedback
+from ._query_pool import QueryResultPool
 
 logger = logging.getLogger(__name__)
 
@@ -123,4 +122,4 @@ def build_search_assistants_registration(*, pool, employees, max_results=1000):
                       else '请用 view_assistant_query 指定查询 ID 和页码查看。'}), after_commit=commit)
 
     return RegisteredTool('search_assistants', SearchAssistantsArguments.__doc__, SearchAssistantsArguments,
-        lambda name, raw, workspace, arguments: workspace, executor=execute, hooks=(render_search_assistants_feedback,))
+        lambda name, raw, workspace, arguments: workspace, executor=execute, hooks=(FeedbackOnlyHook(render_search_assistants_feedback),))

@@ -3,15 +3,15 @@ import hashlib
 import hmac
 import logging
 from textwrap import dedent
-from app.agent.core.tool.feedback import with_feedback
 import secrets
 from uuid import uuid4
 
 from pydantic import Field
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult, FoldableToolContent, ToolPageReference
-from app.agent.core.tool.result import ToolPageUnavailable
-from app.agent.core.query_pool import QueryViewRejected
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.result import FoldableToolContent, ToolPageReference, ToolPageUnavailable
+from agent_core.core.workspace import WorkspaceObject
+from ._query_pool import QueryViewRejected
 
 logger = logging.getLogger(__name__)
 
@@ -102,4 +102,4 @@ class CalendarQueryViewer:
 def build_view_calendar_query_registration(viewer):
     return RegisteredTool('view_calendar_query',ViewCalendarQueryArguments.__doc__,ViewCalendarQueryArguments,
         lambda name,raw,workspace,arguments:workspace,executor=viewer.view,
-        return_types=('ordinary','foldable'),page_resolver=viewer.resolve_page, hooks=(render_calendar_view_feedback,))
+        return_types=('ordinary','foldable'),page_resolver=viewer.resolve_page, hooks=(FeedbackOnlyHook(render_calendar_view_feedback),))

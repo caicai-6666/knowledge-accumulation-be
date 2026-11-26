@@ -3,11 +3,25 @@ import asyncio
 import hashlib
 import json
 import math
-from app.agent.core.prompt.embedding import render_text_embedding_input, TEXT_EMBEDDING_INSTRUCTION
 from app.config.file_retrieval import FileRetrievalSettings
 from app.repository.registered_file import RegisteredFileRepository
 from app.infrastructure.file_search_index import MemoryFileSearchIndex
 from app.service.embedding import validate_vector
+
+TEXT_EMBEDDING_INSTRUCTION = (
+    'Represent this text for semantic retrieval. Preserve its topic, entities, relationships, '
+    'actions, conditions, negation and uncertainty. Use only information explicitly present.'
+)
+
+
+def render_text_embedding_input(text: str) -> str:
+    """按固定文本检索指令包装待向量化内容，不附带树、节点或工具执行标识。"""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError('待向量化的文本不能为空')
+    return (
+        f'<|im_start|>system\n{TEXT_EMBEDDING_INSTRUCTION}<|im_end|>\n'
+        f'<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n'
+    )
 
 
 class FileRetrievalService:

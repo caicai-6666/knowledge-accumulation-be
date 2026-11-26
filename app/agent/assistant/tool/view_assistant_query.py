@@ -7,11 +7,11 @@ import secrets
 from uuid import uuid4
 
 from pydantic import Field
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult, FoldableToolContent, ToolPageReference
-from app.agent.core.tool.result import ToolPageUnavailable
-from app.agent.core.query_pool import QueryViewRejected
-from app.agent.core.tool.feedback import with_feedback
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.result import FoldableToolContent, ToolPageReference, ToolPageUnavailable
+from agent_core.core.workspace import WorkspaceObject
+from ._query_pool import QueryViewRejected
 
 
 def render_assistant_query_feedback(arguments, execution, context):
@@ -102,4 +102,4 @@ def build_view_assistant_query_registration(viewer):
     return RegisteredTool('view_assistant_query',
         ViewAssistantQueryArguments.__doc__+f'\n每页最多 {viewer.pool.page_size} 条。', ViewAssistantQueryArguments,
         lambda name, raw, workspace, arguments: workspace, executor=viewer.view,
-        return_types=('ordinary','foldable'), page_resolver=viewer.resolve_page, hooks=(render_assistant_query_feedback,))
+        return_types=('ordinary','foldable'), page_resolver=viewer.resolve_page, hooks=(FeedbackOnlyHook(render_assistant_query_feedback),))

@@ -103,7 +103,7 @@ async def run_robot(receive):
 
 成功必须有 `processQueryKey`，且 `invalidStaffIdList`、`flowControlledStaffIdList`、`filteredStaffIdList` 不包含失败目标；HTTP 200 本身不代表成功。该回执只表示接口受理，不代表用户已读。正文不自动截断或拆成多条，超限等上游拒绝需交付层显式处理。
 
-文件发送先调用官方[上传媒体文件](https://open.dingtalk.com/document/orgapp/upload-media-files)：`POST https://oapi.dingtalk.com/media/upload`，query 携带应用 `access_token`，multipart 字段为 `type=file` 与 `media`。成功取得 `media_id` 后，使用 `sampleFile`，`msgParam` 包含 `mediaId`、`fileName`、`fileType=pdf`。当前仅发送系统保存的 PDF 用户附件；业务范围与事务边界见[最终回复附件交付](../application/assistant-consumption.md#最终回复的用户附件交付)。上传错误表示尚未发送用户消息；发送阶段仍遵循结果不明不重发的规则。上传响应限制为 1 MiB，凭据及媒体内容不写入日志。
+文件发送先调用官方[上传媒体文件](https://open.dingtalk.com/document/orgapp/upload-media-files)：`POST https://oapi.dingtalk.com/media/upload`，query 携带应用 `access_token`，multipart 字段为 `type=file` 与 `media`。成功取得 `media_id` 后，使用 `sampleFile`，`msgParam` 包含 `mediaId`、`fileName`、`fileType=pdf`。当前仅发送系统保存的 PDF 用户附件；业务范围与事务边界见[助理消费、运行时与可靠交付](../application/assistant-consumption.md)。上传错误表示尚未发送用户消息；发送阶段仍遵循结果不明不重发的规则。上传响应限制为 1 MiB，凭据及媒体内容不写入日志。
 
 客户端不自动重试发送。401 仅失效本次使用的应用 token，下次调用重新获取；超时、5xx 或无法解析的发送成功响应通过 `RobotUnavailable.uncertain=True` 表示结果不确定，交付层不能立即盲发第二条。当前发送接口没有为本适配器提供可用的客户端去重键，不承诺网络发送恰好一次；后续交付恢复需明确查询/人工处理等策略。
 
@@ -127,7 +127,7 @@ async def run_robot(receive):
 
 2026-10-26 下载诊断扩展：[故障与日志测试](../../../tests/test_robot_download_diagnostics.py)4 项通过，覆盖下载接口/文件 HTTP 状态、重定向拒绝、域名策略、DNS、公网地址限制、连接及读取超时、空文件、正常字节和 Stream 脱敏日志。机器人相关测试共 33 项通过，`git diff --check` 通过。另以当前配置实际获取应用 token 成功；没有发送消息、读取用户图片或保存 token，图片下载故障仍需真实重发后的具体阶段日志确认，不能据应用 token 成功推断附件下载权限或文件链接一定可用。
 
-[HTTP 与输入测试](../../../tests/test_dingtalk_robot.py)覆盖可信单聊、企业/机器人过滤、富文本顺序、附件引用、精确请求体、token 并发刷新、401、拒收名单、不确定发送、下载域名/DNS/大小与日志脱敏。[Stream 测试](../../../tests/test_dingtalk_stream.py)覆盖 ACK 时机、超时、重推、系统心跳、容量限制、断线重连及取消清理，并使用本机随机端口 WebSocket 验证真实收发帧。HTTP 均为 MockTransport；配置样本在 `tests/tmp/`，不用实际 `.env`、共享服务或真实附件。
+历史 HTTP 与 Stream 隔离测试覆盖可信单聊、企业/机器人过滤、富文本顺序、附件引用、精确请求体、token 并发刷新、401、拒收名单、不确定发送、下载域名/DNS/大小、日志脱敏，以及 ACK 时机、超时、重推、系统心跳、容量限制、断线重连及取消清理，不访问真实钉钉服务或 `data/`。
 
 2026-10-24 验证：新增 36 项全部通过；完整 unittest 共 1141 项，969 项通过、172 项因未配置其他隔离数据库/插件环境而跳过。`pip check`、`git diff --check` 和本轮相关文档 91 个本地文件链接检查通过。没有调用真实钉钉、中间件或模型，也没有修改实际配置或业务数据。
 
@@ -159,7 +159,7 @@ async def run_robot(receive):
 
 产物保留引用字段结构及白名单内的消息关联、类型和正文值；采样格式 2 另保留 `originalProcessQueryKey`、`elementType` 和 `cardContent` 内 `elementType=TEXT` 节点的 `value`，用于对照发送回执及原文。卡片非文字节点的 `value` 继续脱敏，不放开图片链接和按钮参数。下载码、Webhook、身份字段和其他未知标量只保留存在性和类型。最多12层、每对象100字段、每列表30项、单字符串4000字符，不得把它称为完整原始报文。敏感凭据不进入产物或日志，采样结果不进入模型上下文。若引用信息未出现，应区分平台本次未提供与采样截断，结合实际字段判断，不能从规范化消息反推原始回调。
 
-2026-11-09：13 项采样与接收回归测试通过，覆盖目标过滤、嵌套敏感字段脱敏、引用正文保留、过期和首次证据保护。随后真实采样已确认图片引用位于 `text.repliedMsg`，包含原消息 ID、`msgType=picture` 和下载码字段，顶层 `originalMsgId` 与引用 ID 一致；下载码值未保存。采样已关闭。引用文字、图片、图文及助理文字卡片的正式处理与本地文件复用见[引用回复作为新任务](../application/assistant-inbound.md#引用回复作为新任务)。
+2026-11-09：13 项采样与接收回归测试通过，覆盖目标过滤、嵌套敏感字段脱敏、引用正文保留、过期和首次证据保护。随后真实采样已确认图片引用位于 `text.repliedMsg`，包含原消息 ID、`msgType=picture` 和下载码字段，顶层 `originalMsgId` 与引用 ID 一致；下载码值未保存。采样已关闭。引用文字、图片、图文及助理文字卡片的正式处理与本地文件复用见[钉钉消息入站与附件转换](../application/assistant-inbound.md)。
 
 ---
 

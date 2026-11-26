@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from app.model.robot_inbox import RobotInboxRecord
 from app.model.question_tree import utc_now
-from app.repository.question_tree import _date, _dump, _decode
+from app.repository.mysql_base import _date, _dump, _decode
 from app.repository.assistant_runtime import MySQLAssistantRepository
 
 

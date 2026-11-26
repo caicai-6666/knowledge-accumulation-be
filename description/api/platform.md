@@ -113,7 +113,7 @@ curl 'http://127.0.0.1:24000/knowledge-accumulation/api/platform/list' \
 
 ## 验证
 
-新增[平台查询测试](../../tests/test_platform_query.py) 16 项，覆盖普通用户、空平台/空管理员、隐藏关联、离线平台、实时重读、token 失效、平台 401 与迟到 401、SQL/网络/契约故障、脱敏、无额外参数、超时/取消、不持维护锁及不发布全表。平台接口新增阶段完整回归 **165 项通过**，此前 149 项继续保留；移除注册开关后的当前结果见[注册验证记录](../capability/application/startup-user-sync.md#验证与结果)。
+历史平台查询隔离回归覆盖普通用户、空平台/空管理员、隐藏关联、离线平台、实时重读、token 失效、平台 401 与迟到 401、SQL/网络/契约故障、脱敏、无额外参数、超时/取消、不持维护锁及不发布全表；移除注册开关后的记录见[注册验证记录](../capability/application/startup-user-sync.md#验证与结果)。
 
 HTTP 与数据库均隔离 Mock，测试临时目录显式在 tests/tmp；未调用共享中间件、真实数据库或读取真实头像，也未修改实际 `.env`。
 

@@ -141,6 +141,6 @@ curl 'http://127.0.0.1:24000/knowledge-accumulation/api/resource/attachment/aaaa
 
 ### 行为与边界
 
-应用组合根复用同一个 `QuestionFileService` 给问答生成和读取路由。读取经 `read_file` 核实本人树内的附件登记，使用 `UploadFileStore` 安全读取，再核对登记仍然有效；不从客户端路径直接读取磁盘，不构造模型客户端。整条读取链路限时 15 秒，单文件沿用 Store 上限（默认 50 MiB）；根目录与各级路径拒绝符号链接，不创建缺失目录。
+[资源路由](../../app/router/resource.py)直接通过 `ExplorationTreeRepository`（`get_tree` + `has_file`）在读取前后双次核实本人探索树内的附件登记，并使用 `UploadFileStore` 安全读取 PDF 字节；不从客户端路径直接读取磁盘，不构造模型客户端。整条读取链路限时 15 秒，单文件沿用 Store 上限（默认 50 MiB）；根目录与各级路径拒绝符号链接，不创建缺失目录。
 
-授权、存储、删除协调和配置说明见[用户附件引用与文件定位](../architecture/data/question-file.md)。本接口无新增环境变量或数据库迁移，不修改实际 `.env` 或真实文件。[接口测试](../../tests/test_attachment_resource.py)使用隔离中央响应、仓库替身及 `tests/tmp` 文件，覆盖 MIME、归属、中央失效、非法路径、安全读取和删除后的二次校验。
+授权、存储、删除协调和配置说明见[用户附件引用与文件定位](../architecture/data/question-file.md)。本接口无新增环境变量，不修改实际 `.env` 或真实文件。

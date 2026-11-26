@@ -1,290 +1,42 @@
-# 助理消费、消息工具与交付
+# 助理消费、运行时与可靠交付
 
-> **当前部署入口：** 新空库仅执行 deploy 的[最新初始化脚本](../../../../knowledge-accumulation-deploy/mysql/init/001-schema.sql)。本文中的编号迁移和旧库操作属于历史演进记录，不是新部署步骤；历史 SQL 已从当前仓库移除，仅可从 Git 历史追溯。已有数据库须另行制定升级方案，不可重跑初始化。
-
-## 用途与入口
-
-后台按权威 SQL 员工 userid 领取中央任务，定位唯一 assistant 树，以持久化压缩窗口与当前工作区生成，保存结果并交付消息，最后确认中央任务。新消息不打断当前执行，优先级、用户短消息合并和中央租约由[中间件队列](../infrastructure/assistant-queue.md)负责。
-
-实现入口为[消费者](../../../app/service/assistant_consumer.py)、[交付服务](../../../app/service/assistant_delivery.py)、[助理仓库](../../../app/repository/assistant_runtime.py)和[最终输出工具](../../../app/agent/assistant/tool/finish_task.py)、[助理消息工具](../../../app/agent/assistant/tool/send_assistant_message.py)。[应用生命周期](../../../app/main.py)已装配，默认关闭；不新增助理 HTTP/SSE 接口。钉钉 Stream 已由[入站服务](assistant-inbound.md)接通，整条校验后可靠发布到中间件；消费入口仍为中间件任务，真实入站、队列发布和执行已有记录，完整转换与交付仍须验证，见[真实任务观察](../infrastructure/dingtalk-robot.md#真实任务观察与验证边界)。
-
-每轮生成通过 `context_loader`加载所属用户的姓名、部门、职位和直属主管背景，具体内容作为普通资料注入，系统提示词规定使用边界。每个助理私有画像的对象、名称查询、分页查看及逐条增删事务见[个人信息与画像](../../architecture/workflow/question-answering/assistant-personal-context.md)；已按任务注册 search_portraits、view_portrait_query、add_portrait、delete_portrait，复用现有目录 LRU 结果池，并在任务结束关闭。增删预验不提前写权威画像，检查点钩子原子提交画像及去重账本，重复检查点不会重复新增或复活已删除条目。启用前需完成 013/016/017 迁移。
+本文档说明个人助理如何通过中间件队列消费用户与跨助理消息、经 `agent-core` 执行任务并可靠交付到钉钉与目标助理。
 
 ---
 
-## 两个助理工具
+## 1. 整体架构
 
-### finish_task
-
-```json
-{"content":"本轮完整结果","send_to_user":true,"file_ids":[]}
+```mermaid
+flowchart LR
+    MQ["中间件助理队列"] --> Consumer["AssistantConsumer<br/>GET_LOCK + 附件登记 + ack"]
+    Consumer --> Runtime["AssistantRuntimeService<br/>agent-core AgentRuntime + TreeAgent"]
+    Sched["AssistantSchedulerRunner<br/>1B 全局巡检"] --> Runtime
+    Runtime --> Hook["AssistantMessageRenderingHook<br/>钉钉正文转换"]
+    Hook --> Outbox["assistant_deliveries Outbox"]
+    Outbox --> Delivery["AssistantDeliveryService"]
+    Delivery --> Robot["钉钉单聊机器人"]
+    Delivery --> MQ
 ```
 
-- `content`：非空的本轮最终结果，不包含私有推理草稿。
-- `send_to_user`：必填严格布尔值。true 向当前助理所属用户发送钉钉 Markdown；false 只保存最终结果并结束任务。模型依据本轮所属用户信息判断：所属员工已离职时必须选择 false，答复、提醒、澄清和风险告知均不例外。
-- `file_ids`：可选用户附件 UUID 列表，默认空；最多 10 项，重复 ID 按首次出现去重。必须是所属用户上传、已登记且当前个人助理树可访问的 PDF（包括图片转换后的 PDF），单份不超过 20 MiB。不接受注册中心文件、路径、音频或视频；`send_to_user=false` 时必须为空。
-- 接收方由可信助理归属绑定，工具没有目标 userid 参数。无论是否发送，节点都保存最终正文和完成终态。
-- 消息类型不强制决定发送行为。提醒先交给助理处理，再由助理选择是否通知用户；用户问题通常回复，其他助理消息和空闲心跳通常可以静默结束。所属员工在职且涉及角色忠实条款要求告知的串联欺骗、伤害或隐瞒请求时必须选择发送，详见[忠实条款](../../architecture/workflow/question-answering/assistant-personal-context.md#所属用户忠实条款)。
-- finish_task 不给其他助理发送消息，也不替代中央 ack。参数非法时可纠正；已提交结果的交付失败只恢复交付，不重新生成答案。
+---
 
-离职员工不通知同时由提示词和程序门禁约束。[AssistantFinishTask](../../../app/agent/assistant/tool/finish_task.py)在调用预验阶段读取本轮可信身份绑定的状态：`resigned + send_to_user=true` 拒绝；在职员工可选 true 或 false，离职员工可选 false。校验先于格式转换钩子、最终提交和发送记录登记，不自动改写参数。反馈在该校验分支旁维护，说明员工已离职、最终结果尚未提交且未转换或发送，要求先检查并调整 `content` 为内部处理结论，保留事实、执行结果、未完成事项和限制，将面向员工的称呼、提醒或直接提问改为客观记录、待办或待确认事项，再以 `send_to_user=false` 重新调用；仍可用 `send_assistant_message` 联系其他助理。例如“请您确认会议时间”改为“会议时间待确认，本轮未通知员工”；不能编造员工回复、授权或通知成功。正文是否需要调整由模型判断，程序门禁校验发送开关与可信状态，不新增正文语义判定。
+## 2. 核心组件与职责
 
-助理工厂通过 `QuestionAgentService.registry_builder` 为每轮创建独立注册表，绑定与员工背景相同的可信 `AuthenticatedUser` 状态快照，保留转换钩子和其他工具；不会修改共享注册表，也不解析对话或接受模型传入状态。员工状态在本轮开始后变化，下一轮重新绑定；已提交交付记录的恢复不属于此门禁。独立调用 `build_core` / `build_registry` 应显式传入可信 `user`；未绑定身份时禁止 true，但允许 false 静默保存。
-
-拒绝反馈进入下一次模型请求的临时纠错上下文；完整成功提交后清除失败轨迹，原始生成与拒绝事件保留在私有审计，不进入权威历史或发送记录。连续拒绝达到既有上限时任务失败，不提交或发送；此终止分支没有下一轮请求，不宣称反馈已送达模型。
-
-2026-11-02 门禁验证：[专项测试](../../../tests/test_finish_employment_guard.py)7 项及相关回归共 68 项通过，覆盖实际 Core 下一轮纠错反馈、成功后清理、审计保留、转换与交付前拦截、在职正常发送、静默保存、未绑定身份拒绝发送、助理间通信及同服务并发用户隔离。模型、存储与交付使用内存替身；未调用真实模型、数据库或钉钉，也未重启服务。
-
-这是 assistant 对公共 FinishTaskTool 抽象契约的继承实现；Core 不再提供可直接运行的默认 finish_task，exploration 自行实现仅 content 的最终输出，探索 SSE 契约不变。公共运行时通过注册项的条件交付回调决定是否调用宿主输出函数，false 不产生输出回调；带条件交付的工具拒绝流式预览，防止选择静默前已经泄露正文。
-
-### 最终回复的用户附件交付
-
-[附件准备服务](../../../app/service/assistant_file_delivery.py)由工厂绑定可信用户和助理树。`finish_task` 执行器在正文转换前逐个校验文件引用、上传归属、存储可读性、PDF 标识及大小；任一失败均不提交本轮最终正文或附件交付。失败由工具独立末尾渲染钩子输出可读原因和修正方向，允许模型修改引用及正文后重试。私密附件允许回传给上传者本人，不更改可见范围；这与个人助理查看附件时的公开状态门禁分别处理。
-
-转换钩子只替换 `content`，`file_ids` 随最终调用原样保存（参数校验时已去重）。既有检查点事务钩子在保存最终结果时，登记一条正文和每份附件各一条发送记录；附件以 `file:<UUID>` 为稳定动作键。同一事务失败全部回滚，重复检查点不重复登记。这里不在工具执行后立即向钉钉发消息，以免未提交的调用产生不可撤回的外部发送。
-
-提交后交付服务先发送正文，再按登记顺序分别发送文件。发送前重新核对员工状态、附件归属及可读性，文件名使用已保存的 `<UUID>.pdf`，不恢复原上传名称。上传媒体或准备阶段明确失败可恢复交付；发送接口结果不明不自动重发，已成功的正文或文件不会重发。部分交付失败不撤回已送达的正文，不重新生成答案；最终历史表示已登记交付，不能作为员工已收到文件的证明。
-
-依赖 [027 迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/027-assistant-file-delivery.sql)，为 `assistant_deliveries` 增加可空 `file_id` 及所属用户约束；不新增文件副本或独立附件账本。本地数据库已同步，其他环境需先迁移再启动新版服务，应用不会自动迁移。
-
-2026-11-09 验证：专项及相关回归 76 项通过，包括真实 Core 下一轮失败反馈和成功清理、转换后 ID 保留、模拟钉钉 multipart / `sampleFile`、隔离 MySQL 迁移、交付回滚、去重及部分失败恢复。没有调用真实模型或向真实员工发送文件；实际钉钉权限、接收效果仍待业务联调。
-
-### send_assistant_message
-
-```json
-{"recipient_userid":"UserB","message":"请帮忙核对这项资料，并说明依据。"}
-```
-
-- `recipient_userid`：目标助理所属用户的准确 userid，区分大小写；必须存在于权威员工库，且助理未停用，不能向自己循环投递。在职和离职员工的助理均可作为接收方，离职不构成拒绝通信的条件。
-- `message`：非空纯文字，最多 10000 字符，可含 Markdown；不支持助理间附件转发。
-- 发布时固定 task_type=assistant_message，source_assistant_id 从当前助理所属用户绑定，模型不能填入或覆盖来源身份。
-- 工具的成功结果表示发送请求已接受，不代表对方已执行或答复。工具不结束当前任务，最后仍须调用 finish_task。
-- 目标无效时返回可纠正失败；发送动作保存后由程序交付，不把网络故障反馈为可反复重新生成发送动作的参数错误。
-
-另由消费宿主绑定[查看、创建、删除定时任务工具](assistant-reminders.md)，不在通用工厂中隐式猜测用户身份。
-
-消费宿主另按任务注册 [search_calendar_events 日程集查询](assistant-calendar.md)：输入指定员工 userid 与带时区的时间窗口，服务端检查人员目录并通过钉钉授权读取主日历，结果集在提交后发布、任务结束后释放。同任务注册 `view_calendar_query`，从同一快照分页渲染可折叠正文，逐人区分已接受、待响应、已拒绝、暂定及状态未知；工具回执不复制正文。
-
-两项消息工具均注册为 thinking；助理不对外提供 SSE。实际 JSON Schema 的每个参数都有字段说明。任务专用提示见[task.py](../../../app/agent/assistant/prompt/task.py)，工具、通用助理提示与代码校验使用同一契约。
-
-助理工具的模型可见描述沿用已有 Core 的场景式写法：先说明“当你需要……时，使用这个工具”，再说明可完成的操作、结果和后续动作，最后保留必要限制及失败处理。需要时用简短例子解释选择；字段说明只负责取值、来源、格式和填写边界。数据库检索算法、LRU、节点事务、交付账本等实现细节留在代码注释及专题文档，不放进工具说明。此规范适用于消息、助理目录、提醒和画像工具；必填参数、通知选择、分页和权限规则均不因此改变。
+1. **`AssistantRuntimeService`（`app/service/assistant_runtime.py`）**：
+   - 基于 `agent_core.AgentRuntime` 与 `Models(VLLMClient, VLLMEmbedding, vllm_counter)`，按用户 `tree_id` 驻留 `TreeAgent(execution_mode='queue', workspace_retention='latest', persist_new_nodes=True)`。
+   - 通过 `build_assistant_tools` 装配全量 38 个模型可见工具：9 个 `agent-core` 内置工具（工作区、压缩、记忆检索、1B 提醒）、22 个本地助理工具（含定制 `finish_task`、`send_assistant_message`、画像/备忘/可见性/日程/文件检索/双源 `view_pdf` 等）以及 7 个 MCP 工具。
+   - 统一注入 `AssistantMessageRenderingHook` 与 `on_final_deliver` 回调，使中间件任务与 1B 本地提醒/心跳共用同一套 Outbox 交付。
+2. **`AssistantConsumer`（`app/service/assistant_consumer.py`）**：
+   - 周期扫描在职员工，受 `max_concurrent_users` 信号量限制；按 `MySQLRepositoryBase.user_scope(userid)` 持跨实例 MySQL `GET_LOCK` 串行消费。
+   - 每次消费先恢复 `awaiting_ack` 中未确认的终态任务，再通过 `AssistantQueueService.execute_once` 领取租约、下载并校验附件（登记至 `uploaded_files` 与 `assistant_tree_files`）、拼装员工档案与来源说明到 `supplemental`，调用 `AssistantRuntimeService.run_task(..., external_id=record.task_id)` 执行。
+   - 任务成功后刷新 `AssistantDeliveryService.flush(record.task_id)` 并确认队列 `ack`；任务异常标记 `failed` 后释放队列，避免毒丸任务永久阻塞。
+3. **跨助理消息与可靠交付（`app/service/assistant_delivery.py`、`app/service/assistant_file_delivery.py`）**：
+   - `send_assistant_message` 在工具 `execute` 期凭 `current_tool_call_id` 幂等写入 `assistant_deliveries(destination='assistant')`，`after_commit` 触发 `flush` 发布至中间件队列。
+   - 发往钉钉用户前先标记 `delivery_unknown`，再核对员工在职状态与附件归属（`AssistantFileDeliveryService` 经 `MySQLAssistantRepository.find_file` + `UploadedFileRepository.get_owned` + `UploadFileStore` 双次校验），防止离职通知或越权附件发送。
 
 ---
 
-## 最终正文渲染钩子
+## 3. 启动开关与验证状态
 
-助理 `finish_task` 的注册项独立持有转换钩子。Core 在工具执行完成后，按该工具的 `hooks` 顺序获得最终结果，再进行正常提交；其他工具不运行这份钩子。主助理仍自由组织正文，钉钉格式由[单次转换子智能体](../../architecture/workflow/question-answering/assistant-message-rendering.md)处理。
-
-[转换钩子](../../../app/agent/assistant/message_rendering/hook.py)以 `hook(arguments, execution, context)` 接收当前工具结果，替换 `execution.output`；完整生成通过当前调用的私有审计回调保存。Core 同步更新已接受 `finish_task.content`，所以节点答案、交付账本正文及后续上下文都使用转换结果。`send_to_user=false` 透传，探索、助理间通信及提醒入队不触发转换。
-
-调用顺序为：工具参数验收 → 执行 → 本工具钩子按序运行 → 正文及调用历史正常提交 → 原子抢占发送 → 钉钉 `sampleMarkdown` → 保存发送回执。没有问答树结构调整、提交后正文更新或终态转换缓存；正文转换明确失败时不提交原文或发送半成品，而是向主模型返回失败回执继续处理；取消、宿主失效、审计故障和不确定写入仍停止，见[失败分层](../../architecture/workflow/question-answering/tool-failures.md)。
-
-`AssistantDeliveryService` 直接发送 `AssistantDelivery.message`，发送重试不运行转换器。默认应用将转换钩子传给助理工厂的 `finish_hooks`，配置、上下文、资源和验证边界统一见[转换专题](../../architecture/workflow/question-answering/assistant-message-rendering.md)。
-
----
-
-## 按用户名查找助理
-
-两个 assistant 专用工具均为 thinking，消费宿主绑定权威员工仓库：
-
-| 工具 | 模型参数 | 返回与行为 |
-| --- | --- | --- |
-| [search_assistants](../../../app/agent/assistant/tool/search_assistants.py) | keyword、department（均可选；两者为空浏览全部） | 查询一次，按既定排序建立结果快照，返回 query_id、total、total_pages、truncated；不展开姓名列表。空结果不生成 ID。 |
-| [view_assistant_query](../../../app/agent/assistant/tool/view_assistant_query.py) | query_id、page（均必填，页码从 1 开始） | 查看该结果集指定页，返回可折叠目录正文；可跳页或重复查看，页码越界明确失败。 |
-
-上述查找、目录查看及 `send_assistant_message` 各自注册末尾反馈渲染钩子，结构化结果与模型可读回执分离，遵循[工具反馈规范](../../standard/tool-feedback.md)。查找展示查询 ID、用户数量、总页数及是否截断；空结果明确无需翻页。查看回执按资料可见、隐藏、不可读分别渲染，保留查询 ID 和页码；目录正文展示姓名、userid、在职状态和部门。页码越界与查询失效保留查询池提供的具体原因及修正方向。
-
-消息发送成功回执如下，示例 ID 仅用于说明格式：
-
-```text
-### 助理消息发送
-
-状态：发送请求已登记
-接收用户 ID：employee-example
-处理进度：尚不能确认对方已收到、处理或答复。
-```
-
-发送交付继续由检查点事务读取已接受调用的参数登记，不解析渲染后的回执；提交后的刷新回调保持不变。查找结果仍在提交后发布，目录翻页仍在提交后推进；可纠正失败在后续成功后清理，私有审计保留。个人助理全部专属工具现已完成反馈迁移，完整清单与验证边界见[模式专属工具反馈清单](../../architecture/workflow/question-answering/tool-content-contract.md#模式专属工具反馈清单)。
-
-每位用户只有一个助理，目录中 userid 本身就是 send_assistant_message 的 recipient_userid，不返回或生成另一套 assistant_id。例如先 `search_assistants()` 浏览目录，或 `search_assistants(keyword="Alice")` 按姓名查找，再用返回的 query_id 调用 `view_assistant_query(query_id="返回的ID", page=1)`，确认对象后发送。
-
-`keyword` 只检索姓名，`department` 只检索已保存的一级部门名称；两参数最多200字符，去掉首尾空白后，省略、null、空串、纯空白均跳过对应查询。二者都为空时浏览全体，按展示姓名、原始 userid 稳定排序，历史姓名为 null 时展示 userid。
-
-每路使用 MySQL FULLTEXT + ngram，自然语言全文召回加字面包含补充单字、停用词；英文不区分大小写，百分号、下划线按字面转义，所有输入为 SQL 绑定参数。单路先按完整名称匹配、再按全文相关性排序，最后按展示姓名及 userid 稳定排序。部门路匹配任一归属即可召回，按 userid 聚合为一条，采用最好的完整名称匹配标记及最大全文分值，不按命中部门数量累加。
-
-两路同时提供时，参照[文件结果并集](../../architecture/workflow/question-answering/file-retrieval.md)取 **OR 并集**，以 userid 去重，使用等权 RRF：每路贡献 `0.5 / (60 + rank)`，同分共享名次，双路都有结果时融合分同分按 userid 排序。一边无结果时保留另一边的顺序；两边都无结果不生成查询 ID。SQL 内使用 RANK 窗口函数在完整匹配集合排名，融合后才执行最终 LIMIT，不提前截断两路，也不直接相加全文分值。RRF 不作为相似度百分比返回，不增加向量或模型调用；任一路依赖失败时整次失败，不能返回部分成功。
-
-例如 `search_assistants(department="研发部")` 查部门；`search_assistants(keyword="Alice", department="研发部")` 查姓名或部门的并集，**不是只查研发部的 Alice**，若业务要求同时满足，模型须查看后核对两条件。结果集保存本次有序的 userid、用户名、在职状态及全部一级部门快照，部门展示不局限于命中项；查看和正文解析不再查 SQL。人员改名、部门或在职状态变更须重新查询；实际发送仍检查目标是否存在及助理是否启用，不按在职状态禁止通信。
-
-LRU 复用从既有记忆查询池提取的[公共结果池](../../../app/agent/core/query_pool.py)，不新建缓存表。助理、记忆和文件结果集**互不通用**：助理每用户每任务独立实例，独立容量、淘汰和清理；其他任务/工具的查询 ID 不可读取。记忆仍每页回查权威历史，文件原有授权回查机制不变。查询结果在节点提交后才加入池，成功查看提交后更新最近使用顺序；失败、越界或未提交的查看不推进页码、不改变 LRU。正文自动解析不刷新热度。淘汰、任务结束或关闭后旧 ID 和页面不可恢复，须重新查询；页面签名拒绝篡改资源/页码和跨查看器使用。
-
-容量、每页条数和单次结果上限由下方配置控制。SQL 一次读取上限加一条以判断截断；超过上限时显式返回 truncated=true，不冒充完整结果，应缩小关键词重新查询。仅缓存身份、姓名、在职状态与部门字段，不缓存权限或在线状态。
-
-部署须在同一权威人员库显式执行[姓名全文索引迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/013-assistant-directory-fulltext.sql)，应用不自动迁移，也不复制员工表。已有等价索引时先核对再执行，关键词查询缺失索引时按查询故障处理，不伪装成空结果；未启用的条件不执行对应 MATCH 查询，也不依赖该路全文索引；全局浏览不依赖全文索引。部门检索需显式执行 [020 部门全文索引迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/020-department-directory-fulltext.sql)，使用 `departments.name` 的 ngram 索引。在职状态读取依赖 [022 员工在职状态迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/022-employee-employment-status.sql)，统一使用 `employed`（在职）和 `resigned`（离职），两种状态均可查到。部门读取依赖 [019 多部门迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/019-employee-departments.sql)，历史单部门在 SQL 内兼容，不触发用户资料刷新。姓名、部门检索依赖 MySQL 内置 ngram，默认双字符切分及停用词边界见[原生全文检索](../infrastructure/fulltext.md)。分数只用于排序，不返回给模型，不承诺标准 BM25 分值或错别字纠正；字面补充分支可能扫描姓名或部门名称列，人员量很大时需要另行评估性能。
-
-正文按用户分组，使用 text 类型的可折叠页面；部门逐行列出，不展示部门 ID。每个用户只占一个分页名额，单个用户的多个部门不拆页。示例：
-
-```text
-════════════ 助理目录 ════════════
-
-【Alice的助理】
-用户ID：UserA
-在职状态：在职
-所属一级部门：
-· 研发部
-· 产品部
-
-【Alice的助理】
-用户ID：userA
-在职状态：离职
-所属一级部门：未知
-
-════════════ 本页结束 ════════════
-```
-
-同名用户保留为不同记录，userid 的大小写不改变。部门可辅助辨认对象；多部门并列归属，排序不代表主次，不授予权限。未知部门不推断；不同部门 ID 即使同名也不合并。外部字段中的换行转义为字面字符，避免伪造分组。工具不能凭姓名随意挑选对象；目标不明确时向用户澄清。查询仅读取 userid、姓名、在职状态和全部一级部门，不附带头像、文件权限、任职详情或管理员关系，不调用中央登录或机器人接口。
-
-目录反映 SQL 用户身份，包括尚未创建助理树的真实用户，不保证在线或接收可用性；已有助理停用等状态仍由发送工具在实际发送前检查。查询不创建助理树、不修改身份。空结果与数据库失败明确区分；失败日志只记录异常类型，不回显查询词或异常正文。结果集及正文仅在本任务内可用，结束后释放。
-
-验证见目录工具测试（历史文件 `tests/test_assistant_directory.py`，当前工作区未保留）、独立 MySQL 匹配测试（历史文件 `tests/test_assistant_directory_mysql.py`，当前工作区未保留），以及消费链路测试（历史文件 `tests/test_assistant_consumer_mysql.py`，当前工作区未保留）中的查询后发送场景。
-
----
-
-## 输入渲染
-
-输入仍进入 Core 的公共任务渲染器，用户名从权威员工资料取得，不从消息正文自报身份推断。无姓名时本用户使用 userid，无法定位来源用户时显示“未知用户”，来源助理标识另外作为业务资料提供，不能伪造姓名。
-
-| 类型 | 用户问题区首部 | 正文 |
-| --- | --- | --- |
-| user_message | `-- 来自Alice的消息` | 用户原文，合并短消息按原始顺序用分隔线排列。 |
-| reminder | `-- 来自定时提醒` | 提醒的实际文本，不直接触发钉钉消息。 |
-| assistant_message | `-- 来自Bob助理的消息` | 来源助理原文；来源标识与平台作为资料，不授予操作权限。 |
-| heartbeat | `-- 来自空闲心跳` | 引导助理根据记忆、工作区和已确认待办判断有无值得推进的事项，不虚构任务，可静默结束。 |
-
-单条用户消息的文件展示仍由公共 Core 输出，示意如下；实际外层还保留任务时间、用户问题区等公共结构：
-
-```text
--- 来自Alice的消息
-请看看这份资料。
-```
-
-```yaml
-- 文件类型: 多图
-  文件ID: 11111111-1111-4111-8111-111111111111
-```
-
-文件类型和 UUID 不在问题正文重复展开。多条合并消息另在相应片段标注其文件 UUID，完整类型列表仍只由公共附件区展示一次。业务首部随节点问题落盘，历史恢复仍能区分用户、助理、提醒和心跳。
-
----
-
-## 处理与一致性
-
-1. 扫描权威员工，按配置限制同时执行的用户数量。每位用户在同一 MySQL 服务上持有独立连接的命名锁；同实例、跨实例均不能同时消费同一用户。连接丢失会取消本次执行。不同用户互不阻塞。
-2. 先恢复终态任务的 ack：已完成任务先恢复交付，失败任务直接确认跳过，再领取中央任务。可信用户权限每次从 SQL 读取，不伪造用户 token，也不调用登录接口。
-3. 首次为员工创建或绑定唯一 assistant 树；已停用助理不消费。冻结输入、任务节点稳定 ID 和附件映射记录在任务账本，不再复制待领取队列。
-4. 队列附件按稳定 UUID 转存到 data/user/upload-file；相同重试复用相同内容，拒绝覆盖不同内容或符号链接。当前接受 PDF、MP3、MP4；PDF 验证可打开、非加密且有页面。没有其他格式的自动转换，音频和视频查看能力仍未实现。
-5. 真实 Core 从持久化压缩窗口和当前工作区继续，工具调用与原生生成沿用现有节点持久化。发送工具成功通过校验后，节点检查点与交付记录在同一 SQL 事务提交；事务失败不会发送消息。
-6. 提交后异步交付。助理发送工具在继续下一次模型请求前尝试发送，临时失败保留待交付记录；成功任务结束后必须完成本任务所有交付，才允许中央 ack；失败任务直接跳过消费，保留已提交交付账本而不重放。
-7. 领取、执行与交付期间由队列服务续租。停机取消并等待执行与续租，随后关闭 HTTP 客户端、机器人和仓库，不清空中央队列。
-
-节点持久化的 commit_hook 只允许同事务 SQL，不在数据库事务内调用机器人或中间件。Core 的 after_commit 同时支持同步游标更新和异步交付，并保证权威提交之前不执行回调。助理附件通过本次账本白名单进入节点，模型查看仍调用公共 view_image_file，不会为准备附件加载完整助理树。
-
-后台助理无需用户在线 Bearer。当前已装配[注册中心原件查看器](../../architecture/workflow/question-answering/registry-file-reading.md)，使用平台认证并绑定可信任务 userid，由注册中心进行文件授权；不创建或恢复网页登录。权限查询、祖先记忆、已登记附件、工作区、网页和专家能力仍由已有适配提供。
-
----
-
-## 失败与恢复
-
-| 故障 | 行为 |
-| --- | --- |
-| 未开始生成的数据库/下载/配置故障 | 不确认任务，后续重新检查；已转存附件按稳定映射复用。 |
-| 节点登记前的模型分词准备发生临时连接、超时或 HTTP 429/502/503/504 故障 | 保留 prepared 任务并记录 model_preparation_unavailable，不建失败节点、不 ack，默认隔 30 秒重新领取重试。 |
-| 生成失败、取消或进程遗留未完成节点 | 标记失败并保留轨迹，自动 ack 跳过本任务，后续消息继续；不重新生成或重放已有动作。 |
-| 明确未发送成功 | 保留交付记录，重试交付，不重新调用模型。 |
-| 钉钉发送超时、取消或成功回执保存失败 | 预先持久化 delivery_unknown；不自动重发，等待核对，避免重复通知。 |
-| 中间件发布结果不明 | 在配置窗口内沿用同一 request_id、正文和 source_assistant_id 重试；窗口过期停止自动重发。 |
-| ack 成功但回执丢失 | 使用持久保存的交付凭证重试相同 ack，不重新执行任务或发送消息。 |
-| 原租约过期，ack 返回 409 | 等中央重新排到该任务；已完成记录不阻止后续高优先级任务被处理，重新领取后只恢复确认。 |
-
-单次网络发送前通过数据库比较并更新 attempt_count 抢占该交付。已发送或已经处于结果不明的用户回复不会再次抢占，避免旧实例与新实例同时发送。中间件发布使用稳定幂等键；机器人接口无相同的幂等保证，因此不能宣称外部通知恰好一次。
-
-失败任务保留 `processing_status=failed`、错误码、节点与生成审计，通过 `acknowledged_at` 单独记录消费终结；不改成业务成功。启动恢复同时扫描 completed/failed；失败任务不等待既有 pending/unknown 交付，不重放或自动补发这些动作，交付账本保留供核对。成功任务仍须全部交付完成。
-
-运行中新失败只有在 failed 终态可靠落盘后才允许跳过；取消、数据库状态不明、未持久化的异常仍停止本次处理，随后按权威记录恢复。原租约409时重新领取当前任务再确认；确认回执丢失时只重试ack，不重跑模型。当前未提供未知发送的人工处置API，不能盲目重发。
-
-模型准备重试只限于尚未登记任务节点、尚未生成摘要或执行工具的分词准备阶段。[分词客户端](../../../app/infrastructure/vllm_tokenizer.py)先完成原有三次瞬时重试，再以 `TokenizationUnavailable` 区分暂不可用与认证、参数、响应格式错误；[问答入口](../../../app/service/question_agent.py)在安全边界内传递 `ModelPreparationUnavailable`，消费器回查仍为 prepared 且没有节点后保留任务。恢复后重新构建最新上下文，使用同一中央任务及附件绑定；重启也从数据库中未确认的 prepared 任务恢复，不依赖进程内标记。等待期间释放并发槽和用户锁，实际重领时间受中央租约与排队影响；同一用户仍按已有串行机制处理，不绕过待处理任务。
-
-此策略不自动恢复已经 failed/ack 的历史任务，也不覆盖摘要生成或正式生成开始后的故障；这些分支仍保留既有失败跳过规则，避免重放动作。准备阶段没有模型生成，重试说明只记运行状态与脱敏日志，不伪称已向模型发送纠错提示。不新增数据库迁移。
-
----
-
-## 数据库与启用配置
-
-先完成既有 001—011 迁移，再手工执行 [012-assistant-consumption.sql](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/012-assistant-consumption.sql) 与 [014 入站迁移](https://github.com/caicai-6666/knowledge-accumulation-be/blob/350b1e2/schema/014-assistant-robot-inbox.sql)。启动只检查所需列和索引，不自动执行 DDL。
-
-012 将“每个用户最多一个未确认任务”的索引改为“每个用户最多一个 received/prepared/running 任务”，允许已完成、等待中央重领确认的记录保留。另增加独立 delivery_token 与 lease_expires_at，用于重试 ack；不放入 input_payload、模型上下文、日志或 HTTP 响应，成功确认后清除。业务存储见[助理存储](../../architecture/data/assistant-storage.md)。
-
-| 配置 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ASSISTANT_ENABLED` | false | 显式启用钉钉入站、后台消费、交付、提醒与空闲心跳调度。 |
-| `ASSISTANT_POLL_SECONDS` | 3 | 用户扫描及每用户下一次消费检查间隔。 |
-| `ASSISTANT_MODEL_RETRY_SECONDS` | 30 | 模型分词准备暂不可用后再次尝试消费的等待秒数；持续不可用时保留任务，不按尝试次数自动跳过。 |
-| `ASSISTANT_HEARTBEAT_INTERVAL_SECONDS` | -1 | 全局空闲心跳间隔；-1 关闭，正整数统一应用于所有已启用助理。 |
-| `ASSISTANT_HEARTBEAT_POLL_SECONDS` | 30 | 空闲心跳扫描间隔；不改变实际心跳间隔。 |
-| `ASSISTANT_DIRECTORY_CACHE_CAPACITY` | 10 | 每任务助理查询结果集的 LRU 容量，与记忆/文件池独立。 |
-| `ASSISTANT_DIRECTORY_PAGE_SIZE` | 10 | 每页用户条数，查看工具无额外分页大小参数。 |
-| `ASSISTANT_DIRECTORY_MAX_RESULTS` | 1000 | 每次查询最多保存的用户条数，超过时明确标记截断。 |
-| `ASSISTANT_MAX_CONCURRENT_USERS` | 4 | 同时处理的用户数；同用户始终串行。 |
-| `ASSISTANT_THINKING_EFFORT` | medium | low / medium / xhigh，符合当前 Core 与模型配置契约。 |
-| `ASSISTANT_RENDERING_THINKING_EFFORT` | medium | 最终正文转换独立推理档位；可选 none / low / medium / xhigh，none 关闭推理。 |
-| `ASSISTANT_PUBLICATION_RETRY_WINDOW_SECONDS` | 3600 | 未知中间件发布的自动重试窗口，必须小于中央幂等回执保留期。 |
-
-启用需要可用的本平台中间件会话、权威员工 SQL、助理迁移、MLLM 和钉钉机器人凭据。缺少中间件或机器人凭据时本地失败。配置见 [.env.example](../../../.env.example) 与[队列传输配置](../infrastructure/assistant-queue.md#装配与配置)。本轮不改真实 .env，不启用共享消费，启用后会发布已设置提醒的到期消息；[空闲心跳调度](assistant-heartbeat.md)已接入，默认全局间隔 -1 不发布。提醒扫描与重试配置见[定时任务专题](assistant-reminders.md#生命周期与配置)。
-
----
-
-## 验证
-
-[模型准备重试测试](../../../tests/test_assistant_model_preparation_retry.py)使用真实问答准备与队列编排、内存仓库和 HTTP 替身，覆盖暂时故障分类、准备失败不登记节点不 ack、重建消费者后同任务恢复、已有节点拒绝降级重试，以及等待时释放并发槽；认证/参数/响应格式故障不归入暂时不可用。原有[失败跳过测试](../../../tests/test_assistant_failed_task_skip.py)继续验证已执行任务的终态跳过与交付恢复。此验证不请求真实模型或操作业务数据库。
-
-2026-10-28 本机目录故障修复：当前人员库仅有姓名全文索引，部门及姓名/部门组合查询均复现 MySQL 1191；已显式执行 020，确认 `departments.name` 的 ngram 全文索引存在。通过实际工具执行器验证全量、姓名、部门、组合四种查询，分别返回 7、1、1、2 个结果，四种结果的第一页均成功渲染。验证只查询数据和准备内存结果集，不向员工发送消息；未重启服务，其他部署环境仍需独立迁移。记录见[索引修复验证](../../../experiment/maintenance/20261028-assistant-directory-index/verification.json)。
-
-工具与渲染测试（历史文件 `tests/test_assistant_tools.py`，当前工作区未保留）验证实际 Schema、严格布尔选择、静默完成不交付、条件工具禁止流式预览、提交回调时序、四种输入首部、公共附件渲染、默认关闭和稳定文件引用。
-
-独立 MySQL 消费测试（历史文件 `tests/test_assistant_consumer_mysql.py`，当前工作区未保留）使用真实 asyncmy、012 迁移、实际 Core 与队列 HTTP 客户端，模型及网络通过替身隔离。覆盖实际消费、来源身份、显式发送/静默、事务回滚、跨实例锁、交付原子抢占、消息及 ack 故障恢复、PDF 图像查看、取消、后台启动和应用逆序清理。所有文件在 tests/tmp，MySQL 只接受显式临时容器端口；不代表共享中间件或真实钉钉生产验收。
-
-2026-10-24：完整 unittest 共 1211 项，1049 项通过、162 项因其他隔离环境未配置而跳过；本轮 17 项消费 MySQL 测试、原有 16 项助理存储/上下文实库测试均在独立临时 MySQL 8.4 中实际执行，另有 11 项工具与渲染测试通过。`pip check`、`git diff --check` 及 11 份文档的 226 个相对链接/锚点检查通过。临时容器与本轮测试日志已清理。网络和模型均为隔离替身，未调用真实中间件或钉钉，未修改真实 `.env`、其他项目或业务数据。
-
-
-2026-10-24 助理目录补充：新增 search_assistants，最终采用 ngram 全文相关性排序及字面包含补充。最终 30 项目录/消费相关测试通过（7 项目录单元、5 项临时 MySQL 姓名检索、18 项消费集成），覆盖不连续关键词、完整姓名优先、单字、大小写身份、分页、特殊符号、缺失索引和查询后发送。全文调整前全量回归共 1258 项，1096 项通过、162 项跳过；全文调整后按变更范围重跑上述 30 项，不将旧全量结果冒充新实现全量验收。pip check 与 git diff --check 通过。所有数据库验证使用独立临时 MySQL 8.4，未访问真实人员库或中间件/钉钉，未修改实际 .env；013 索引迁移尚未在真实库执行。
-
-
-2026-10-24 两工具与 LRU 调整：search_assistants 只收 keyword，view_assistant_query 只收 query_id/page；复用公共查询池实现，业务实例独立。完整 unittest 共 1268 项，1106 项通过、162 项因其他隔离环境未配置而跳过；其中 14 项助理目录单元、6 项独立临时 MySQL 目录测试、18 项实际 Core 消费集成均通过，原有记忆池 LRU/权威回读/自动分页回归通过。覆盖提交时序、LRU 刷新与淘汰、跨业务/任务 ID 拒绝、纯内存翻页、可折叠正文及签名、查询失败/取消、关闭释放和配置结果上限。pip check、git diff --check、3 份变更文档 52 个相对链接/锚点检查通过。临时容器及本轮测试日志已清理，未修改真实 .env 或人员库，未执行真实消息发送。
-
-
-2026-10-24 描述风格统一：仅调整七个助理工具的模型可见说明与参数文案，保持工具名、参数约束和执行逻辑不变。逐项检查实际注册函数描述和 JSON Schema（含提醒嵌套字段），未混入 LRU、数据库或事务实现说明；相关 40 项既有工具测试通过，git diff --check 及 2 份文档 38 个相对链接/锚点检查通过。本次未进行真实模型或外部服务调用。
-
-
-2026-10-27 失败跳过：已失败任务、进程遗留节点和新生成的已落盘失败均可确认消费，保留失败状态与审计；不会阻塞后续任务。回归见 `tests/test_assistant_failed_task_skip.py`：9项恢复测试通过，覆盖失败后继续下一任务、确认回执丢失、过期租约、成功任务交付约束、新失败落盘边界和进程遗留节点。使用真实消费与租约编排、内存仓库和网络替身，无测试数据写入默认 data 目录。全量178项，167项通过、11项数据库测试跳过；git diff --check通过。
-
-
-2026-10-27 全局目录：search_assistants 的 keyword 改为可选，省略或 null 查询全部员工助理；姓名未知时展示userid。显式空串/全空白仍拒绝，结果数量上限、截断标记、LRU及提交后分页沿用既有实现。`tests/test_search_assistants_global.py` 的9项测试覆盖实际注册Schema、空参数解析、全局与姓名SQL分支、通配符转义、分页及提交、截断、空目录/故障区分和真实Core调用闭环；全量187项中176项通过、11项数据库测试跳过。数据库与模型均为隔离替身，未执行真实发送或数据库写入，三个已关闭后端未启动。
-
-
-2026-10-27 多部门目录展示：姓名查询和全局目录统一读取部门快照，text 页面按用户分组展示全部一级部门；与所属用户背景共用字段转义及部门渲染。验证见 `tests/test_directory_departments.py`：隔离替身检查多部门不拆页、同名部门保留、快照独立、换行转义和页面类型校验；显式启用 `RUN_ISOLATED_PERSONNEL_MYSQL=1` 时创建随机临时库验证真实全局/姓名 SQL、旧记录回退、用户分页及不按部门检索，结束后清理该库。此次显式验证 3 项通过，常规回归 200 项中 188 项通过、12 项跳过；实际 Core 的查询→查看→完成链路使用模型替身验证部门进入下一轮请求，未发送真实模型请求或员工消息。未执行业务库迁移、资料刷新或服务重启。
-
-2026-10-27 部门检索扩展：新增可选 department，与姓名独立全文召回后取并集；部门路按用户去重并取最佳匹配，不因命中多个部门重复加分。`tests/test_search_assistants_global.py` 的 13 项验证通过，覆盖实际工具 Schema、空参数跳过和 Core 查询→查看链路；`tests/test_directory_departments.py` 显式隔离 MySQL 验证 3 项通过，覆盖多部门去重、与既有文件 RRF 融合器排序一致、单路为空、截断分页和缺失索引时整次失败，临时库已清理。常规回归共 204 项，192 项通过、12 项跳过。未发送真实模型请求或员工消息，未执行业务库 020 索引迁移或重启服务；启用部门检索前需完成上述部署步骤。
-
-2026-11-02 纠错提示优化：专项 7 项测试通过，验证下一次实际模型请求包含正文调整方向、调整后的正文进入成功历史、原始被拒正文仅留私有审计，以及成功后的反馈清理。测试使用合成模型响应，不代表已验证真实模型的改写效果。
-
----
-
-## 附件元信息登记
-
-助理消费者在已转换附件校验、最终 UUID 落盘成功后，通过[上传文件登记服务](../../architecture/data/assistant-file-notes.md#转换完成后的自动登记)写入 `uploaded_files`，随后才绑定任务文件映射并标记 prepared。登记失败保留稳定文件供下次消费重试，不启动生成、不确认消费；已有映射可以幂等补登记。机器人收件箱临时副本不入表，默认公开字段不会绕过现有任务读取授权。部署须先完成 023、024；本次不自动创建文件备忘。
-
----
-
-## 文件可见范围管理
-
-消费宿主为个人助理注入 `get_file_visibility(file_id)` 和 `set_file_visibility(file_id, visibility)`，按可信所属用户限定文件上传归属；只能管理自己上传且已登记的文件。修改直接提交文件元信息事务，保留上传时间和个人备忘，相同值不重复更新。字段、权限、提交不确定及纠错边界见[文件可见范围工具](../../architecture/data/assistant-file-notes.md#文件可见范围工具)。此能力不开放跨用户原文件读取，不新增数据库迁移。
+- 由环境变量 `ASSISTANT_ENABLED=true` 显式开启（默认 `false`），启用时要求同时启用中间件会话与钉钉机器人凭据。
+- 验证状态：已通过 `tests/assistant_v2/test_assistant_e2e.py` 与 `tests/assistant_v2/test_assistant_tools.py` 自动化验证（SQLite + Fake ChatProvider/Embedding + Mock DingTalk）；尚未执行真实钉钉单聊端到端收发验收。

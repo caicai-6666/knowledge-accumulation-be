@@ -2,9 +2,9 @@
 
 ## 用途与范围
 
-Core 的稳定系统提示词包含现象创新（深圳）科技有限公司的公开业务背景，让探索问答和个人助理理解公司业务、研发术语和默认指代。公司全称由需求方确认；公开介绍用于辅助理解，内部业务事实仍由实际资料与工具结果支持。
+探索模式与个人助理的稳定角色提示词均包含现象创新（深圳）科技有限公司的公开业务背景，让智能体理解公司业务、研发术语和默认指代。公司全称由需求方确认；公开介绍用于辅助理解，内部业务事实仍由实际资料与工具结果支持。
 
-模型可见正文维护在 [company.py](../../../../app/agent/core/prompt/company.py)，本页记录来源、装配和维护方式，不复制完整提示词。
+模型可见正文维护在 [prompt.py](../../../../app/agent/exploration/tools/prompt.py)（由探索与个人助理共同复用），本页记录来源、装配和维护方式，不复制完整提示词。
 
 ---
 
@@ -39,9 +39,9 @@ Core 的稳定系统提示词包含现象创新（深圳）科技有限公司的
 
 ## 装配、依赖与维护
 
-[Core 提示词入口](../../../../app/agent/core/prompt/__init__.py)通过 `build_system_prompt()` 按角色、公司背景、交互规则、工作区规则组合。探索与助理的角色构建器复用该入口；助理四种任务类型继续追加各自的任务和交付要求，公司背景只注入一次。员工资料仍按[个人信息与画像](assistant-personal-context.md)作为本轮资料加载，不提升为系统指令。
+探索模式通过 [build_exploration_role_prompt](../../../../app/agent/exploration/tools/prompt.py) 组合角色、公司背景与多平台协作，主动中途反馈规则（`emit_progress`）改由 `build_exploration_prompt_options()` 通过 `PromptOptions(output_guidance=...)` 注入工具交互章节；个人助理通过 [build_assistant_role_prompt](../../../../app/agent/assistant/prompt/__init__.py) 复用同一份公司背景并组合助理角色、个人信息与画像规则，助理输出与交付规则改由 `build_assistant_prompt_options()` 通过 `PromptOptions(output_guidance=...)` 注入工具交互章节，随后交由 `agent-core` 追加统一工具协议与工作区规则，公司背景只注入一次。员工资料仍按[个人信息与画像](assistant-personal-context.md)作为本轮资料加载，不提升为系统指令。
 
-调用者显式传入完整 `AgentCore(system_prompt=...)` 时继续使用该自定义正文，不额外修改。拥有独立提示词的外部专家、检索与压缩子流程不因此自动获得公司背景。
+拥有独立提示词的钉钉正文转换器（`DingTalkMessageRenderer`）与外部 MCP 工具不因此自动获得公司背景。
 
 本功能无需数据库迁移、配置开关或运行时联网抓取。来源日期和维护说明只保存在本文，不作为模型可见的工程元信息。公司定位变化时人工复核来源并更新常量；业务请求中的实时事实仍需按当轮资料核实。服务未开启自动重载时，修改后需要重启进程。
 
@@ -49,8 +49,4 @@ Core 的稳定系统提示词包含现象创新（深圳）科技有限公司的
 
 ## 验证边界
 
-验证实际 Core、探索及个人助理四种任务的消息装配，检查系统消息仅包含一份公司背景，同时保留所属用户资料隔离。既有个人上下文及 A2A Core 回归用于检查公共提示词调整对消息装配和工具循环的影响。
-
-这些验证不调用真实模型，不能证明模型在所有语境下都正确消解公司指代；上线后可使用上述示例检查实际回答及工具查询对象。
-
-2026-10-26 验证结果：六种实际消息装配及完整提示词自定义覆盖检查通过；既有 `test_assistant_personal_context`、`test_platform_a2a_core` 共 14 项测试通过；提示词模块编译、新增文档引用与导航链接、`git diff --check` 检查通过。未进行真实模型语义测试。
+`tests/exploration_v2/test_tools.py` 与 `tests/assistant_v2/test_assistant_tools.py` 验证探索与个人助理角色提示词均包含公司背景且零依赖旧模块；上线后可使用上述示例检查真实模型的公司指代消解效果。

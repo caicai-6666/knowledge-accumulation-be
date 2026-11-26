@@ -7,12 +7,13 @@ import logging
 from textwrap import dedent
 from uuid import NAMESPACE_URL, uuid5
 
+from agent_core.core.context_rendering.attachment import render_attachments
+
 from app.infrastructure.assistant_queue import AssistantQueueError
 from app.infrastructure.dingtalk_robot import RobotUnavailable, RobotAttachmentInvalid
-from app.infrastructure.robot_attachment import AttachmentRejected, supported, to_pdf, validate_pdf
+from app.infrastructure.robot_attachment import AttachmentRejected, supported, to_pdf_async, validate_pdf
 from app.model.assistant_queue import AssistantUpload, PublishAssistantTask
-from app.model.question_file import UploadedFile, AttachmentReference
-from app.agent.core.context_rendering.attachment import render_attachments
+from app.model.question_file import UploadedFile
 from app.model.question_tree import utc_now
 from app.model.robot_inbox import RobotInboxFile, RobotInboxRecord
 from app.service.employee_onboarding import EmployeeOnboardingService
@@ -47,9 +48,10 @@ def render_inbound_question(message, *, reused_file_id=None, resolved_richtext=N
         if text:
             sections.append('\n'.join('> ' + line for line in text.splitlines()))
         if references:
-            sections.append(render_attachments(list(references)))
+            normalized = [{'type': ref.type, 'file_id': ref.file_id} for ref in references]
+            sections.append(render_attachments(normalized))
     elif reused_file_id is not None:
-        sections.append(render_attachments([AttachmentReference(type='images', file_id=reused_file_id)]))
+        sections.append(render_attachments([{'type': 'images', 'file_id': reused_file_id}]))
     else:
         # 连续文字是同一段；图片前后分别分区，保留回调中能确定的片段顺序。
         text = ''
@@ -102,12 +104,13 @@ async def _finish_io(awaitable):
 class RobotInboundService:
     def __init__(self, settings, repository, employees, queue, robot, files, *, clock=utc_now,
                  onboarding: EmployeeOnboardingService | None = None, reply_files=None,
-                 registration: MiddlewareUserSyncService | None = None):
+                 registration: MiddlewareUserSyncService | None = None, mcp_client=None):
         self.settings, self.repository, self.employees = settings, repository, employees
         self.queue, self.robot, self.files, self.clock = queue, robot, files, clock
         self.onboarding = onboarding
         self.registration = registration
         self.reply_files = reply_files
+        self.mcp_client = mcp_client
         self._task = None
         self._closed = False
         self._active = set()
@@ -123,7 +126,7 @@ class RobotInboundService:
     async def _convert_and_save(self, part, original, reference, max_bytes):
         # 转换和可靠暂存属于同一取消保护区；慢 Office 即使超过回调时限，
         # 也先保存成功结果再退出，重推直接复用，不能每次重新转换直到永远超时。
-        content = await asyncio.to_thread(to_pdf, part, original, self.robot.settings, max_bytes=max_bytes)
+        content = await to_pdf_async(part, original, self.mcp_client, max_bytes=max_bytes)
         await self.files.save_reference(UploadedFile(type='images', content=content), reference)
         return content
 

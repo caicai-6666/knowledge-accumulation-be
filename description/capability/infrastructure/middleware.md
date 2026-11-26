@@ -85,7 +85,7 @@ Docker 内监听 `8000`，Compose 默认映射到宿主 `24000`，见[Docker 部
 
 用户会话 `POST /middleware-service/api/user/login-cache` 的响应现支持 `username`、`departments` 与 `employment_status`：有效登录返回当前用户名、部门名称数组（无部门为 []）及任职状态 employed/resigned，无效登录这三项均为 `null`。查询使用独立的严格 DTO，兼容旧版本省略这些字段；类型错误、空名称、重复部门、非法任职状态或资料与登录状态不一致视为契约异常。离职可以与有效登录同时存在，不根据任职状态撤销或拒绝登录。`PUT` 仍使用不含展示资料的原响应。用户名仅作展示资料，不替代可信 `userid`，不用于认定管理员或文件权限；本项目 `me` 仍读取人员数据库的完整身份。请求体依旧仅含用户 `access_token`，不新增资料写入。
 
-[自动化测试](../../../tests/test_middleware.py)使用内存 HTTP Mock 和虚拟时钟，覆盖登录与无请求体心跳、响应校验、配置优先级及密钥保护、冲突与网络故障恢复、401 重登、过期判断、超时、禁用模式及 lifespan 清理。临时配置只写入 `tests/tmp/` 并清理，不读取真实 `.env` 或使用 `data/`。
+历史隔离测试使用内存 HTTP Mock 和虚拟时钟，覆盖登录与无请求体心跳、响应校验、配置优先级及密钥保护、冲突与网络故障恢复、401 重登、过期判断、超时、禁用模式及 lifespan 清理。临时配置不读取真实 `.env` 或使用 `data/`。
 
 ```bash
 python -m unittest discover -s tests -v

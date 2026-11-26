@@ -1,7 +1,6 @@
-"""私有画像检索、数字 key 预留和检查点同事务写入。"""
+"""私有画像检索、数字 key 预留和幂等写入。"""
 import hashlib
 import json
-from .tool_result import committed_tool_result
 
 from app.model.assistant_portrait import PortraitGroup, PortraitRecord, PortraitSubject
 
@@ -48,47 +47,129 @@ class AssistantPortraitRepository:
             await cursor.execute('UPDATE assistant_portrait_sequence SET next_key=%s WHERE id=1', (key + 1,))
             return key
 
-    async def commit_actions(self, cursor, record, content):
-        """仅处理权威已接受工具对；变更与动作账本由调用方的检查点事务一起提交。"""
-        from app.agent.assistant.tool.portrait_contract import (
-            AddPortraitArguments, AddPortraitResult, DeletePortraitArguments, DeletePortraitResult)
-        for message in content.exchanges:
-            if message.get('role') != 'assistant':
-                continue
-            for call in message.get('tool_calls', ()):
-                name = call['function']['name']
-                if name not in ('add_portrait', 'delete_portrait'):
-                    continue
-                arguments = (AddPortraitArguments if name == 'add_portrait' else DeletePortraitArguments
-                             ).model_validate_json(call['function']['arguments'])
-                payload = committed_tool_result(content, call)
-                # Core 可追加工作区提示；只投影业务回执字段，不把其当作画像内容。
-                fields = ('subject', 'portrait') if name == 'add_portrait' else ('key', 'deleted')
-                receipt = (AddPortraitResult if name == 'add_portrait' else DeletePortraitResult
-                           ).model_validate({key: payload[key] for key in fields})
-                fingerprint = hashlib.sha256(json.dumps([name, arguments.model_dump(mode='json'),
-                    receipt.model_dump(mode='json')], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-                operation = hashlib.sha256(call['id'].encode()).hexdigest()
-                await cursor.execute('SELECT owner_userid,fingerprint FROM assistant_portrait_actions '
-                    'WHERE task_id=%s AND operation_hash=%s FOR UPDATE', (record.task_id, operation))
-                old = await cursor.fetchone()
-                if old:
-                    if old['owner_userid'] != record.userid or old['fingerprint'] != fingerprint:
-                        raise ValueError('已提交画像动作不能改写')
-                    continue
-                if name == 'add_portrait':
-                    if receipt.subject != arguments.subject or receipt.portrait.preference != arguments.preference:
-                        raise ValueError('新增画像回执与请求不符')
-                    await cursor.execute('INSERT INTO assistant_portraits(`key`,owner_userid,subject_userid,preference) '
-                        'VALUES(%s,%s,%s,%s)', (receipt.portrait.key, record.userid,
-                         arguments.subject.userid, arguments.preference))
-                elif receipt.key != arguments.key:
-                    raise ValueError('删除画像回执与请求不符')
-                elif receipt.deleted:
-                    await cursor.execute('DELETE FROM assistant_portraits WHERE owner_userid=%s AND `key`=%s',
-                                         (record.userid, arguments.key))
-                await cursor.execute('INSERT INTO assistant_portrait_actions(task_id,owner_userid,operation_hash,fingerprint) '
-                    'VALUES(%s,%s,%s,%s)', (record.task_id, record.userid, operation, fingerprint))
+    async def add_portrait(
+        self,
+        *,
+        owner_userid: str,
+        subject_userid: str,
+        preference: str,
+        task_id: str,
+        operation_id: str,
+    ) -> PortraitRecord:
+        """按 (task_id, operation_id) 幂等新增一条私有画像记录。"""
+        owner = PortraitSubject(userid=owner_userid)
+        subject = PortraitSubject(userid=subject_userid)
+        op_hash = hashlib.sha256(operation_id.encode()).hexdigest()
+        fingerprint = hashlib.sha256(
+            json.dumps(['add_portrait', subject.userid, preference], ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+        async with self._database._transaction() as cursor:
+            await cursor.execute(
+                'SELECT owner_userid,fingerprint FROM assistant_portrait_actions '
+                'WHERE task_id=%s AND operation_hash=%s FOR UPDATE',
+                (task_id, op_hash),
+            )
+            old = await cursor.fetchone()
+            if old:
+                if old['owner_userid'] != owner.userid or old['fingerprint'] != fingerprint:
+                    raise ValueError('已提交画像动作不能改写')
+                await cursor.execute(
+                    'SELECT `key`,preference FROM assistant_portraits '
+                    'WHERE owner_userid=%s AND subject_userid=%s AND preference=%s ORDER BY `key` DESC LIMIT 1',
+                    (owner.userid, subject.userid, preference),
+                )
+                row = await cursor.fetchone()
+                if row is not None:
+                    return PortraitRecord.model_validate(row)
+            await cursor.execute('SELECT next_key FROM assistant_portrait_sequence WHERE id=1 FOR UPDATE')
+            sequence = await cursor.fetchone()
+            if sequence is None:
+                raise ValueError('画像 key 序列尚未初始化')
+            await cursor.execute('SELECT COALESCE(MAX(`key`),0) AS last_key FROM assistant_portraits')
+            key = max(sequence['next_key'], (await cursor.fetchone())['last_key'] + 1)
+            if key >= 2**64 - 1:
+                raise OverflowError('画像数字 key 已耗尽')
+            await cursor.execute('UPDATE assistant_portrait_sequence SET next_key=%s WHERE id=1', (key + 1,))
+            await cursor.execute(
+                'INSERT INTO assistant_portraits(`key`,owner_userid,subject_userid,preference) VALUES(%s,%s,%s,%s)',
+                (key, owner.userid, subject.userid, preference),
+            )
+            await cursor.execute(
+                'INSERT INTO assistant_portrait_actions(task_id,owner_userid,operation_hash,fingerprint) '
+                'VALUES(%s,%s,%s,%s)',
+                (task_id, owner.userid, op_hash, fingerprint),
+            )
+            return PortraitRecord(key=key, preference=preference)
+
+    async def delete_portrait(
+        self,
+        *,
+        owner_userid: str,
+        key: int,
+        task_id: str,
+        operation_id: str,
+    ) -> bool:
+        """按 (task_id, operation_id) 幂等删除一条私有画像记录。"""
+        owner = PortraitSubject(userid=owner_userid)
+        op_hash = hashlib.sha256(operation_id.encode()).hexdigest()
+        fingerprint = hashlib.sha256(
+            json.dumps(['delete_portrait', key], ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+        async with self._database._transaction() as cursor:
+            await cursor.execute(
+                'SELECT owner_userid,fingerprint FROM assistant_portrait_actions '
+                'WHERE task_id=%s AND operation_hash=%s FOR UPDATE',
+                (task_id, op_hash),
+            )
+            old = await cursor.fetchone()
+            if old:
+                if old['owner_userid'] != owner.userid or old['fingerprint'] != fingerprint:
+                    raise ValueError('已提交画像动作不能改写')
+                return True
+            await cursor.execute(
+                'DELETE FROM assistant_portraits WHERE owner_userid=%s AND `key`=%s',
+                (owner.userid, key),
+            )
+            deleted = cursor.rowcount > 0
+            await cursor.execute(
+                'INSERT INTO assistant_portrait_actions(task_id,owner_userid,operation_hash,fingerprint) '
+                'VALUES(%s,%s,%s,%s)',
+                (task_id, owner.userid, op_hash, fingerprint),
+            )
+            return deleted
+
+    async def add_idempotent(
+        self,
+        *,
+        owner_userid: str,
+        subject_userid: str,
+        preference: str,
+        operation_id: str,
+        task_id: str = 'tool_call',
+    ) -> int:
+        record = await self.add_portrait(
+            owner_userid=owner_userid,
+            subject_userid=subject_userid,
+            preference=preference,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
+        return record.key
+
+    async def delete_idempotent(
+        self,
+        *,
+        owner_userid: str,
+        key: int,
+        operation_id: str,
+        task_id: str = 'tool_call',
+    ) -> bool:
+        return await self.delete_portrait(
+            owner_userid=owner_userid,
+            key=key,
+            task_id=task_id,
+            operation_id=operation_id,
+        )
 
     async def search(self, owner_userid: str, name: str, *, limit: int = 1001) -> list[PortraitGroup]:
         owner = PortraitSubject(userid=owner_userid)

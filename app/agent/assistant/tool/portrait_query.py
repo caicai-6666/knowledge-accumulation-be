@@ -3,16 +3,15 @@ import hashlib
 import hmac
 import logging
 from textwrap import dedent
-from app.agent.core.tool.feedback import with_feedback
 import secrets
 from uuid import uuid4
 
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.result import FoldableToolContent, ToolPageReference, ToolPageUnavailable
 from pydantic import TypeAdapter
 
-from app.agent.core.query_pool import QueryResultPool
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult, FoldableToolContent, ToolPageReference
-from app.agent.core.tool.result import ToolPageUnavailable
-from app.agent.core.query_pool import QueryViewRejected
+from ._query_pool import QueryResultPool, QueryViewRejected
 from app.model.assistant_portrait import PortraitGroup, PortraitSubject
 from .portrait_contract import (PORTRAIT_TOOL_CONTRACTS, SearchPortraitsArguments, SearchPortraitsResult,
     ViewPortraitQueryArguments, ViewPortraitQueryResult, render_portrait_groups)
@@ -70,7 +69,7 @@ def build_search_portraits_registration(*, pool: QueryResultPool, repository, ow
 
     return RegisteredTool('search_portraits', PORTRAIT_TOOL_CONTRACTS[0].description +
         '\n支持姓名全文检索，完整姓名优先；名称过多时缩小范围。无匹配不生成结果集，查询失败不表示没有画像。',
-        SearchPortraitsArguments, lambda name, raw, workspace, arguments: workspace, executor=execute, hooks=(render_portrait_search_feedback,))
+        SearchPortraitsArguments, lambda name, raw, workspace, arguments: workspace, executor=execute, hooks=(FeedbackOnlyHook(render_portrait_search_feedback),))
 
 
 def render_portrait_search_feedback(arguments, execution, context):
@@ -173,4 +172,4 @@ def build_view_portrait_query_registration(viewer: PortraitQueryViewer):
     return RegisteredTool('view_portrait_query', PORTRAIT_TOOL_CONTRACTS[1].description +
         f'\n每页最多 {viewer.pool.page_size} 位用户，展示其全部偏好；数字 key 是稳定标识。',
         ViewPortraitQueryArguments, lambda name, raw, workspace, arguments: workspace,
-        executor=viewer.view, return_types=('ordinary', 'foldable'), page_resolver=viewer.resolve_page, hooks=(render_portrait_view_feedback,))
+        executor=viewer.view, return_types=('ordinary', 'foldable'), page_resolver=viewer.resolve_page, hooks=(FeedbackOnlyHook(render_portrait_view_feedback),))

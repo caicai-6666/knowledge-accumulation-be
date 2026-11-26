@@ -1,16 +1,16 @@
 """个人助理查询指定员工的日程集；通过独立查看工具读取正文。"""
 import logging
 from textwrap import dedent
-from app.agent.core.tool.feedback import with_feedback
 from datetime import timedelta, timezone
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from app.agent.core.json_codec import ModelActionRejected, validate_model_json
-from app.agent.core.query_pool import QueryResultPool
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult
-from app.agent.core.tool.progress import ToolProgress
-from app.agent.core.workspace import WorkspaceObject
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core.core.json_codec import ModelActionRejected, validate_model_json
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.progress import ToolProgress
+from agent_core.core.workspace import WorkspaceObject
+from ._query_pool import QueryResultPool
 from app.model.calendar import CalendarReadError
 from app.service.calendar import MAX_WINDOW_DAYS
 from app.agent.assistant.calendar_rendering import render_calendar_page
@@ -107,4 +107,4 @@ def build_search_calendar_events_registration(*, pool, service):
         lambda name, raw, workspace, arguments: workspace, executor=execute,
         parser=lambda raw: validate_model_json(SearchCalendarEventsArguments, raw),
         progress=ToolProgress(type='thinking', message='正在查询员工日程'),
-        hooks=(render_calendar_search_feedback,))
+        hooks=(FeedbackOnlyHook(render_calendar_search_feedback),))

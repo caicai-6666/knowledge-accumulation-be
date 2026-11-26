@@ -9,12 +9,12 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import AwareDatetime, Field, TypeAdapter, field_validator, model_validator
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.json_codec import ModelActionRejected, validate_model_json
-from app.agent.core.query_pool import QueryResultPool, QueryViewRejected
-from app.agent.core.tool import RegisteredTool, ToolExecution, ToolExecutionResult, FoldableToolContent, ToolPageReference
-from app.agent.core.tool.feedback import with_feedback
-from app.agent.core.tool.result import ToolPageUnavailable
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecution, ToolExecutionResult
+from agent_core.core.json_codec import ModelActionRejected, validate_model_json
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.result import FoldableToolContent, ToolPageReference, ToolPageUnavailable
+from agent_core.core.workspace import WorkspaceObject
+from ._query_pool import QueryResultPool, QueryViewRejected
 from app.model.assistant_file_note import FileNoteSearchRecord
 from app.model.uploaded_file import FileOwnerID
 
@@ -236,8 +236,8 @@ class FileNoteQueryTools:
         return (
             RegisteredTool('search_file_notes',SearchFileNotesArguments.__doc__,SearchFileNotesArguments,
                 lambda name,raw,workspace,args:workspace,executor=self.search,
-                parser=lambda raw:validate_model_json(SearchFileNotesArguments,raw),hooks=(render_search_feedback,)),
+                parser=lambda raw:validate_model_json(SearchFileNotesArguments,raw),hooks=(FeedbackOnlyHook(render_search_feedback),)),
             RegisteredTool('view_file_note_query',ViewFileNoteQueryArguments.__doc__,ViewFileNoteQueryArguments,
                 lambda name,raw,workspace,args:workspace,executor=self.view,return_types=('ordinary','foldable'),
-                page_resolver=self.resolve_page,hooks=(render_view_feedback,)),
+                page_resolver=self.resolve_page,hooks=(FeedbackOnlyHook(render_view_feedback),)),
         )

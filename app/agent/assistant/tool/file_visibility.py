@@ -5,9 +5,9 @@ from textwrap import dedent
 
 from pydantic import Field, TypeAdapter
 
-from app.agent.core.tool import RegisteredTool, ToolExecutionResult
-from app.agent.core.tool.feedback import with_feedback
-from app.agent.core.workspace import WorkspaceObject
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecutionResult
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.workspace import WorkspaceObject
 from app.model.question_file import FileID
 from app.model.uploaded_file import FileOwnerID, FileVisibility
 from app.repository.uploaded_file import UploadedFileAccessError, FileVisibilityUpdateUncertain
@@ -124,7 +124,7 @@ class FileVisibilityTools:
 
     def registrations(self):
         return tuple(RegisteredTool(name, model.__doc__, model,
-            lambda name, raw, workspace, arguments: workspace, executor=execute, hooks=(partial(render_visibility_feedback, operation=operation),))
+            lambda name, raw, workspace, arguments: workspace, executor=execute, hooks=(FeedbackOnlyHook(partial(render_visibility_feedback, operation=operation)),))
             for name, model, execute, operation in (
                 ('get_file_visibility', GetFileVisibilityArguments, self.get, '查看'),
                 ('set_file_visibility', SetFileVisibilityArguments, self.set, '修改')))

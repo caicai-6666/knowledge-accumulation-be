@@ -4,10 +4,9 @@ from typing import Annotated
 import logging
 
 from pydantic import Field, field_validator
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.tool import RegisteredTool, ToolExecutionResult
-from app.agent.core.tool.feedback import with_feedback
-from app.agent.core.tool.hooks import FeedbackOnlyHook
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecutionResult
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.workspace import WorkspaceObject
 from app.infrastructure.registry_file import validate_resource_id
 
 logger = logging.getLogger(__name__)

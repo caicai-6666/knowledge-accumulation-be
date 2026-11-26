@@ -1,93 +1,27 @@
-# 助理空闲心跳
+# 助理空闲心跳（1B agent-core 原生方案）
 
-## 用途与边界
-
-[AssistantHeartbeatScheduler](../../../app/service/assistant_heartbeat.py)在用户助理空闲且达到间隔时，将 heartbeat 任务发布到中间件。它不直接执行模型、不发送钉钉消息、不改变登录状态。任务继续由[助理消费者](assistant-consumption.md)领取、生成和确认，finish_task 的 send_to_user 决定是否通知用户。
-
-不新增 HTTP 或模型工具，不修改中央队列优先级；提醒、用户消息和助理消息仍优先于心跳。已领取的任务不被心跳打断。本模块只使用现有接口与 011/012 助理表，不新增迁移或本地消息队列。
+本文档说明个人助理基于 `agent-core` 原生 `AgentScheduler` 与原生空转裁剪（`_prune()`）的空闲心跳机制。
 
 ---
 
-## 当前心跳记录裁剪
+## 1. 设计决策（1B）
 
-个人助理 `finish_task` 增加可选严格布尔参数 `prune_current_task`，默认 `false`。模型判断没有值得保留的新结论时，可以请求裁剪当前空转心跳；不取消心跳机制，不自动清理历史任务。该参数仅存在于个人助理，不改变探索模式工具。
+个人助理已移除旧版 `AssistantHeartbeatScheduler` 及 `assistant_pruning.py`，改由 `agent-core` 原生调度器托管空闲心跳：
 
-第一版必须同时满足：
-
-- 队列可信任务类型为 `heartbeat`；不能通过正文自称心跳获得权限。
-- 最终 `send_to_user=false`、`file_ids=[]`，任务不携带附件，也没有已登记交付。
-- 只有一次成功主生成，已接受调用仅为本次 `finish_task`。查询等其他工具同样不放行；纠错、多次生成、失败或不确定过程均保留。
-- 未发生历史摘要、子智能体生成、自动工作区整理或业务编辑。
-
-例如仅阅读已有上下文后确认无事可做：`finish_task(content="无需要推进的新事项", send_to_user=false, prune_current_task=true)`。需要记录新结论、执行过任何其他工具、请求发送消息或遇到拒绝反馈时，改为 `false`，保留真实结果。不能为了裁剪取消必要通知。
-
-[工具](../../../app/agent/assistant/tool/finish_task.py)使用可信类型和仓库预检给出友好拒绝反馈；[事务裁剪](../../../app/repository/assistant_pruning.py)在节点终态事务中再次校验。成功完成、清空执行账本的 `node_id`、删除当前节点及其正文/消息/原始生成/记忆索引、恢复主干末端和内存窗口必须一起提交。失败整笔回滚，不能发布裁剪成功回执；成功是终止动作，不会新增下一轮模型请求来展示回执。
-
-Core 自动填写的当前任务工作区字段不是业务编辑：裁剪时恢复执行前的工作区快照，避免心跳输入残留。若发现除此之外的工作区差异，事务拒绝裁剪。其他任务、已有摘要、业务数据及队列消费状态不删除。自动摘要包含历史信息，因此本版直接禁止发生摘要的整轮裁剪。
-
-执行期间仍写检查点，成功结束后不长期保留该轮模型执行记录。消费账本保留完成/确认状态及用于重复领取核对的冻结队列快照（包含固定心跳输入），不进入模型历史；这不是零存储方案，也不承诺释放 MySQL 文件的物理空间。失败或中断未提交成功裁剪时，记录照常保留。
-
-`completed + heartbeat + node_id=NULL` 表示已裁剪；重复领取走已完成分支，只恢复交付/确认，不重新生成。现有数据库需要先更新执行账本约束，见 deploy 仓库 `mysql/readme.md` 的“心跳裁剪约束升级”章节。新空库使用更新后的统一初始化 SQL，无新增配置项。启动校验发现旧约束会明确报错，避免在生成完成后才发现不能裁剪。
-
-验证：隔离 SQL 与真实 Core 覆盖默认保留、静默裁剪、冷启动与下一任务父链、重复领取、非心跳拒绝、通知拒绝、工作区编辑、自动摘要、失败生成和事务回滚。真实模型实验及原始产物见 `experiment/heartbeat-pruning/20261115-validation/`（本地实验目录，不随部署提交）。
+- **配置映射**：`app/main.py` 将 `AssistantRuntimeSettings.heartbeat_interval_seconds`（`-1` 关闭，正整数为全局心跳间隔秒数）与 `heartbeat_poll_seconds` 封装为 `agent_core.SchedulerSettings`，在 `AgentRuntime.create/restore` 时绑定到每位助理的 `TreeAgent`。
+- **全局巡检**：`AssistantSchedulerRunner`（`app/service/assistant_runtime.py`）周期遍历 `assistants` 中 `enabled=1` 的助理，排除已离职员工后在 `user_scope(userid)` 锁内调用 `AgentScheduler.tick()`。
 
 ---
 
-## 配置与适用用户
+## 2. 原生空转裁剪（`prune_current_task`）
 
-| 位置 | 默认值 | 行为 |
-| --- | --- | --- |
-| ASSISTANT_ENABLED | false | 与消费及提醒调度共用总开关，关闭时不启动扫描。 |
-| ASSISTANT_HEARTBEAT_INTERVAL_SECONDS | -1 | 全局实际心跳间隔；-1 关闭，正整数统一应用于所有已启用助理。 |
-| ASSISTANT_HEARTBEAT_POLL_SECONDS | 30 | 正数，调度器扫描间隔；不改变实际心跳间隔。 |
-| assistants.enabled | true | 停用的助理不参与扫描。 |
-
-只扫描已有绑定且开启心跳的助理，不为扫描创建用户或树。实际发布前还要确认用户存在于权威员工表。所有助理使用同一全局间隔，不保存用户级间隔；配置示例见 [.env.example](../../../.env.example)。
-
-例如间隔为 1800，中央上次成功确认时间为 10:00，则 10:30 起的首次空闲扫描可发布。没有历史确认时间时，首次空闲扫描即可发布；时间在未来时等待其到期，不自行改写中央时间。
+- 个人助理定制的 `AssistantFinishTask`（`app/agent/assistant/tool/finish_task.py`）完整满足 `agent_core.core.tool.heartbeat.supports_heartbeat_pruning` 契约（参数含 `send_to_user`、`prune_current_task`、`file_ids`，`output_kind='final'` 且 `deliver_output is not None`）。
+- 当心跳任务检查已有记忆与工作区后确认无须行动、未调用修改类工具且未产生值得保留的新结论时，模型可调用 `finish_task(content='...', send_to_user=False, prune_current_task=True)`。
+- `agent-core` 校验通过后执行原生 `_prune()`，清除本次空转心跳节点，不污染历史记忆与工作区，也不向用户发送多余消息；若确有需要告知用户的事项，则置 `send_to_user=True, prune_current_task=False`，经钉钉正文转换与 `assistant_deliveries` 可靠送达。
 
 ---
 
-## 判断与发布
+## 3. 验证状态
 
-1. 全局间隔大于 0 时，从 assistants 读取 enabled 的用户。
-2. 尝试获取与消费者共用的 MySQL 用户命名锁；其他实例正在处理该用户时直接跳过，不等待或中断它。
-3. 持锁后重新核对当前设置；若本地有未确认任务，包括失败、交付结果不明或等待 ack 的任务，暂不追加心跳。
-4. 查询 `GET /middleware-service/api/assistant/tasks/status?userid=...`，使用现有平台会话 Bearer。
-5. has_in_progress_task=true 时不发布；否则比较当前时间与 last_heartbeat_at 加全局间隔。
-6. 到期后 `POST /middleware-service/api/assistant/tasks/publish`，只传 userid、task_type=heartbeat、固定 message、稳定 request_id，不带用户 token、附件或 source_assistant_id。
-
-last_heartbeat_at 是中央**最近一次成功确认 heartbeat 的时间**，不是发布时间或普通任务完成时间。调度器不在 SQL 或内存中维护另一份权威忙碌状态/上次心跳时间，也不在发布成功后提前重置计时。
-
-中间件状态只描述有效租约，不展示待领取任务；有排队业务消息时可以发布低优先级心跳，由中央决定领取顺序。状态读取与发布也不是中央原子操作：本项目用户锁能协调使用同一数据库、同一锁规则的实例，不能保证其他生产者/消费者不会在两次 HTTP 调用之间领取任务；不宣称获得了跨平台原子空闲判定。本轮不修改中间件契约。
-
----
-
-## 等待去重与故障恢复
-
-同一个 userid 和同一个 last_heartbeat_at 生成相同的请求键；null 使用固定首次周期，时间统一为 UTC。键使用散列，不暴露明文 userid。不同用户保留大小写区别，修改扫描频率或全局间隔不会改变尚未确认周期的键。正文固定，不把当前时间写入正文导致同键不同内容。
-
-| 情况 | 处理 |
-| --- | --- |
-| 心跳已经排队但尚未领取 | 下一次扫描仍提交相同请求键，由中央返回原任务，不新增心跳。 |
-| 发布超时、响应丢失或进程重启 | 重新读取状态；尚未确认时重试相同键及正文，不生成新周期。 |
-| 心跳完成且成功 ack | 中央更新时间，下一次间隔到期后生成新键。 |
-| 数据库、状态接口或响应契约失败 | 不假装空闲、不发布；脱敏记录，后续扫描重试。 |
-| 平台 401 | 复用会话服务，只失效本次使用的平台 token；等待原平台会话恢复。 |
-| 发布 409 或其他拒绝 | 保留原键，记录失败，不换键绕过冲突。 |
-| 用户锁连接丢失 | 取消本用户检查并释放资源；后续扫描可重试，不停止其他用户的扫描。 |
-| 停机 | 取消并等待正在进行的状态/发布请求，释放用户锁；不 ack、删除或清空已发布任务。 |
-
-去重依赖中间件既有 `(来源平台, userid, request_id)` 契约：未完成任务保留幂等记录，确认后中央持久保存上次心跳时间。发布回执不作为消息完成依据。若中央记录被人工清理、正文发布协议改变或有其他独立心跳生产者，须另行核对，不承诺跨数据清理后的恰好一次。
-
-调度采用顺序扫描，单次 HTTP 与 SQL 沿用各自超时；用户故障不阻塞后续用户，扫描读取失败则本轮不继续。总扫描耗时会影响实际检查精度，不作为准点提醒；准点业务应使用[定时任务](assistant-reminders.md)。
-
----
-
-## 生命周期与验证
-
-[app/main.py](../../../app/main.py)在启用助理后装配，复用同一个助理仓库、人员仓库、队列服务和平台会话。退出先停止心跳、提醒和消费者，再关闭队列、HTTP 与数据库资源。关闭检查期间取消传播到持锁子任务，等待其释放连接；单用户锁连接故障造成的局部取消不会误停整个调度器。
-
-[隔离调度测试](../../../tests/test_assistant_heartbeat.py)覆盖实际 HTTP 请求、首次/间隔边界、忙碌、未来时间、稳定键、待领取去重、响应丢失、重启、401、错误契约、数据库失败、任务取消、启停和配置。[独立 MySQL 测试](../../../tests/test_assistant_heartbeat_mysql.py)覆盖默认 -1、停用和缺失员工、跨实例用户锁、失败未确认任务、设置重检、停机释放，以及实际 Core 消费后 ack 再开启下一周期。所有文件仅使用 tests/tmp，HTTP、模型与钉钉均为替身。
-
-2026-10-24：新增 16 项隔离调度测试、7 项独立 MySQL 测试通过；完整 unittest 共 1291 项，1129 项通过、162 项因其他隔离环境未配置而跳过。消费生命周期测试同时验证心跳调度装配与逆序关闭。pip check、git diff --check、9 份文档 219 个相对链接/锚点检查通过。临时 MySQL 8.4 容器与本轮测试日志已清理；未修改真实 .env、心跳间隔或其他项目，未调用共享中间件、真实钉钉或模型。
+- 已在 `tests/assistant_v2/test_assistant_e2e.py` 中通过 SQLite + Mock DingTalk 验证 `SchedulerSettings(heartbeat_interval_seconds=1)` 下空闲心跳触发及 `prune_current_task=True` 原生 `_prune()` 裁剪（`TreeView.nodes` 数量不变、零多余钉钉消息），并在 `tests/assistant_v2/test_assistant_tools.py` 中断言 `supports_heartbeat_pruning(AssistantFinishTask) == True`。
+- 尚未在真实钉钉环境执行线上心跳投递验收。

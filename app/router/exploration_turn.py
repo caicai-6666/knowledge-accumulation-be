@@ -11,11 +11,11 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.infrastructure.file_conversion.model import ConversionError
+from app.infrastructure.mcp_client import ConversionError
 from app.service.exploration_attachment import (
     MAX_FILE_BYTES, MAX_TOTAL_BYTES, SourceUpload, SUPPORTED_EXTENSIONS, UploadSizeExceeded,
 )
-from app.repository.question_tree import QuestionTreeConflict, QuestionTreeNotFound
+from app.model.question_tree import QuestionTreeConflict, QuestionTreeNotFound
 from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer
 from app.router.exploration import TreePath
 from app.schema.exploration_turn import TurnCreated, TurnInput, TurnSnapshot
@@ -72,7 +72,10 @@ async def errors():
 
 
 def service(request):
-    return request.app.state.exploration_turn_service
+    turns = getattr(request.app.state, 'exploration_turn_service', None)
+    if turns is None:
+        raise RuntimeError('探索任务服务未装配')
+    return turns
 
 
 @router.post('', status_code=201, response_model=TurnCreated, summary='注册待激活探索任务',

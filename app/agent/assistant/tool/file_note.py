@@ -2,10 +2,10 @@
 import logging
 from textwrap import dedent, indent
 from pydantic import Field, TypeAdapter, field_validator
-from app.agent.core.workspace import WorkspaceObject
-from app.agent.core.json_codec import ModelActionRejected
-from app.agent.core.tool import RegisteredTool, ToolExecutionResult
-from app.agent.core.tool.feedback import with_feedback
+from agent_core import FeedbackOnlyHook, RegisteredTool, ToolExecutionResult
+from agent_core.core.json_codec import ModelActionRejected
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.workspace import WorkspaceObject
 from app.model.assistant_file_note import NoteName, NoteSummary
 from app.model.question_file import FileID
 from app.model.uploaded_file import FileOwnerID
@@ -113,6 +113,6 @@ class FileNoteTools:
                         'reason':'文件备忘操作前的检查未完成，本次未执行变更。',
                         'required_action':'请稍后重试，不能据此判断备忘已创建、删除或不存在。'})
             return RegisteredTool(name, model.__doc__, model,
-                lambda name, raw, workspace, arguments: workspace, executor=guarded, hooks=(render,))
+                lambda name, raw, workspace, arguments: workspace, executor=guarded, hooks=(FeedbackOnlyHook(render),))
         return (build('add_file_note', AddFileNoteArguments, self.add, render_add_feedback),
                 build('delete_file_note', DeleteFileNoteArguments, self.delete, render_delete_feedback))

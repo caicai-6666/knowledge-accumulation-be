@@ -1,7 +1,7 @@
 """个人背景的本轮注入契约；不改写树历史或权威工作区。"""
 from typing import Annotated,Literal
 from pydantic import BaseModel,ConfigDict,Field
-from app.agent.core import ContextInjection
+from agent_core import ContextInjection
 
 Text=Annotated[str,Field(strict=True,min_length=1,pattern=r'\S')]
 

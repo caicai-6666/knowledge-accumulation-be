@@ -28,7 +28,7 @@
 
 ## 首次员工初始化
 
-[EmployeeOnboardingService](../../../app/service/employee_onboarding.py) 在可信钉钉 userid 首次登录或[机器人首次消息](../../capability/application/assistant-inbound.md#整条消息规则)时执行：
+[EmployeeOnboardingService](../../../app/service/employee_onboarding.py) 在可信钉钉 userid 首次登录或[钉钉消息入站](../../capability/application/assistant-inbound.md)时执行：
 
 1. 先读取已有员工；存在则直接使用，不重置任何姓名、头像、部门、文件权限或管理员身份。
 2. 获取与可信 userid 相符的钉钉员工详情，向上追溯部门层级到根部门或根下一级部门。去重后保留全部一级部门；有实际一级部门时忽略企业根部门，只有根部门时保留根。环、深度超过32、断裂或上游查询失败仍拒绝，不因多个一级部门而失败。
@@ -152,7 +152,7 @@
 
 此前 **87 项回归、pip check 及协作方独立临时 MySQL 8.4 补验通过**作为历史验证保留，覆盖当时流程及底层仓库/RSA 能力；旧 `update → PUT` 流程的通过不等于新职责下登录闭环已验收。实库来源与范围见[隔离补验记录](../../capability/infrastructure/user-infrastructure.md#协作方隔离-mysql-84-实库补验)。
 
-头像接口迁入前，中央 token 契约回归共 **109 项通过**。[认证测试](../../../tests/test_auth.py)覆盖新员工初始化/注册、同用户新登录轮换、精确 PUT/POST body、开发凭据换 token、me 不复活、无需本地映射、依赖恢复、脱敏、路由移除及清理。[出站契约测试](../../../tests/test_auth_contract.py)、[初始化测试](../../../tests/test_employee_onboarding.py)、[维护锁测试](../../../tests/test_user_maintenance.py)与[注册测试](../../../tests/test_user_registration.py)保留字段严格校验、默认关闭、首次注册、权限保留、共享锁交错、取消与超时覆盖。
+历史中央 token 契约回归覆盖新员工初始化/注册、同用户新登录轮换、精确 PUT/POST body、开发凭据换 token、me 不复活、无需本地映射、依赖恢复、脱敏、路由移除及清理，以及出站契约、初始化、维护锁与注册并发覆盖。
 
 跨后端交错测试刻画仍存在的旧权限覆盖风险，不是风险消除的证明。本轮使用 Mock 与显式隔离临时目录，未连接真实钉钉、数据库或共享中间件。历史 98/102 项是职责调整过程中的旧契约快照，不代表中央 token 方案验证结果；最终计数以本节完整回归为准。
 
@@ -173,7 +173,7 @@ registry 主开发助手报告：其可选 `tests/test_shared_login_token.py` �
 
 ### 2026-10-22 开发账户落库与授权启动验证
 
-用户授权本项目实际建表、重启并全量同步后，已在当前 `registry` 权威库一次性固化开发员工、部门及初始管理关系；未修改实际 `.env`。开发身份现按本章 SQL 优先规则读取，已有人员记录未改写。新服务启动用户全表 count=7、管理员全表 admin_count=6；真实开发登录、me、探索列表及平台列表均 200。完整隔离回归 736 项（597 通过、139 环境条件跳过），pip check 通过。步骤、脱敏证据、旧会话 409 重试及范围限制见[部署记录](../../../experiment/deployment/20261022-exploration-init/report.md)。本节是后续授权执行结果；前文未真实发布的描述对应历史迁移阶段，不代表当前运行状态。
+历史部署阶段曾在受控环境完成开发员工、部门及初始管理关系固化，验证开发登录、me、探索列表及平台列表返回 200；该记录仅作历史背景说明，不代表当前运行环境状态。
 
 
 ---

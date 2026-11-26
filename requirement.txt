@@ -1,9 +1,7 @@
 # HTTP API 框架
 fastapi==0.150.0
-# 官方 SDK，使用 AsyncOpenAI 调用异步 API
-openai==3.35.1
-# 智能体工作流
-langgraph==1.2.16
+# 官方 SDK，使用 AsyncOpenAI 调用异步 API（与 agent-core 的 openai>=1.70,<3 约束保持一致）
+openai==2.54.0
 # MySQL/MariaDB 异步驱动
 asyncmy==0.2.16
 # MySQL 8 默认 caching_sha2_password / sha256_password 的 RSA 认证路径
@@ -14,27 +12,21 @@ httpcore==1.0.9
 # 钉钉机器人 Stream 异步连接；显式关闭环境代理及握手重定向。
 websockets==16.1.1
 pydantic==2.14.1
-# Core 工作区和任务元数据的可读 YAML 渲染
+# YAML 配置与结构化工具渲染
 PyYAML==6.0.3
 # 本地环境配置与 ASGI 服务启动
 python-dotenv==1.2.4
 uvicorn==0.54.0
 # 头像无损 WebP 编码
 Pillow==13.0.0
-# 苹果 HEIC/HEIF 图片解码，接入机器人附件的 Pillow 转换流程。
-pillow-heif==1.8.1
-# 用户附件逐页查看，沿用参考项目已安装验证的版本。
+# 用户附件逐页查看与 PDF 校验
 PyMuPDF==1.28.2
-# 沿用 registry 验证的 LlamaIndex 向量库协议及 vLLM Embedding 适配。
+# 注册中心文件检索使用的 vLLM Embedding 适配
 llama-index-core==0.14.25
 llama-index-embeddings-openai-like==0.4.0
-
-# FastAPI multipart/form-data 用户 PDF 上传
+# FastAPI multipart/form-data 用户附件上传
 python-multipart==0.0.32
-
-# 网页正文提取及访问限制线索解析，沿用参考项目 Trafilatura 2.x 路径。
-trafilatura==2.3.1
-lxml==6.1.3
-
-# 识别旧 DOC/XLS 的 OLE 容器；格式转换由 LibreOffice 执行。
-olefile==0.47
+# Agent Core 核心库（含 MySQL 存储与 PDF 查看扩展）
+agent-core[mysql,pdf] @ git+https://github.com/caicai-6666/agent-core.git
+# 官方 MCP 客户端 SDK，接入外部通用 MCP 工具服务（时间/日期、网页检索、外部专家、附件转 PDF）
+mcp>=2.3.0

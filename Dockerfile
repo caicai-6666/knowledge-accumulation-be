@@ -4,9 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Word/Excel/PowerPoint 转 PDF；中文字体资产随项目复制，不依赖开发机字体。
+# git 与 ca-certificates 用于安装基于 Git 的依赖（agent-core）；附件转 PDF 由外部 MCP Server 承担。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress fonts-noto-cjk fonts-liberation \
+    && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
@@ -24,7 +24,6 @@ RUN groupadd --gid 10001 app \
 
 COPY --chown=app:app app ./app
 COPY --chown=app:app assets/tool-tag ./assets/tool-tag
-COPY --chown=app:app assets/fonts ./assets/fonts
 
 USER app
 EXPOSE 8000

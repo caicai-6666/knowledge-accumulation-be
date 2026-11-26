@@ -1,6 +1,6 @@
 """转换正文的唯一输出契约；原生推理不作为 JSON 字段。"""
 from pydantic import BaseModel, ConfigDict, Field
-from app.agent.core.json_codec import load_model_json
+from agent_core.core.json_codec import load_model_json
 
 
 class MessageRenderingError(ValueError):

@@ -4,7 +4,7 @@ from datetime import timedelta, timezone
 from asyncmy.errors import IntegrityError
 
 from app.model.uploaded_file import UploadedFileRecord
-from app.repository.question_tree import _date
+from app.repository.mysql_base import _date
 
 
 class UploadedFileConflict(ValueError):

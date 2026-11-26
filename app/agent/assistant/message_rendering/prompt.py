@@ -1,5 +1,5 @@
 """单次渠道转换提示；不继承主助理角色、工具协议或工作区。"""
-from app.agent.core.context_rendering.block import text_block
+from agent_core.core.context_rendering.block import text_block
 
 
 TASK_PROMPT = r'''# 任务描述

@@ -1,12 +1,25 @@
-"""画像增删预验；权威写入由助理节点检查点的同事务钩子执行。"""
+"""画像增删工具；基于 agent-core 契约，在 execute 内凭 current_tool_call_id 幂等落库。"""
+from __future__ import annotations
+
 import logging
 from textwrap import dedent
-from app.agent.core.tool.feedback import with_feedback
 
-from app.agent.core.tool import RegisteredTool, ToolExecutionResult
+from agent_core import (
+    FeedbackOnlyHook,
+    RegisteredTool,
+    ToolExecutionResult,
+)
+from agent_core.core.tool.feedback import with_feedback
+from agent_core.core.tool.registry import current_tool_call_id
+
 from app.model.assistant_portrait import PortraitRecord, PortraitSubject
-from .portrait_contract import (AddPortraitArguments, AddPortraitResult, DeletePortraitArguments,
-    DeletePortraitResult, PORTRAIT_TOOL_CONTRACTS)
+from .portrait_contract import (
+    PORTRAIT_TOOL_CONTRACTS,
+    AddPortraitArguments,
+    AddPortraitResult,
+    DeletePortraitArguments,
+    DeletePortraitResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,42 +66,132 @@ def render_delete_portrait_feedback(arguments, execution, context):
 
 
 class PortraitMutationTools:
+    """私有画像增删工具；支持按 `current_tool_call_id` 幂等直写落库。"""
+
     def __init__(self, repository, owner_userid: str):
         self.repository = repository
         self.owner_userid = PortraitSubject(userid=owner_userid).userid
 
-    async def add(self, args):
+    async def add(self, args: AddPortraitArguments) -> ToolExecutionResult:
         if len(args.preference.encode('utf-8')) > 65535:
-            return ToolExecutionResult(status='failed', tool_result={
-                'code': 'portrait_too_large', 'message': '这一条偏好过长，请精简后再新增。'})
+            return ToolExecutionResult(
+                status='failed',
+                tool_result={
+                    'code': 'portrait_too_large',
+                    'message': '这一条偏好过长，请精简后再新增。',
+                },
+            )
         if not await self.repository.target_exists(args.subject.userid):
-            return ToolExecutionResult(status='failed', tool_result={
-                'code': 'portrait_target_unavailable', 'message': '未找到该用户，请先确认目标的准确 userid。'})
-        key = await self.repository.reserve_key()
-        result = AddPortraitResult(subject=args.subject, portrait=PortraitRecord(key=key, preference=args.preference))
-        # 回执只在节点检查点和画像写入共同提交后才会成为模型的已接受上下文。
-        return ToolExecutionResult(status='succeeded', tool_result={**result.model_dump(mode='json'),
-            'message': '已新增一条偏好。既有查询结果是快照，请重新搜索查看最新资料。'})
+            return ToolExecutionResult(
+                status='failed',
+                tool_result={
+                    'code': 'portrait_target_unavailable',
+                    'message': '未找到该用户，请先确认目标的准确 userid。',
+                },
+            )
+        call_id = current_tool_call_id.get()
+        if hasattr(self.repository, 'add_idempotent'):
+            key = await self.repository.add_idempotent(
+                owner_userid=self.owner_userid,
+                subject_userid=args.subject.userid,
+                preference=args.preference,
+                operation_id=call_id,
+            )
+        else:
+            key = await self.repository.reserve_key()
+            if hasattr(self.repository, 'insert'):
+                await self.repository.insert(
+                    key=key,
+                    owner_userid=self.owner_userid,
+                    subject_userid=args.subject.userid,
+                    preference=args.preference,
+                )
+        result = AddPortraitResult(
+            subject=args.subject,
+            portrait=PortraitRecord(key=key, preference=args.preference),
+        )
+        return ToolExecutionResult(
+            status='succeeded',
+            tool_result={
+                **result.model_dump(mode='json'),
+                'message': '已新增一条偏好。既有查询结果是快照，请重新搜索查看最新资料。',
+            },
+        )
 
-    async def delete(self, args):
-        existing = await self.repository.find(self.owner_userid, args.key)
-        result = DeletePortraitResult(key=args.key, deleted=existing is not None)
-        return ToolExecutionResult(status='succeeded', tool_result={**result.model_dump(),
-            'message': '已删除这一条偏好，请重新搜索查看最新资料。' if existing else
-                       '当前助理的画像中已不存在这一条，无需重复删除。'})
+    async def delete(self, args: DeletePortraitArguments) -> ToolExecutionResult:
+        call_id = current_tool_call_id.get()
+        if hasattr(self.repository, 'delete_idempotent'):
+            deleted = bool(
+                await self.repository.delete_idempotent(
+                    owner_userid=self.owner_userid,
+                    key=args.key,
+                    operation_id=call_id,
+                )
+            )
+        else:
+            existing = await self.repository.find(self.owner_userid, args.key)
+            deleted = existing is not None
+            if deleted and hasattr(self.repository, 'delete'):
+                await self.repository.delete(self.owner_userid, args.key)
+        result = DeletePortraitResult(key=args.key, deleted=deleted)
+        return ToolExecutionResult(
+            status='succeeded',
+            tool_result={
+                **result.model_dump(),
+                'message': (
+                    '已删除这一条偏好，请重新搜索查看最新资料。'
+                    if deleted
+                    else '当前助理的画像中已不存在这一条，无需重复删除。'
+                ),
+            },
+        )
 
-    def registrations(self):
+    def registrations(self) -> tuple[RegisteredTool, RegisteredTool]:
         def build(name, model, execute, description, render):
             async def guarded(args):
                 try:
                     return await execute(args)
                 except Exception as error:
-                    logger.warning('画像增删预验失败：operation=%s error_type=%s', name, type(error).__name__)
-                    return ToolExecutionResult(status='failed', tool_result={
-                        'code': 'portrait_mutation_unavailable',
-                        'message': '画像操作暂不可用，本次未提交；请稍后重试，不能据此判断画像已新增、删除或不存在。'})
-            return RegisteredTool(name, description, model,
-                lambda name, raw, workspace, arguments: workspace, executor=guarded, hooks=(render,), persist_result=True)
+                    logger.warning('画像增删操作失败：operation=%s error_type=%s', name, type(error).__name__)
+                    return ToolExecutionResult(
+                        status='failed',
+                        failure_mode='failed',
+                        tool_result={
+                            'code': 'portrait_mutation_unavailable',
+                            'message': '画像操作暂不可用，本次未提交；请稍后重试，不能据此判断画像已新增、删除或不存在。',
+                        },
+                    )
 
-        return (build('add_portrait', AddPortraitArguments, self.add, PORTRAIT_TOOL_CONTRACTS[2].description, render_add_portrait_feedback),
-                build('delete_portrait', DeletePortraitArguments, self.delete, PORTRAIT_TOOL_CONTRACTS[3].description, render_delete_portrait_feedback))
+            return RegisteredTool(
+                name,
+                description,
+                model,
+                lambda tool_name, raw, workspace, arguments: workspace,
+                executor=guarded,
+                hooks=(FeedbackOnlyHook(render),),
+                persist_result=True,
+            )
+
+        return (
+            build(
+                'add_portrait',
+                AddPortraitArguments,
+                self.add,
+                PORTRAIT_TOOL_CONTRACTS[2].description,
+                render_add_portrait_feedback,
+            ),
+            build(
+                'delete_portrait',
+                DeletePortraitArguments,
+                self.delete,
+                PORTRAIT_TOOL_CONTRACTS[3].description,
+                render_delete_portrait_feedback,
+            ),
+        )
+
+
+__all__ = [
+    'PortraitMutationTools',
+    'render_add_portrait_feedback',
+    'render_delete_portrait_feedback',
+]

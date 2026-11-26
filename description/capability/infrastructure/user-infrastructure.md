@@ -20,7 +20,7 @@
 
 连接池首次查询时惰性创建，SQL 参数绑定与查询语句分离，查询和连接建立有超时。启动同步只读取员工，不执行初始化写入。应用没有建表逻辑，部署侧必须提前准备正确的人员表及权限；数据库错误不能解释为空总表。
 
-MySQL 8 的 `caching_sha2_password` / `sha256_password` 完整 RSA 认证还依赖显式安装的 `cryptography`，不能仅凭 Mock 仓库验证判断实库可用。依赖选型及本地 RSA 路径验证见[MySQL 8 认证依赖](../application/dependencies.md#mysql-8-认证依赖)，不得通过降级认证插件绕过缺包错误。
+MySQL 8 的 `caching_sha2_password` / `sha256_password` 完整 RSA 认证还依赖显式安装的 `cryptography`，不能仅凭 Mock 仓库验证判断实库可用。依赖选型见[Python 环境与依赖](../application/dependencies.md)，不得通过降级认证插件绕过缺包错误。
 
 [MySQL 配置](../../../app/config/database.py) 从项目根目录 `.env` 读取，环境变量优先：
 
@@ -82,11 +82,11 @@ MySQL 8 的 `caching_sha2_password` / `sha256_password` 完整 RSA 认证还依�
 
 除现有 `asyncmy`、`httpx`、`pydantic` 和 `python-dotenv` 外，新增 `Pillow==13.0.0`，已安装至项目 Conda 环境。完整版本见 [requirement.txt](../../../requirement.txt)。
 
-[基础设施测试](../../../tests/test_user_infrastructure.py)使用异步连接池 Mock 和 HTTP Mock 验证字段映射、参数绑定、只读查询、事务回滚及钉钉响应；[头像存储测试](../../../tests/test_avatar.py)在 `tests/tmp/` 验证无损像素、动画、下载限制、符号链接、原子写入及取消清理。
+历史基础设施与头像存储隔离测试使用异步连接池 Mock 和 HTTP Mock 验证字段映射、参数绑定、只读查询、事务回滚、钉钉响应及无损像素、动画、下载限制、符号链接、原子写入与取消清理。
 
 ### 头像读取接口验证
 
-新增[头像资源测试](../../../tests/test_avatar_resource.py) 17 项，覆盖普通无权限/非管理员访问、开发随机 token、精确原始字节与响应头、缺文件、非法名称/编码路径/换行、符号链接、非普通文件、超限、脱敏、超时与取消、中央失效/异常、数据库故障、认证关闭及两种模式 Store 仅关闭一次。接口新增后完整回归 **126 项通过**（此前中央 token 阶段 109 项保留），所有 HTTP/人员查询隔离 Mock，测试文件仅在 `tests/tmp/`。
+历史头像资源隔离测试覆盖普通无权限/非管理员访问、开发随机 token、精确原始字节与响应头、缺文件、非法名称/编码路径/换行、符号链接、非普通文件、超限、脱敏、超时与取消、中央失效/异常、数据库故障、认证关闭及 Store 清理。
 
 ### 授权单文件迁移准备
 

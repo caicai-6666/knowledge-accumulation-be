@@ -5,7 +5,7 @@ from app.model.assistant_file_note import AssistantFileNote
 from app.model.question_file import FileID
 from app.model.uploaded_file import FileOwnerID
 from app.model.question_tree import utc_now
-from app.repository.question_tree import _date
+from app.repository.mysql_base import _date
 
 
 class FileNoteRejected(ValueError):

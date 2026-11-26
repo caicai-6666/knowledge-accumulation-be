@@ -9,10 +9,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Re
 
 from app.router.dependency import AuthenticatedUserDependency, reject_extra_input, user_bearer
 from app.schema.auth import AuthErrorResponse
-from app.model.question_tree import TreeID
-from app.model.question_file import FileID
-from app.repository.question_tree import QuestionTreeNotFound
-from app.repository.node_persistence import QuestionFileNotFound
+from app.model.question_tree import QuestionTreeNotFound, TreeID
+from app.model.question_file import AttachmentReference, FileID
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/resource', tags=['resource'])
@@ -79,15 +77,22 @@ async def attachment(request: Request, user: AuthenticatedUserDependency,
     await reject_extra_input(request)
     if request.scope['path'].rsplit('/', 1)[-1] != file_id:
         raise HTTPException(422, '请求参数不合法', headers=_HEADERS)
-    service = getattr(request.app.state, 'question_file_service', None)
+    repository = getattr(request.app.state, 'exploration_tree_repository', None)
+    store = getattr(request.app.state, 'upload_file_store', None)
     try:
-        if service is None:
+        if repository is None or store is None:
             raise RuntimeError('附件服务未装配')
         # 复用数据库登记及读取前后归属核对；UUID 本身不是授权凭据。
         # 限制整条读取链路等待时间，不触发模型、上传或转码。
         async with asyncio.timeout(15):
-            reference, content = await service.read_file(tree_id, user.userid, file_id)
-    except (QuestionTreeNotFound, QuestionFileNotFound, FileNotFoundError):
+            await repository.get_tree(tree_id, user.userid)
+            if not await repository.has_file(tree_id, user.userid, file_id):
+                raise FileNotFoundError('附件不存在')
+            reference = AttachmentReference(type='images', file_id=file_id)
+            content = await store.read(reference)
+            if not await repository.has_file(tree_id, user.userid, file_id):
+                raise FileNotFoundError('附件不存在')
+    except (QuestionTreeNotFound, FileNotFoundError):
         raise HTTPException(404, '附件不存在', headers=_HEADERS) from None
     except Exception as error:
         logger.warning('附件读取失败：error_type=%s', type(error).__name__)
